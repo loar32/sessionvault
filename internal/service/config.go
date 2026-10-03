@@ -10,6 +10,8 @@ import (
 type Config struct {
 	MainUser    string `json:"main_user"`
 	IdleMinutes int    `json:"idle_minutes"`
+	// Откуда импортирована папка данных профиля: при удалении данные возвращаются туда.
+	Origins map[string]string `json:"origins,omitempty"`
 }
 
 const defaultIdleMinutes = 15

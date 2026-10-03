@@ -9,6 +9,7 @@ import (
 var (
 	procLogonUser         = windows.NewLazySystemDLL("advapi32.dll").NewProc("LogonUserW")
 	procLoadUserProfile   = windows.NewLazySystemDLL("userenv.dll").NewProc("LoadUserProfileW")
+	procUnloadUserProfile = windows.NewLazySystemDLL("userenv.dll").NewProc("UnloadUserProfile")
 	procOpenWindowStation = windows.NewLazySystemDLL("user32.dll").NewProc("OpenWindowStationW")
 	procOpenDesktop       = windows.NewLazySystemDLL("user32.dll").NewProc("OpenDesktopW")
 	procCloseWindowStn    = windows.NewLazySystemDLL("user32.dll").NewProc("CloseWindowStation")
@@ -86,7 +87,9 @@ func createAsUser(tok windows.Token, cmdline, workDir string, flags uint32) (pid
 
 // LaunchAsVault вызывается из процесса SYSTEM, уже работающего в сессии пользователя:
 // CreateProcessWithLogonW из LocalSystem недоступна, поэтому вход и права на рабочий стол оформляем сами.
-func LaunchAsVault(user, password, cmdline, workDir string) (pid uint32, process windows.Handle, err error) {
+// Возвращает функцию, которую нужно вызвать после выхода приложения: она выгружает профиль и закрывает вход.
+// Невыгруженный профиль остаётся загруженным в реестре и мешает удалить учётку vault.
+func LaunchAsVault(user, password, cmdline, workDir string) (pid uint32, process windows.Handle, cleanup func(), err error) {
 	u, err := windows.UTF16PtrFromString(user)
 	if err != nil {
 		return
@@ -100,18 +103,26 @@ func LaunchAsVault(user, password, cmdline, workDir string) (pid uint32, process
 	r, _, e := procLogonUser.Call(uintptr(unsafe.Pointer(u)), uintptr(unsafe.Pointer(dom)), uintptr(unsafe.Pointer(pw)),
 		logon32LogonInteractive, logon32ProviderDefault, uintptr(unsafe.Pointer(&tok)))
 	if r == 0 {
-		return 0, 0, e
+		return 0, 0, nil, e
 	}
-	defer func() { _ = tok.Close() }()
 	if err = grantDesktop(tok); err != nil {
+		_ = tok.Close()
 		return
 	}
 	// Без загруженного профиля у приложения нет HKCU.
 	pi := profileInfo{Size: uint32(unsafe.Sizeof(profileInfo{})), Flags: piNoUI, UserName: u}
 	if r, _, e := procLoadUserProfile.Call(uintptr(tok), uintptr(unsafe.Pointer(&pi))); r == 0 {
-		return 0, 0, e
+		_ = tok.Close()
+		return 0, 0, nil, e
 	}
-	pid, process, _, err = createAsUser(tok, cmdline, workDir, 0)
+	cleanup = func() {
+		_, _, _ = procUnloadUserProfile.Call(uintptr(tok), uintptr(pi.Profile))
+		_ = tok.Close()
+	}
+	if pid, process, _, err = createAsUser(tok, cmdline, workDir, 0); err != nil {
+		cleanup()
+		return 0, 0, nil, err
+	}
 	return
 }
 

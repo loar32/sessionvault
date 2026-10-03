@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/loar32/sessionvault/internal/crypto"
@@ -23,10 +24,26 @@ import (
 )
 
 const usage = `sessionvault install [-user имя] [-telegram-exe путь]
-sessionvault import-tdata <путь-к-tdata>
+sessionvault import-tdata [путь-к-tdata]
+sessionvault uninstall
 sessionvault run <профиль>
 sessionvault status
 sessionvault tray`
+
+// Код выхода 3 — основная учётка состоит в администраторах: установщик показывает отдельное сообщение.
+const exitMainUserAdmin = 3
+
+// Окно с результатом закрывается вместе с процессом; в видимых окнах установщика (-pause) ждём Enter, но только
+// когда есть что прочитать: при ошибке и после import-tdata. Иначе тихое удаление повисло бы на пустой паузе.
+var pause bool
+
+func finish(code int) {
+	if pause && ownConsole && (code != 0 || os.Args[1] == "import-tdata") {
+		fmt.Fprint(os.Stderr, "\nНажмите Enter, чтобы закрыть окно...")
+		_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
+	}
+	os.Exit(code)
+}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -34,6 +51,10 @@ func main() {
 		os.Exit(2)
 	}
 	args := os.Args[2:]
+	if i := slices.Index(args, "-pause"); i >= 0 {
+		args = slices.Delete(args, i, i+1)
+		pause = true
+	}
 	switch os.Args[1] {
 	case "service", "prompt", "tray", "launch":
 	default:
@@ -45,6 +66,8 @@ func main() {
 		err = install(args)
 	case "import-tdata":
 		err = importTdata(args)
+	case "uninstall":
+		err = uninstall(args)
 	case "run":
 		err = run(args)
 	case "status":
@@ -63,14 +86,18 @@ func main() {
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "ошибка:", err)
-		os.Exit(1)
+		if errors.Is(err, service.ErrMainUserAdmin) {
+			finish(exitMainUserAdmin)
+		}
+		finish(1)
 	}
+	finish(0)
 }
 
 func install(args []string) error {
 	fs := flag.NewFlagSet("install", flag.ContinueOnError)
 	user := fs.String("user", "", "основная учётка (по умолчанию — вошедшая на консоль)")
-	tg := fs.String("telegram-exe", profiles.Telegram.Exe, "путь к Telegram.exe")
+	tg := fs.String("telegram-exe", "", "путь к Telegram.exe (по умолчанию ищется сам)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -94,14 +121,26 @@ func importTdata(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if fs.NArg() != 1 {
-		return errors.New("укажи путь к tdata")
-	}
 	if !isolation.IsElevated() {
 		return errors.New("нужен запуск от администратора")
 	}
 	if err := isolation.EnablePrivileges("SeTakeOwnershipPrivilege", "SeRestorePrivilege", "SeBackupPrivilege"); err != nil {
 		return err
+	}
+	cfg, err := service.LoadConfig()
+	if err != nil {
+		return fmt.Errorf("конфигурация не прочитана: сначала install: %w", err)
+	}
+	src := service.UserTdata(cfg.MainUser)
+	if fs.NArg() > 1 {
+		return errors.New("укажи один путь к tdata")
+	} else if fs.NArg() == 1 {
+		if src, err = filepath.Abs(fs.Arg(0)); err != nil {
+			return err
+		}
+	}
+	if _, err := os.Stat(src); err != nil {
+		return fmt.Errorf("папка tdata не найдена (%s): укажи путь явно", src)
 	}
 	p := profiles.Telegram
 	v := vault.Vault{Dir: isolation.DataPath(p.Name), DataName: filepath.Base(isolation.WorkPath(p.Name))}
@@ -125,7 +164,7 @@ func importTdata(args []string) error {
 		return err
 	}
 	// Перенос, а не копия: на старом месте открытых данных не остаётся.
-	if err := os.Rename(fs.Arg(0), dst); err != nil {
+	if err := os.Rename(src, dst); err != nil {
 		return err
 	}
 	if err := isolation.ProtectDir(v.Dir); err != nil {
@@ -139,7 +178,38 @@ func importTdata(args []string) error {
 	if err := v.Encrypt(dek); err != nil {
 		return err
 	}
+	// Исходное место нужно удалению программы, чтобы вернуть данные пользователю.
+	if cfg.Origins == nil {
+		cfg.Origins = map[string]string{}
+	}
+	cfg.Origins[p.Name] = src
+	if err := service.SaveConfig(cfg); err != nil {
+		return err
+	}
 	fmt.Println("tdata зашифрована в", v.Dir)
+	return nil
+}
+
+func uninstall(args []string) error {
+	fs := flag.NewFlagSet("uninstall", flag.ContinueOnError)
+	stdin := fs.Bool("password-stdin", false, "")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if !service.Installed() {
+		fmt.Println("SessionVault уже удалён")
+		return nil
+	}
+	fmt.Fprintln(os.Stderr, "Данные приложений будут расшифрованы и возвращены на прежние места.")
+	pw, err := readPassword(*stdin, false)
+	if err != nil {
+		return err
+	}
+	defer crypto.Wipe(pw)
+	if err := service.Uninstall(pw); err != nil {
+		return err
+	}
+	fmt.Println("готово: данные возвращены, SessionVault удалён")
 	return nil
 }
 
@@ -189,11 +259,12 @@ func launch(args []string) error {
 		return err
 	}
 	work := isolation.WorkPath(p.Name)
-	_, proc, err := isolation.LaunchAsVault(isolation.VaultUser, pw, p.CommandLine(work), work)
+	_, proc, cleanup, err := isolation.LaunchAsVault(isolation.VaultUser, pw, p.CommandLine(work), work)
 	if err != nil {
 		return err
 	}
 	_, err = windows.WaitForSingleObject(proc, windows.INFINITE)
+	cleanup()
 	return err
 }
 

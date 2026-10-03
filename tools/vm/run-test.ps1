@@ -246,7 +246,8 @@ using System; using System.Runtime.InteropServices;
 public class W { [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindow(string c, string t);
  [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l); }
 "@
-$h = [W]::FindWindow('SessionVaultTray', 'SessionVault')
+$h = [IntPtr]::Zero
+for ($i = 0; $i -lt 40 -and $h -eq [IntPtr]::Zero; $i++) { $h = [W]::FindWindow('SessionVaultTray', 'SessionVault'); Start-Sleep -Milliseconds 500 }
 [void][W]::PostMessage($h, 0x111, [IntPtr]1001, [IntPtr]0)
 '@
     Set-Content C:\sv\menu.ps1 $ps1 -Encoding UTF8

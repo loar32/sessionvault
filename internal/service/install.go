@@ -6,13 +6,20 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/loar32/sessionvault/internal/isolation"
 	"github.com/loar32/sessionvault/internal/profiles"
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
 	"golang.org/x/sys/windows/svc/mgr"
 )
+
+// Администратор обходит права файлов, поэтому защищать учётку-администратора бессмысленно.
+var ErrMainUserAdmin = errors.New("основная учётка состоит в администраторах, защита не будет работать")
+
+const runKey = `SOFTWARE\Microsoft\Windows\CurrentVersion\Run`
 
 func InstallDir() string {
 	pf := os.Getenv("ProgramFiles")
@@ -24,6 +31,14 @@ func InstallDir() string {
 
 func installedExe() string { return filepath.Join(InstallDir(), "sessionvault.exe") }
 
+func usersDir() string {
+	sd := os.Getenv("SystemDrive")
+	if sd == "" {
+		sd = "C:"
+	}
+	return sd + `\Users`
+}
+
 // Шаги установки обратимы: при ошибке откатываем уже сделанное, не оставляя полуустановленную систему.
 type steps struct{ undo []func() }
 
@@ -31,6 +46,32 @@ func (s *steps) rollback() {
 	for i := len(s.undo) - 1; i >= 0; i-- {
 		s.undo[i]()
 	}
+}
+
+// Где у пользователя лежит Telegram; пусто, если не нашли.
+func findTelegram(user string) string {
+	for _, p := range []string{
+		filepath.Join(usersDir(), user, `AppData\Roaming\Telegram Desktop\Telegram.exe`),
+		filepath.Join(os.Getenv("ProgramFiles"), `Telegram Desktop\Telegram.exe`),
+		filepath.Join(os.Getenv("ProgramFiles(x86)"), `Telegram Desktop\Telegram.exe`),
+	} {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
+}
+
+// Приложение запускает vault, а в профиль пользователя у него доступа нет: exe оттуда копируем в каталог программы.
+func ensureReadableByVault(name, exe string) (string, error) {
+	if !strings.HasPrefix(strings.ToLower(exe), strings.ToLower(usersDir())+`\`) {
+		return exe, nil
+	}
+	dst := filepath.Join(InstallDir(), "apps", name, filepath.Base(exe))
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return "", err
+	}
+	return dst, copyFile(exe, dst)
 }
 
 func Install(mainUser, telegramExe string) (err error) {
@@ -48,7 +89,7 @@ func Install(mainUser, telegramExe string) (err error) {
 		return err
 	}
 	if admin {
-		return fmt.Errorf("%s состоит в администраторах: администратор обходит права файлов, защита не будет работать", mainUser)
+		return fmt.Errorf("%w: %s", ErrMainUserAdmin, mainUser)
 	}
 	m, err := mgr.Connect()
 	if err != nil {
@@ -99,16 +140,30 @@ func Install(mainUser, telegramExe string) (err error) {
 	if err = SaveConfig(Config{MainUser: mainUser, IdleMinutes: defaultIdleMinutes}); err != nil {
 		return err
 	}
-	tg := profiles.Telegram
-	tg.Exe = telegramExe
-	if err = profiles.Save(isolation.ProfilesDir(), tg); err != nil {
-		return err
-	}
 
 	if err = copySelf(); err != nil {
 		return err
 	}
 	st.undo = append(st.undo, func() { _ = os.RemoveAll(InstallDir()) })
+
+	if telegramExe == "" {
+		if telegramExe = findTelegram(mainUser); telegramExe == "" {
+			telegramExe = profiles.Telegram.Exe
+			fmt.Fprintln(os.Stderr, "Telegram не найден: путь к нему можно поправить в", filepath.Join(isolation.ProfilesDir(), "telegram.json"))
+		}
+	}
+	tg := profiles.Telegram
+	if tg.Exe, err = ensureReadableByVault(tg.Name, telegramExe); err != nil {
+		return err
+	}
+	if err = profiles.Save(isolation.ProfilesDir(), tg); err != nil {
+		return err
+	}
+
+	if err = addAutostart(); err != nil {
+		return err
+	}
+	st.undo = append(st.undo, func() { _ = removeAutostart() })
 
 	s, err := m.CreateService(Name, installedExe(), mgr.Config{
 		StartType:   mgr.StartAutomatic,
@@ -125,20 +180,46 @@ func Install(mainUser, telegramExe string) (err error) {
 	return s.Start()
 }
 
+// Трей стартует при входе любого пользователя; чужим учётным записям pipe закрыт, там он покажет «служба недоступна».
+func addAutostart() error {
+	k, _, err := registry.CreateKey(registry.LOCAL_MACHINE, runKey, registry.SET_VALUE)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = k.Close() }()
+	return k.SetStringValue("SessionVaultTray", `"`+installedExe()+`" tray`)
+}
+
+func removeAutostart() error {
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, runKey, registry.SET_VALUE)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = k.Close() }()
+	return k.DeleteValue("SessionVaultTray")
+}
+
 func copySelf() error {
 	self, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(InstallDir(), 0o755); err != nil {
+	if strings.EqualFold(self, installedExe()) {
+		return nil
+	}
+	return copyFile(self, installedExe())
+}
+
+func copyFile(src, dst string) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
-	in, err := os.Open(self)
+	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = in.Close() }()
-	out, err := os.OpenFile(installedExe(), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
 	if err != nil {
 		return err
 	}
