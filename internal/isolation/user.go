@@ -133,7 +133,7 @@ func SavePassword(password string) error {
 	if err != nil {
 		return err
 	}
-	return Protect(passwordFile(), admins, system, admins)
+	return Protect(passwordFile(), admins, system)
 }
 
 func LoadPassword() (string, error) {

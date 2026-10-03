@@ -17,6 +17,14 @@ func BaseDir() string {
 
 func VaultDir() string { return filepath.Join(BaseDir(), "vault") }
 
+// Каталог профиля: метаданные хранилища, доступ только админам и SYSTEM.
 func DataPath(profile string) string { return filepath.Join(VaultDir(), profile) }
+
+// Рабочая папка приложения (-workdir): единственное место, куда у vault есть доступ.
+func WorkPath(profile string) string { return filepath.Join(DataPath(profile), "work") }
+
+func ProfilesDir() string { return filepath.Join(BaseDir(), "profiles") }
+
+func ConfigPath() string { return filepath.Join(BaseDir(), "config.json") }
 
 func passwordFile() string { return filepath.Join(BaseDir(), "vault.pwd") }

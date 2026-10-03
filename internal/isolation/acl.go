@@ -85,10 +85,20 @@ func SetupVaultDir() error {
 	if err := os.MkdirAll(VaultDir(), 0o755); err != nil {
 		return err
 	}
-	return ProtectVault(VaultDir())
+	return ProtectDir(VaultDir())
 }
 
-func ProtectVault(root string) error {
+// Метаданные хранилища: vault не должен их ни читать, ни менять (иначе приложение откатит или подменит data.enc).
+func ProtectDir(root string) error {
+	admins, system, err := adminsAndSystem()
+	if err != nil {
+		return err
+	}
+	return Protect(root, admins, system, admins)
+}
+
+// Рабочая папка приложения: полный доступ у vault, наследуется на содержимое.
+func ProtectWork(root string) error {
 	vault, _, _, err := windows.LookupSID("", VaultUser)
 	if err != nil {
 		return err
