@@ -2,7 +2,7 @@
 
 Offline protection for app sessions against infostealers on Windows.
 
-Статус: v0.4, ранняя версия. Защищён Telegram Desktop.
+Статус: v0.4.1, ранняя версия. Защищён Telegram Desktop.
 
 ## Как это работает
 
