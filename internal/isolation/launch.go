@@ -15,23 +15,24 @@ var procCreateProcessWithLogon = windows.NewLazySystemDLL("advapi32.dll").NewPro
 
 // Запуск через вторичный вход: окна остаются в сессии вызывающего, а процесс работает от vault.
 // Окружение берётся из профиля vault, а не от вызывающего.
-func Launch(user, password, cmdline, workDir string) (uint32, error) {
+// Дескриптор процесса возвращается, чтобы дождаться выхода: открыть чужой процесс по pid не всегда разрешено.
+func Launch(user, password, cmdline, workDir string) (uint32, windows.Handle, error) {
 	u, err := windows.UTF16PtrFromString(user)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	dom, _ := windows.UTF16PtrFromString(".")
 	pw, err := windows.UTF16PtrFromString(password)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	cl, err := windows.UTF16PtrFromString(cmdline)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	wd, err := windows.UTF16PtrFromString(workDir)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	si := windows.StartupInfo{Cb: uint32(unsafe.Sizeof(windows.StartupInfo{}))}
 	var pi windows.ProcessInformation
@@ -40,9 +41,14 @@ func Launch(user, password, cmdline, workDir string) (uint32, error) {
 		logonWithProfile, 0, uintptr(unsafe.Pointer(cl)), createUnicodeEnvironment, 0,
 		uintptr(unsafe.Pointer(wd)), uintptr(unsafe.Pointer(&si)), uintptr(unsafe.Pointer(&pi)))
 	if r == 0 {
-		return 0, e
+		return 0, 0, e
 	}
-	_ = windows.CloseHandle(pi.Process)
 	_ = windows.CloseHandle(pi.Thread)
-	return pi.ProcessId, nil
+	return pi.ProcessId, pi.Process, nil
+}
+
+func WaitExit(h windows.Handle) error {
+	defer func() { _ = windows.CloseHandle(h) }()
+	_, err := windows.WaitForSingleObject(h, windows.INFINITE)
+	return err
 }

@@ -18,12 +18,16 @@ func main() {
 	base := filepath.Join(os.Getenv("ProgramData"), "SessionVault")
 	dir := flag.String("dir", filepath.Join(base, "vault"), "защищённая папка")
 	file := flag.String("file", filepath.Join(base, "vault", "telegram", "tdata", "key_datas"), "защищённый файл")
+	enc := flag.String("enc", filepath.Join(base, "vault", "telegram", "data.enc"), "зашифрованный архив")
+	meta := flag.String("meta", filepath.Join(base, "vault", "telegram", "vault.json"), "метаданные хранилища")
 	pwd := flag.String("pwd", filepath.Join(base, "vault.pwd"), "файл с паролем vault")
 	pid := flag.Uint("pid", 0, "pid процесса vault")
 	flag.Parse()
 
 	checkList(*dir)
 	checkRead(*file)
+	checkRead(*enc)
+	checkRead(*meta)
 	checkRead(*pwd)
 	checkWriteDACL(*dir)
 	if *pid != 0 {
