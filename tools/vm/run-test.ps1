@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$VmName = 'sv-test',
     [string]$Checkpoint = 'clean',
     [string]$AdminPassword = 'Sv-Admin-1!',
@@ -21,6 +21,7 @@ Start-Sleep 20
 
 $a = New-PSSession -VMName $VmName -Credential $admin
 $u = New-PSSession -VMName $VmName -Credential $user
+while (-not (Invoke-Command $a { Get-Process explorer -ErrorAction SilentlyContinue })) { Start-Sleep 2 }
 
 Invoke-Command $a { New-Item -ItemType Directory -Force C:\sv, C:\sv\ctl | Out-Null }
 foreach ($f in 'sessionvault', 'access-check', 'standin') {
@@ -39,7 +40,12 @@ $out = Invoke-Command $a {
     param($tdata)
     & C:\sv\sessionvault.exe setup tester
     & C:\sv\sessionvault.exe import-tdata $tdata
-    & C:\sv\sessionvault.exe run telegram -exe C:\sv\standin.exe
+    # Запуск от vault требует интерактивного рабочего стола, которого нет у сессии PowerShell Direct
+    Remove-Item C:\sv\run.out -ErrorAction SilentlyContinue
+    schtasks /Create /TN svrun /SC ONCE /ST 00:00 /RL HIGHEST /IT /F /TR 'cmd /c C:\sv\sessionvault.exe run telegram -exe C:\sv\standin.exe > C:\sv\run.out 2>&1' 2>$null | Out-Null
+    schtasks /Run /TN svrun 2>$null | Out-Null
+    while (-not (Test-Path C:\sv\run.out) -or -not (Select-String -Path C:\sv\run.out -Pattern 'pid:' -Quiet)) { Start-Sleep 1 }
+    Get-Content C:\sv\run.out
 } -ArgumentList $tdata
 $out
 $vaultPid = ($out | Select-String 'pid: (\d+)').Matches[0].Groups[1].Value
