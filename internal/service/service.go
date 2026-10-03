@@ -68,7 +68,7 @@ func (s *Service) Listen() error {
 	if err != nil {
 		return fmt.Errorf("учётка %q не найдена: %w", s.cfg.MainUser, err)
 	}
-	l, err := ipc.Listen(ipc.CommandPipe, "D:P(A;;GA;;;SY)(A;;GRGW;;;"+sid.String()+")")
+	l, err := ipc.Listen(ipc.CommandPipe, "D:P(A;;GA;;;SY)(A;;0x12019b;;;"+sid.String()+")")
 	if err != nil {
 		return err
 	}
@@ -76,14 +76,32 @@ func (s *Service) Listen() error {
 	return nil
 }
 
+const maxConns = 16
+
+// Права основной учётки на pipe — чтение и запись без FILE_APPEND_DATA (он же CREATE_PIPE_INSTANCE):
+// иначе процесс пользователя мог бы создать свой экземпляр pipe и подменять ответы.
+// Ошибка одного подключения (клиент отвалился на ходу) не должна останавливать приём остальных.
 func (s *Service) Serve() {
+	sem := make(chan struct{}, maxConns)
 	for {
 		c, err := s.cmdL.Accept(0)
 		if err != nil {
-			s.log.Println("pipe команд закрыт:", err)
-			return
+			if s.cmdL.Closed() {
+				return
+			}
+			s.log.Println("pipe команд:", err)
+			time.Sleep(100 * time.Millisecond)
+			continue
 		}
-		go s.handle(c)
+		select {
+		case sem <- struct{}{}:
+			go func() {
+				defer func() { <-sem }()
+				s.handle(c)
+			}()
+		default:
+			c.Close() // слишком много одновременных подключений
+		}
 	}
 }
 
@@ -95,12 +113,13 @@ func (s *Service) Stop() {
 	go func() { s.wg.Wait(); close(done) }()
 	select {
 	case <-done:
+		s.mu.Lock()
+		s.lock()
+		s.mu.Unlock()
 	case <-time.After(30 * time.Second):
+		// Ключи не стираем: их ещё использует шифрование, процесс всё равно завершается.
 		s.log.Println("не все данные успели зашифроваться при остановке")
 	}
-	s.mu.Lock()
-	s.lock()
-	s.mu.Unlock()
 }
 
 func (s *Service) handle(c *ipc.Conn) {

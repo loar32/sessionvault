@@ -88,6 +88,12 @@ const (
 	dialTimeout = 10 * time.Second
 )
 
+const (
+	emSetLimitText = 0xC5
+	// До 4 байт на символ в UTF-8 укладывается в ipc.MaxPassword.
+	maxPasswordChars = 64
+)
+
 var hwndTopmost = ^uintptr(0)
 
 type wndClassEx struct {
@@ -173,6 +179,7 @@ func Run(profile string) error {
 	}
 	child("STATIC", "Мастер-пароль для «"+profile+"»:", 0, 16, 14, 320, 20, 0)
 	edit = child("EDIT", "", wsTabStop|wsBorder|esPassword|esAutoHScrl, 16, 36, 320, 24, idEdit)
+	_, _, _ = pSendMessage.Call(edit, emSetLimitText, maxPasswordChars, 0)
 	status = child("STATIC", "", 0, 16, 66, 320, 20, idStatus)
 	child("BUTTON", "OK", wsTabStop|bsDefPush, 176, 92, 76, 28, idOK)
 	child("BUTTON", "Отмена", wsTabStop, 260, 92, 76, 28, idCancel)

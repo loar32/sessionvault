@@ -163,10 +163,26 @@ func importTdata(args []string) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
+	// Исходное место нужно удалению программы, чтобы вернуть данные пользователю; пишем до переноса.
+	if cfg.Origins == nil {
+		cfg.Origins = map[string]string{}
+	}
+	cfg.Origins[p.Name] = src
+	if err := service.SaveConfig(cfg); err != nil {
+		return err
+	}
 	// Перенос, а не копия: на старом месте открытых данных не остаётся.
 	if err := os.Rename(src, dst); err != nil {
 		return err
 	}
+	// Единственная копия сессии не должна остаться без хранилища: при любой ошибке возвращаем её на место.
+	ok := false
+	defer func() {
+		if !ok {
+			_ = os.Rename(dst, src)
+			_ = os.Remove(filepath.Join(v.Dir, "vault.json"))
+		}
+	}()
 	if err := isolation.ProtectDir(v.Dir); err != nil {
 		return err
 	}
@@ -178,14 +194,7 @@ func importTdata(args []string) error {
 	if err := v.Encrypt(dek); err != nil {
 		return err
 	}
-	// Исходное место нужно удалению программы, чтобы вернуть данные пользователю.
-	if cfg.Origins == nil {
-		cfg.Origins = map[string]string{}
-	}
-	cfg.Origins[p.Name] = src
-	if err := service.SaveConfig(cfg); err != nil {
-		return err
-	}
+	ok = true
 	fmt.Println("tdata зашифрована в", v.Dir)
 	return nil
 }
@@ -268,6 +277,14 @@ func launch(args []string) error {
 	return err
 }
 
+// Службе пароль передаётся строкой не длиннее ipc.MaxPassword: более длинный потом нельзя было бы ввести.
+func checkPasswordLen(pw []byte) error {
+	if len(pw) > ipc.MaxPassword {
+		return fmt.Errorf("пароль длиннее %d байт", ipc.MaxPassword)
+	}
+	return nil
+}
+
 func readPassword(stdin, confirm bool) ([]byte, error) {
 	if stdin {
 		line, err := bufio.NewReader(os.Stdin).ReadBytes('\n')
@@ -278,7 +295,7 @@ func readPassword(stdin, confirm bool) ([]byte, error) {
 		if len(pw) == 0 {
 			return nil, errors.New("пароль не может быть пустым")
 		}
-		return pw, nil
+		return pw, checkPasswordLen(pw)
 	}
 	fmt.Fprint(os.Stderr, "Мастер-пароль: ")
 	pw, err := term.ReadPassword(int(os.Stdin.Fd()))
@@ -288,6 +305,9 @@ func readPassword(stdin, confirm bool) ([]byte, error) {
 	}
 	if len(pw) == 0 {
 		return nil, errors.New("пароль не может быть пустым")
+	}
+	if err := checkPasswordLen(pw); err != nil {
+		return nil, err
 	}
 	if confirm {
 		fmt.Fprint(os.Stderr, "Повтори пароль: ")

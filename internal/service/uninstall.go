@@ -62,6 +62,10 @@ func Uninstall(password []byte) (err error) {
 		}
 		v := vault.Vault{Dir: isolation.DataPath(e.Name()), DataName: filepath.Base(isolation.WorkPath(e.Name()))}
 		if !v.Exists() {
+			// Данные без метаданных (сбой посреди import-tdata): это может быть единственная копия сессии.
+			if _, err := os.Stat(isolation.WorkPath(e.Name())); err == nil {
+				return fmt.Errorf("профиль %s: данные без хранилища, удаление остановлено (папка %s)", e.Name(), v.Dir)
+			}
 			continue
 		}
 		if err = restoreProfile(cfg, user, e.Name(), v, password); err != nil {

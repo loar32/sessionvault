@@ -14,6 +14,9 @@ var procGetClientSession = windows.NewLazySystemDLL("kernel32.dll").NewProc("Get
 
 var ErrTimeout = errors.New("таймаут")
 
+// Явные права вместо GENERIC_WRITE: в него входит FILE_APPEND_DATA (= создание экземпляров pipe), которого у пользователя нет.
+const clientAccess = windows.FILE_READ_DATA | windows.FILE_WRITE_DATA | windows.FILE_READ_ATTRIBUTES | windows.SYNCHRONIZE
+
 // Listener отдаёт соединения одного именованного pipe. DACL задаётся SDDL-строкой.
 // Свободный экземпляр создаётся заранее: иначе между двумя клиентами у pipe нет слушателя и подключение не удаётся.
 type Listener struct {
@@ -108,6 +111,12 @@ func (l *Listener) Accept(timeout time.Duration) (*Conn, error) {
 	return &Conn{h: h}, nil
 }
 
+func (l *Listener) Closed() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.closed
+}
+
 func (l *Listener) Close() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -179,8 +188,19 @@ func (c *Conn) WriteLine(s string) error {
 	return windows.WriteFile(c.h, []byte(s+"\n"), &n, nil)
 }
 
+// Flush ждёт, пока клиент прочитает ответ; клиент, который не читает, не должен держать соединение вечно.
 func (c *Conn) Close() {
+	done := make(chan struct{})
+	tm := time.AfterFunc(5*time.Second, func() {
+		select {
+		case <-done:
+		default:
+			_ = windows.CancelIoEx(c.h, nil)
+		}
+	})
 	_ = windows.FlushFileBuffers(c.h)
+	close(done)
+	tm.Stop()
 	_ = windows.DisconnectNamedPipe(c.h)
 	_ = windows.CloseHandle(c.h)
 }
@@ -193,7 +213,7 @@ func Dial(name string, timeout time.Duration) (*Conn, error) {
 	}
 	end := time.Now().Add(timeout)
 	for {
-		h, err := windows.CreateFile(p, windows.GENERIC_READ|windows.GENERIC_WRITE, 0, nil, windows.OPEN_EXISTING, 0, 0)
+		h, err := windows.CreateFile(p, clientAccess, 0, nil, windows.OPEN_EXISTING, 0, 0)
 		if err == nil {
 			return &Conn{h: h}, nil
 		}

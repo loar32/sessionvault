@@ -108,11 +108,18 @@ func Install(mainUser, telegramExe string) (err error) {
 		}
 	}()
 
+	_, statErr := os.Stat(isolation.BaseDir())
+	existed := statErr == nil
 	// Защита каталога данных ставится до записи секретов: всё созданное дальше наследует закрытый доступ.
 	if err = os.MkdirAll(isolation.ProfilesDir(), 0o755); err != nil {
 		return err
 	}
-	st.undo = append(st.undo, func() { _ = os.RemoveAll(isolation.BaseDir()) })
+	// Откатываем только созданное в этот запуск: при повторной установке в каталоге могут лежать чужие зашифрованные данные.
+	if existed {
+		fmt.Fprintln(os.Stderr, "каталог данных уже существует: прежние хранилища сохраняются")
+	} else {
+		st.undo = append(st.undo, func() { _ = os.RemoveAll(isolation.BaseDir()) })
+	}
 	if err = isolation.ProtectDir(isolation.BaseDir()); err != nil {
 		return err
 	}
@@ -137,7 +144,12 @@ func Install(mainUser, telegramExe string) (err error) {
 	if err = isolation.SetupVaultDir(); err != nil {
 		return err
 	}
-	if err = SaveConfig(Config{MainUser: mainUser, IdleMinutes: defaultIdleMinutes}); err != nil {
+	// При повторной установке сохраняем исходные места данных: без них uninstall не вернёт сессии.
+	cfg := Config{MainUser: mainUser, IdleMinutes: defaultIdleMinutes}
+	if old, e := LoadConfig(); e == nil {
+		cfg.Origins = old.Origins
+	}
+	if err = SaveConfig(cfg); err != nil {
 		return err
 	}
 
