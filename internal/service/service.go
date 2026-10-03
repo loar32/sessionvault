@@ -26,11 +26,12 @@ const (
 )
 
 type Service struct {
-	cfg  Config
-	exe  string
-	log  *log.Logger
-	job  windows.Handle
-	cmdL *ipc.Listener
+	cfg       Config
+	idleAfter time.Duration
+	exe       string
+	log       *log.Logger
+	job       windows.Handle
+	cmdL      *ipc.Listener
 
 	mu        sync.Mutex
 	keys      map[string][]byte // DEK профилей, пока хранилище разблокировано
@@ -45,7 +46,7 @@ func New(cfg Config, exe string, l *log.Logger) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Service{cfg: cfg, exe: exe, log: l, job: job, keys: map[string][]byte{}, running: map[string]bool{}}, nil
+	return &Service{cfg: cfg, idleAfter: time.Duration(cfg.IdleMinutes) * time.Minute, exe: exe, log: l, job: job, keys: map[string][]byte{}, running: map[string]bool{}}, nil
 }
 
 func killOnCloseJob() (windows.Handle, error) {
@@ -247,7 +248,7 @@ func (s *Service) resetIdle() {
 	if len(s.running) > 0 || len(s.keys) == 0 {
 		return
 	}
-	s.idle = time.AfterFunc(time.Duration(s.cfg.IdleMinutes)*time.Minute, func() {
+	s.idle = time.AfterFunc(s.idleAfter, func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		if len(s.running) == 0 {
@@ -309,7 +310,7 @@ func (s *Service) askPassword(name string, v vault.Vault, session uint32) ([]byt
 	if cp, err := c.ClientPID(); err != nil || cp != pid {
 		return nil, errors.New("к pipe пароля подключился чужой процесс")
 	}
-	for range maxAttempts {
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		pw, err := c.ReadBytes(passwordWait, ipc.MaxPassword)
 		if err != nil {
 			return nil, err
@@ -317,9 +318,11 @@ func (s *Service) askPassword(name string, v vault.Vault, session uint32) ([]byt
 		dek, err := v.Unlock(pw)
 		crypto.Wipe(pw)
 		if err == nil {
+			s.log.Printf("%s: хранилище разблокировано (попытка %d)", name, attempt)
 			_ = c.WriteLine(ipc.Ok)
 			return s.keep(name, dek)
 		}
+		s.log.Printf("%s: неверный пароль (попытка %d): %v", name, attempt, err)
 		if !errors.Is(err, vault.ErrWrongPassword) {
 			_ = c.WriteLine(ipc.Failed)
 			return nil, err

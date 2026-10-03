@@ -36,7 +36,6 @@ var (
 	pLoadCursor       = user32.NewProc("LoadCursorW")
 	pGetSystemMetrics = user32.NewProc("GetSystemMetrics")
 	pDestroyWindow    = user32.NewProc("DestroyWindow")
-	pEnableWindow     = user32.NewProc("EnableWindow")
 	pKeybdEvent       = user32.NewProc("keybd_event")
 	pAdjustWindowRect = user32.NewProc("AdjustWindowRectEx")
 	pSetWindowPos     = user32.NewProc("SetWindowPos")
@@ -262,14 +261,12 @@ func submit(hwnd uintptr) {
 	clear(buf)
 	_, _, _ = pSetWindowText.Call(edit, uintptr(unsafe.Pointer(wstr(""))))
 	setStatus("Проверка…")
-	_, _, _ = pEnableWindow.Call(hwnd, 0)
 	err := conn.WriteLine(string(pw))
 	crypto.Wipe(pw)
 	reply := ""
 	if err == nil {
 		reply, err = conn.ReadLine(30*time.Second, ipc.MaxLine)
 	}
-	_, _, _ = pEnableWindow.Call(hwnd, 1)
 	_, _, _ = pSetFocus.Call(edit)
 	switch {
 	case err != nil:

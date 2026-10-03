@@ -25,7 +25,17 @@ while (-not (Invoke-Command $a { (Get-Process explorer -IncludeUserName -ErrorAc
 
 $kb = Get-CimInstance -Namespace root\virtualization\v2 -ClassName Msvm_ComputerSystem -Filter "Name='$((Get-VM $VmName).Id)'" |
     Get-CimAssociatedInstance -ResultClassName Msvm_Keyboard
+$mouse = Get-CimInstance -Namespace root\virtualization\v2 -ClassName Msvm_ComputerSystem -Filter "Name='$((Get-VM $VmName).Id)'" |
+    Get-CimAssociatedInstance -ResultClassName Msvm_SyntheticMouse | Select-Object -First 1
+# Свежая оболочка в первые минуты сама перехватывает передний план, поэтому перед вводом кликаем по полю окна (центр экрана, 1024x768).
+function ClickPrompt() {
+    Invoke-CimMethod $mouse -MethodName SetAbsolutePosition -Arguments @{ HorizontalPosition = [int]32768; VerticalPosition = [int](272 * 65535 / 768) } | Out-Null
+    Start-Sleep -Milliseconds 300
+    Invoke-CimMethod $mouse -MethodName ClickButton -Arguments @{ ButtonIndex = [uint32]1 } | Out-Null
+    Start-Sleep -Milliseconds 700
+}
 function TypeInVm($text) {
+    ClickPrompt
     Invoke-CimMethod $kb -MethodName TypeText -Arguments @{ asciiText = $text } | Out-Null
     Start-Sleep -Milliseconds 500
     Invoke-CimMethod $kb -MethodName PressKey -Arguments @{ keyCode = 13 } | Out-Null
@@ -44,8 +54,9 @@ $v = 'C:\ProgramData\SessionVault\vault\telegram'
 $exe = 'C:\Program Files\SessionVault\sessionvault.exe'
 function AsTester($name, $cmd) {
     [IO.File]::Delete("C:\sv\$name.out")
-    [IO.File]::WriteAllText("C:\sv\$name.cmd", "@echo off`r`n$cmd > C:\sv\$name.out 2>&1`r`necho EXIT=%ERRORLEVEL%>> C:\sv\$name.out`r`n")
-    $act = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument "/c C:\sv\$name.cmd"
+    [IO.File]::WriteAllText("C:\sv\$name.cmd", "@echo off`r`n$cmd > C:\sv\$name.out 2>&1`r`n(echo EXIT=%ERRORLEVEL%) >> C:\sv\$name.out`r`n")
+    # Без видимой консоли: иначе её окно забирает фокус у окна пароля, чего в жизни не бывает.
+    $act = New-ScheduledTaskAction -Execute 'conhost.exe' -Argument "--headless cmd.exe /c C:\sv\$name.cmd"
     $pr = New-ScheduledTaskPrincipal -UserId 'SV-TEST\tester' -LogonType Interactive
     Register-ScheduledTask -TaskName "svt-$name" -Action $act -Principal $pr -Force | Out-Null
     Start-ScheduledTask -TaskName "svt-$name"
@@ -91,7 +102,7 @@ Check ($r.files -eq 'data.enc,vault.json') "в хранилище только �
 
 Write-Host '--- 3. status до разблокировки ---'
 $r = Vm { AsTester 'st' "`"$exe`" status"; Done 'st' | Out-Null; Out 'st' }
-Check ($r -match 'locked') "status: locked ($($r.Trim() -replace '\s+',' '))"
+Check ($r -match '(?m)^locked') "status: locked ($("$r" -replace '\s+',' '))"
 
 Write-Host '--- 4. run: окно пароля, пароль вводится клавиатурой ---'
 Vm { AsTester 'run1' "`"$exe`" run telegram" }
@@ -111,7 +122,7 @@ $r = Vm {
     $p = Standin
     @{ done = $ok; out = (Out 'run1'); user = $p.UserName; session = $p.SessionId; key = (Get-Content "$v\work\tdata\key_datas" -ErrorAction SilentlyContinue); pid = $p.Id }
 }
-Check ($r.out -match 'ok' -and $r.out -match 'EXIT=0') "run вернул ok ($($r.out.Trim() -replace '\s+',' '))"
+Check ($r.out -match 'ok' -and $r.out -match 'EXIT=0') "run вернул ok ($("$($r.out)" -replace '\s+',' '))"
 Check ($r.user -like '*\vault' -and $r.session -ne 0) "приложение от vault в сессии пользователя ($($r.user), сессия $($r.session))"
 Check ($r.key -eq 'secret-session-data') 'данные расшифрованы и совпали'
 $vaultPid = $r.pid
@@ -163,7 +174,7 @@ $r = Vm {
     Stop-Process -Name standin -Force
     WaitFor { (Files) -eq 'data.enc,vault.json' } 60 | Out-Null
     $start = Get-Date
-    $locked = WaitFor { AsTester 'st' "`"$exe`" status"; Done 'st' 20 | Out-Null; (Out 'st') -match 'locked' } 150
+    $locked = WaitFor { AsTester 'st' "`"$exe`" status"; Done 'st' 20 | Out-Null; (Out 'st') -match '(?m)^locked' } 150
     @{ locked = $locked; secs = [int]((Get-Date) - $start).TotalSeconds }
 }
 Check $r.locked "хранилище заблокировалось по бездействию (через $($r.secs) с)"
