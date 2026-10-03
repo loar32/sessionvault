@@ -3,6 +3,7 @@ package tray
 
 import (
 	"errors"
+	"runtime"
 	"syscall"
 	"time"
 	"unsafe"
@@ -149,6 +150,9 @@ func copyUTF16(dst []uint16, s string) {
 
 // Run — цикл окна трея; возвращается при выборе «Выход».
 func Run() error {
+	// Окно принадлежит потоку ОС, на котором создано: без привязки рантайм Go может перенести горутину на другой поток,
+	// и цикл сообщений перестанет получать сообщения окна (оно зависает: «Not Responding»).
+	runtime.LockOSThread()
 	name := wstr(`Local\SessionVaultTray`)
 	m, _, e := pCreateMutex.Call(0, 0, uintptr(unsafe.Pointer(name)))
 	if m == 0 {

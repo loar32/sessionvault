@@ -34,12 +34,34 @@ function ClickPrompt() {
     Invoke-CimMethod $mouse -MethodName ClickButton -Arguments @{ ButtonIndex = [uint32]1 } | Out-Null
     Start-Sleep -Milliseconds 700
 }
-function TypeInVm($text) {
-    ClickPrompt
-    Invoke-CimMethod $kb -MethodName TypeText -Arguments @{ asciiText = $text } | Out-Null
-    Start-Sleep -Milliseconds 500
+# Hyper-V-клавиатура иногда теряет клавиши: то текст не доходит до поля, то пропадает Enter. Результат ввода
+# проверяем по журналу службы (пароль принят или отвергнут) и при необходимости повторяем: Enter, затем заново.
+function LogCount() { Invoke-Command $a { @(Get-Content C:\ProgramData\SessionVault\service.log -Encoding UTF8 -ErrorAction SilentlyContinue | Select-String 'неверный пароль|разблокировано').Count } }
+function PressEnter() {
     Invoke-CimMethod $kb -MethodName PressKey -Arguments @{ keyCode = 13 } | Out-Null
     Invoke-CimMethod $kb -MethodName ReleaseKey -Arguments @{ keyCode = 13 } | Out-Null
+}
+function TypeInVm($text) {
+    $before = LogCount
+    foreach ($step in 'type', 'enter', 'retype', 'enter') {
+        ClickPrompt
+        if ($step -eq 'retype') {
+            foreach ($i in 1..30) {
+                Invoke-CimMethod $kb -MethodName PressKey -Arguments @{ keyCode = 8 } | Out-Null
+                Invoke-CimMethod $kb -MethodName ReleaseKey -Arguments @{ keyCode = 8 } | Out-Null
+            }
+        }
+        if ($step -ne 'enter') {
+            Invoke-CimMethod $kb -MethodName TypeText -Arguments @{ asciiText = $text } | Out-Null
+            Start-Sleep -Milliseconds 1500
+        }
+        PressEnter
+        for ($i = 0; $i -lt 8; $i++) {
+            Start-Sleep 1
+            if ((LogCount) -gt $before) { return }
+        }
+        Write-Host "  (ввод не дошёл до окна, шаг '$step': повтор)"
+    }
 }
 
 Invoke-Command $a { New-Item -ItemType Directory -Force C:\sv | Out-Null }
