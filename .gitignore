@@ -1,0 +1,15 @@
+*.exe
+*.dll
+*.test
+*.out
+/dist/
+/build/
+vendor/
+
+NOTES.md
+PROMO.md
+.dev/
+
+.env
+*.key
+*.pem
