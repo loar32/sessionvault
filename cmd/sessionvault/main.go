@@ -16,6 +16,7 @@ import (
 	"github.com/loar32/sessionvault/internal/profiles"
 	"github.com/loar32/sessionvault/internal/service"
 	"github.com/loar32/sessionvault/internal/ui/prompt"
+	"github.com/loar32/sessionvault/internal/ui/tray"
 	"github.com/loar32/sessionvault/internal/vault"
 	"golang.org/x/sys/windows"
 	"golang.org/x/term"
@@ -24,7 +25,8 @@ import (
 const usage = `sessionvault install [-user имя] [-telegram-exe путь]
 sessionvault import-tdata <путь-к-tdata>
 sessionvault run <профиль>
-sessionvault status`
+sessionvault status
+sessionvault tray`
 
 func main() {
 	if len(os.Args) < 2 {
@@ -32,6 +34,11 @@ func main() {
 		os.Exit(2)
 	}
 	args := os.Args[2:]
+	switch os.Args[1] {
+	case "service", "prompt", "tray", "launch":
+	default:
+		attachConsole()
+	}
 	var err error
 	switch os.Args[1] {
 	case "install":
@@ -44,6 +51,8 @@ func main() {
 		err = status()
 	case "service":
 		err = service.RunService()
+	case "tray":
+		err = tray.Run()
 	case "prompt":
 		err = promptWindow(args)
 	case "launch":

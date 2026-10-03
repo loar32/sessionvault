@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/loar32/sessionvault/internal/isolation"
 	"github.com/loar32/sessionvault/internal/profiles"
@@ -119,6 +120,8 @@ func Install(mainUser, telegramExe string) (err error) {
 	}
 	defer func() { _ = s.Close() }()
 	st.undo = append(st.undo, func() { _ = s.Delete() })
+	// После аварии служба поднимается сама; открытые данные при этом дошифровываются при следующем запуске приложения.
+	_ = s.SetRecoveryActions([]mgr.RecoveryAction{{Type: mgr.ServiceRestart, Delay: 10 * time.Second}}, 86400)
 	return s.Start()
 }
 

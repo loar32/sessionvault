@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"runtime/debug"
 	"sync"
 	"time"
 	"unsafe"
@@ -348,5 +349,7 @@ func OpenLog() (*log.Logger, func(), error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	// Паника службы иначе пропала бы: у службы нет stderr.
+	_ = debug.SetCrashOutput(f, debug.CrashOptions{})
 	return log.New(f, "", log.LstdFlags), func() { _ = f.Close() }, nil
 }

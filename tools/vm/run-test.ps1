@@ -222,5 +222,49 @@ Write-Host '--- 11. защита файлов при закрытом прило
 $r = Vm { AsTester 'ac2' 'C:\sv\access-check.exe -pipe'; Done 'ac2' 120 | Out-Null; Out 'ac2' }
 Check ($r -match 'EXIT=0') 'access-check (+ пробы pipe) из tester: утечек нет'
 
+Write-Host '--- 12. трей ---'
+$r = Vm {
+    $act = New-ScheduledTaskAction -Execute $exe -Argument 'tray'
+    $pr = New-ScheduledTaskPrincipal -UserId 'SV-TEST\tester' -LogonType Interactive
+    Register-ScheduledTask -TaskName 'svt-tray' -Action $act -Principal $pr -Force | Out-Null
+    Start-ScheduledTask -TaskName 'svt-tray'
+    Start-Sleep 5
+    Start-ScheduledTask -TaskName 'svt-tray'   # второй экземпляр должен тихо выйти
+    Start-Sleep 4
+    $tray = @(Get-CimInstance Win32_Process -Filter "Name='sessionvault.exe'" | Where-Object { $_.CommandLine -match 'sessionvault.exe"?\s+tray' })
+    $sid = (Get-LocalUser tester).SID.Value
+    $icon = Get-ChildItem "Registry::HKEY_USERS\$sid\Control Panel\NotifyIconSettings" -ErrorAction SilentlyContinue |
+        Where-Object { (Get-ItemProperty $_.PSPath).ExecutablePath -like '*sessionvault.exe' }
+    @{ count = $tray.Count; session = $tray[0].SessionId; icon = [bool]$icon }
+}
+Check ($r.count -eq 1 -and $r.session -ne 0) "трей запущен в сессии пользователя, второй экземпляр не плодится ($($r.count))"
+Check $r.icon 'Windows зарегистрировала иконку в области уведомлений'
+Vm {
+    $ps1 = @'
+Add-Type @"
+using System; using System.Runtime.InteropServices;
+public class W { [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindow(string c, string t);
+ [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l); }
+"@
+$h = [W]::FindWindow('SessionVaultTray', 'SessionVault')
+[void][W]::PostMessage($h, 0x111, [IntPtr]1001, [IntPtr]0)
+'@
+    Set-Content C:\sv\menu.ps1 $ps1 -Encoding UTF8
+    $act = New-ScheduledTaskAction -Execute 'conhost.exe' -Argument '--headless powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\sv\menu.ps1'
+    $pr = New-ScheduledTaskPrincipal -UserId 'SV-TEST\tester' -LogonType Interactive
+    Register-ScheduledTask -TaskName 'svt-menu' -Action $act -Principal $pr -Force | Out-Null
+    # Пункт меню «Запустить Telegram» = команда 1001 окну трея.
+    Start-ScheduledTask -TaskName 'svt-menu'
+} | Out-Null
+$prompted = WaitPrompt
+if ($prompted) { Start-Sleep 3; TypeInVm $MasterPassword }
+$r = Vm {
+    $up = WaitFor { Standin } 40
+    Start-Sleep 1
+    @{ up = $up; user = (Standin).UserName }
+}
+Check ($r.up -and $r.user -like '*\vault') "пункт меню трея запустил приложение от vault ($($r.user))"
+Vm { Stop-Process -Name standin -Force; WaitFor { (Files) -eq 'data.enc,vault.json' } 60 | Out-Null } | Out-Null
+
 if ($fails.Count -eq 0) { Write-Host 'ТЕСТ ПРОЙДЕН'; exit 0 }
 Write-Host "ТЕСТ ПРОВАЛЕН ($($fails.Count))"; exit 1
