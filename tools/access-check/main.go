@@ -25,7 +25,7 @@ func main() {
 	flag.Parse()
 
 	checkList(*dir)
-	checkRead(*file)
+	checkReadOpen(*file)
 	checkRead(*enc)
 	checkRead(*meta)
 	checkRead(*pwd)
@@ -67,6 +67,16 @@ func checkList(dir string) {
 
 func checkRead(path string) {
 	_, err := os.ReadFile(path)
+	report("чтение "+path, err)
+}
+
+// Открытая копия существует только пока приложение запущено; её отсутствие — нормальное состояние.
+func checkReadOpen(path string) {
+	_, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		fmt.Println("нет файла", path, "(приложение закрыто)")
+		return
+	}
 	report("чтение "+path, err)
 }
 
