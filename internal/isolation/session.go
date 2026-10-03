@@ -39,12 +39,12 @@ func StartInSession(session uint32, cmdline string, suspended bool) (pid uint32,
 	if err = windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_DUPLICATE|windows.TOKEN_QUERY, &cur); err != nil {
 		return
 	}
-	defer cur.Close()
+	defer func() { _ = cur.Close() }()
 	var tok windows.Token
 	if err = windows.DuplicateTokenEx(cur, windows.MAXIMUM_ALLOWED, nil, windows.SecurityIdentification, windows.TokenPrimary, &tok); err != nil {
 		return
 	}
-	defer tok.Close()
+	defer func() { _ = tok.Close() }()
 	if err = windows.SetTokenInformation(tok, windows.TokenSessionId, (*byte)(unsafe.Pointer(&session)), 4); err != nil {
 		return
 	}
@@ -102,7 +102,7 @@ func LaunchAsVault(user, password, cmdline, workDir string) (pid uint32, process
 	if r == 0 {
 		return 0, 0, e
 	}
-	defer tok.Close()
+	defer func() { _ = tok.Close() }()
 	if err = grantDesktop(tok); err != nil {
 		return
 	}
@@ -131,7 +131,7 @@ func grantDesktop(tok windows.Token) error {
 	if h == 0 {
 		return e
 	}
-	defer procCloseWindowStn.Call(h)
+	defer func() { _, _, _ = procCloseWindowStn.Call(h) }()
 	if err := allowObject(windows.Handle(h), sid); err != nil {
 		return err
 	}
@@ -140,7 +140,7 @@ func grantDesktop(tok windows.Token) error {
 	if d == 0 {
 		return e
 	}
-	defer procCloseDesktop.Call(d)
+	defer func() { _, _, _ = procCloseDesktop.Call(d) }()
 	return allowObject(windows.Handle(d), sid)
 }
 
@@ -167,4 +167,24 @@ func allowObject(h windows.Handle, sid *windows.SID) error {
 		return err
 	}
 	return windows.SetSecurityInfo(h, windows.SE_WINDOW_OBJECT, windows.DACL_SECURITY_INFORMATION, nil, nil, acl, nil)
+}
+
+var (
+	procQuerySession = windows.NewLazySystemDLL("wtsapi32.dll").NewProc("WTSQuerySessionInformationW")
+	procWTSFree      = windows.NewLazySystemDLL("wtsapi32.dll").NewProc("WTSFreeMemory")
+)
+
+const wtsUserName = 5
+
+// Имя пользователя, вошедшего на консоль: установщик защищает именно его.
+func ConsoleUser() (string, error) {
+	session := windows.WTSGetActiveConsoleSessionId()
+	var buf *uint16
+	var n uint32
+	r, _, e := procQuerySession.Call(0, uintptr(session), wtsUserName, uintptr(unsafe.Pointer(&buf)), uintptr(unsafe.Pointer(&n)))
+	if r == 0 {
+		return "", e
+	}
+	defer func() { _, _, _ = procWTSFree.Call(uintptr(unsafe.Pointer(buf))) }()
+	return windows.UTF16PtrToString(buf), nil
 }

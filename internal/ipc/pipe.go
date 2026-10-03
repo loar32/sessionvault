@@ -122,8 +122,13 @@ func (c *Conn) ClientSession() (uint32, error) {
 	return s, nil
 }
 
-// Читает одну строку не длиннее MaxLine; длиннее или медленнее timeout — ошибка.
-func (c *Conn) ReadLine(timeout time.Duration) (string, error) {
+func (c *Conn) ReadLine(timeout time.Duration, max int) (string, error) {
+	b, err := c.ReadBytes(timeout, max)
+	return string(b), err
+}
+
+// Читает одну строку не длиннее max; длиннее или медленнее timeout — ошибка. Байты, а не строка: пароль можно затереть.
+func (c *Conn) ReadBytes(timeout time.Duration, max int) ([]byte, error) {
 	var line []byte
 	done := make(chan struct{})
 	tm := time.AfterFunc(timeout, func() {
@@ -141,13 +146,13 @@ func (c *Conn) ReadLine(timeout time.Duration) (string, error) {
 			if err == nil {
 				err = errors.New("pipe закрыт")
 			}
-			return "", err
+			return nil, err
 		}
 		if buf[0] == '\n' {
-			return string(bytes.TrimRight(line, "\r")), nil
+			return bytes.TrimRight(line, "\r"), nil
 		}
-		if len(line) >= MaxLine+1 {
-			return "", errBadRequest
+		if len(line) >= max+1 {
+			return nil, errBadRequest
 		}
 		line = append(line, buf[0])
 	}
@@ -193,5 +198,5 @@ func Call(name, request string, timeout time.Duration) (string, error) {
 	if err := c.WriteLine(request); err != nil {
 		return "", err
 	}
-	return c.ReadLine(timeout)
+	return c.ReadLine(timeout, MaxLine)
 }

@@ -7,20 +7,23 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/signal"
 	"path/filepath"
+	"time"
 
 	"github.com/loar32/sessionvault/internal/crypto"
+	"github.com/loar32/sessionvault/internal/ipc"
 	"github.com/loar32/sessionvault/internal/isolation"
 	"github.com/loar32/sessionvault/internal/profiles"
+	"github.com/loar32/sessionvault/internal/service"
+	"github.com/loar32/sessionvault/internal/ui/prompt"
 	"github.com/loar32/sessionvault/internal/vault"
 	"golang.org/x/sys/windows"
 	"golang.org/x/term"
 )
 
-const usage = `sessionvault setup <основная-учётка>
+const usage = `sessionvault install [-user имя] [-telegram-exe путь]
 sessionvault import-tdata <путь-к-tdata>
-sessionvault run telegram [-exe путь]
+sessionvault run <профиль>
 sessionvault status`
 
 func main() {
@@ -28,16 +31,23 @@ func main() {
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
 	}
+	args := os.Args[2:]
 	var err error
 	switch os.Args[1] {
-	case "setup":
-		err = setup(os.Args[2:])
+	case "install":
+		err = install(args)
 	case "import-tdata":
-		err = importTdata(os.Args[2:])
+		err = importTdata(args)
 	case "run":
-		err = run(os.Args[2:])
+		err = run(args)
 	case "status":
-		status()
+		err = status()
+	case "service":
+		err = service.RunService()
+	case "prompt":
+		err = promptWindow(args)
+	case "launch":
+		err = launch(args)
 	default:
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
@@ -48,52 +58,24 @@ func main() {
 	}
 }
 
-func needElevated() error {
-	if !isolation.IsElevated() {
-		return errors.New("нужен запуск от администратора")
-	}
-	return isolation.EnablePrivileges("SeTakeOwnershipPrivilege", "SeRestorePrivilege", "SeBackupPrivilege")
-}
-
-func setup(args []string) error {
-	if len(args) != 1 {
-		return errors.New("укажи имя основной учётки: sessionvault setup <имя>")
-	}
-	if err := needElevated(); err != nil {
+func install(args []string) error {
+	fs := flag.NewFlagSet("install", flag.ContinueOnError)
+	user := fs.String("user", "", "основная учётка (по умолчанию — вошедшая на консоль)")
+	tg := fs.String("telegram-exe", profiles.Telegram.Exe, "путь к Telegram.exe")
+	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	admin, err := isolation.IsAdminUser(args[0])
-	if err != nil {
-		return err
-	}
-	if admin {
-		return fmt.Errorf("%s состоит в администраторах: администратор обходит права файлов, защита не будет работать", args[0])
-	}
-
-	if err := os.MkdirAll(isolation.BaseDir(), 0o755); err != nil {
-		return err
-	}
-	if !isolation.PasswordSaved() {
-		pw, err := isolation.GeneratePassword()
-		if err != nil {
-			return err
+	if *user == "" {
+		u, err := isolation.ConsoleUser()
+		if err != nil || u == "" {
+			return errors.New("не удалось определить основную учётку: укажи -user")
 		}
-		if err := isolation.CreateUser(isolation.VaultUser, pw); err != nil {
-			return err
-		}
-		if err := isolation.SavePassword(pw); err != nil {
-			return err
-		}
-	} else if !isolation.UserExists(isolation.VaultUser) {
-		return errors.New("пароль vault сохранён, но учётки нет: удали vault.pwd и повтори")
+		*user = u
 	}
-	if err := isolation.HideFromLogon(isolation.VaultUser); err != nil {
+	if err := service.Install(*user, *tg); err != nil {
 		return err
 	}
-	if err := isolation.SetupVaultDir(); err != nil {
-		return err
-	}
-	fmt.Println("готово: учётка vault и защищённая папка", isolation.VaultDir())
+	fmt.Println("готово: служба SessionVault установлена и защищает учётку", *user)
 	return nil
 }
 
@@ -106,18 +88,21 @@ func importTdata(args []string) error {
 	if fs.NArg() != 1 {
 		return errors.New("укажи путь к tdata")
 	}
-	if err := needElevated(); err != nil {
+	if !isolation.IsElevated() {
+		return errors.New("нужен запуск от администратора")
+	}
+	if err := isolation.EnablePrivileges("SeTakeOwnershipPrivilege", "SeRestorePrivilege", "SeBackupPrivilege"); err != nil {
 		return err
 	}
 	p := profiles.Telegram
-	v := vault.Vault{Dir: isolation.DataPath(p.Name), DataName: p.DataDir}
+	v := vault.Vault{Dir: isolation.DataPath(p.Name), DataName: filepath.Base(isolation.WorkPath(p.Name))}
 	if _, err := os.Stat(isolation.VaultDir()); err != nil {
-		return errors.New("защищённой папки нет: сначала setup")
+		return errors.New("защищённой папки нет: сначала install")
 	}
 	if v.Exists() {
 		return fmt.Errorf("хранилище %s уже создано", v.Dir)
 	}
-	dst := filepath.Join(v.Dir, p.DataDir)
+	dst := filepath.Join(isolation.WorkPath(p.Name), p.DataDir)
 	if _, err := os.Stat(dst); err == nil {
 		return fmt.Errorf("%s уже существует", dst)
 	}
@@ -127,14 +112,14 @@ func importTdata(args []string) error {
 	}
 	defer crypto.Wipe(pw)
 
-	if err := os.MkdirAll(v.Dir, 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
 	// Перенос, а не копия: на старом месте открытых данных не остаётся.
 	if err := os.Rename(fs.Arg(0), dst); err != nil {
 		return err
 	}
-	if err := isolation.ProtectVault(v.Dir); err != nil {
+	if err := isolation.ProtectDir(v.Dir); err != nil {
 		return err
 	}
 	dek, err := v.Create(pw)
@@ -149,83 +134,58 @@ func importTdata(args []string) error {
 	return nil
 }
 
+// Клиент pipe службы: запрос на запуск; пароль, если нужен, спросит само окно службы.
 func run(args []string) error {
-	if len(args) < 1 {
+	if len(args) != 1 {
 		return errors.New("укажи профиль: sessionvault run telegram")
 	}
-	p, err := profiles.Get(args[0])
+	resp, err := ipc.Call(ipc.CommandPipe, "run "+args[0], 3*time.Minute)
 	if err != nil {
-		return err
+		return fmt.Errorf("служба недоступна: %w", err)
 	}
-	fs := flag.NewFlagSet("run", flag.ContinueOnError)
-	exe := fs.String("exe", p.Exe, "путь к exe приложения")
-	stdin := fs.Bool("password-stdin", false, "")
-	if err := fs.Parse(args[1:]); err != nil {
-		return err
+	fmt.Println(resp)
+	if resp != ipc.Ok {
+		return errors.New("запуск не выполнен")
 	}
-
-	if err := needElevated(); err != nil {
-		return err
-	}
-	v := vault.Vault{Dir: isolation.DataPath(p.Name), DataName: p.DataDir}
-	if !v.Exists() {
-		return errors.New("хранилища нет: сначала import-tdata")
-	}
-	release, err := v.Lock()
-	if err != nil {
-		return err
-	}
-	defer release()
-
-	pw, err := readPassword(*stdin, false)
-	if err != nil {
-		return err
-	}
-	dek, err := v.Unlock(pw)
-	crypto.Wipe(pw)
-	if err != nil {
-		return err
-	}
-	defer crypto.Wipe(dek)
-	if err := crypto.Lock(dek); err != nil {
-		return err
-	}
-	defer crypto.Unlock(dek)
-
-	lpw, err := isolation.LoadPassword()
-	if err != nil {
-		return fmt.Errorf("пароль vault не прочитан (был setup?): %w", err)
-	}
-	if v.NeedsRecovery() {
-		fmt.Println("после прошлого запуска остались открытые данные, дошифровываю")
-		if err := v.Encrypt(dek); err != nil {
-			return err
-		}
-	}
-	if err := v.Decrypt(dek); err != nil {
-		return err
-	}
-
-	pid, h, err := isolation.Launch(isolation.VaultUser, lpw, p.CommandLine(*exe, v.Dir), v.Dir)
-	if err != nil {
-		return errors.Join(err, v.Encrypt(dek))
-	}
-	if err := isolation.KillOnClose(h); err != nil {
-		_ = windows.TerminateProcess(h, 1)
-		return errors.Join(err, v.Encrypt(dek))
-	}
-	fmt.Println("pid:", pid)
-
-	// Ctrl+C не должен прервать шифрование после выхода приложения.
-	signal.Ignore(os.Interrupt)
-	if err := isolation.WaitExit(h); err != nil {
-		return err
-	}
-	if err := v.Encrypt(dek); err != nil {
-		return err
-	}
-	fmt.Println("приложение закрыто, данные зашифрованы")
 	return nil
+}
+
+func status() error {
+	resp, err := ipc.Call(ipc.CommandPipe, "status", 10*time.Second)
+	if err != nil {
+		return fmt.Errorf("служба недоступна: %w", err)
+	}
+	fmt.Println(resp)
+	return nil
+}
+
+func promptWindow(args []string) error {
+	if len(args) != 1 {
+		return errors.New("укажи профиль")
+	}
+	return prompt.Run(args[0])
+}
+
+// Запускается службой от SYSTEM в сессии пользователя: стартует приложение от vault и ждёт его выхода.
+func launch(args []string) error {
+	if len(args) != 1 {
+		return errors.New("укажи профиль")
+	}
+	p, err := profiles.Load(isolation.ProfilesDir(), args[0])
+	if err != nil {
+		return err
+	}
+	pw, err := isolation.LoadPassword()
+	if err != nil {
+		return err
+	}
+	work := isolation.WorkPath(p.Name)
+	_, proc, err := isolation.LaunchAsVault(isolation.VaultUser, pw, p.CommandLine(work), work)
+	if err != nil {
+		return err
+	}
+	_, err = windows.WaitForSingleObject(proc, windows.INFINITE)
+	return err
 }
 
 func readPassword(stdin, confirm bool) ([]byte, error) {
@@ -234,7 +194,11 @@ func readPassword(stdin, confirm bool) ([]byte, error) {
 		if err != nil && len(line) == 0 {
 			return nil, err
 		}
-		return bytes.TrimRight(line, "\r\n"), nil
+		pw := bytes.TrimRight(line, "\r\n")
+		if len(pw) == 0 {
+			return nil, errors.New("пароль не может быть пустым")
+		}
+		return pw, nil
 	}
 	fmt.Fprint(os.Stderr, "Мастер-пароль: ")
 	pw, err := term.ReadPassword(int(os.Stdin.Fd()))
@@ -259,12 +223,4 @@ func readPassword(stdin, confirm bool) ([]byte, error) {
 		}
 	}
 	return pw, nil
-}
-
-func status() {
-	fmt.Println("учётка vault:", isolation.UserExists(isolation.VaultUser))
-	fmt.Println("пароль сохранён:", isolation.PasswordSaved())
-	_, err := os.Stat(isolation.VaultDir())
-	fmt.Println("папка хранения:", err == nil)
-	fmt.Println("текущий процесс от администратора:", isolation.IsElevated())
 }

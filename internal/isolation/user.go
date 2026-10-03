@@ -28,6 +28,7 @@ var (
 	netapi32             = windows.NewLazySystemDLL("netapi32.dll")
 	procNetUserAdd       = netapi32.NewProc("NetUserAdd")
 	procNetUserGetGroups = netapi32.NewProc("NetUserGetLocalGroups")
+	procNetUserDel       = netapi32.NewProc("NetUserDel")
 )
 
 type userInfo1 struct {
@@ -78,6 +79,17 @@ func CreateUser(name, password string) error {
 		return ErrUserExists
 	}
 	return fmt.Errorf("NetUserAdd: код %d (параметр %d)", r, parmErr)
+}
+
+func DeleteUser(name string) error {
+	n, err := windows.UTF16PtrFromString(name)
+	if err != nil {
+		return err
+	}
+	if r, _, _ := procNetUserDel.Call(0, uintptr(unsafe.Pointer(n))); r != 0 {
+		return fmt.Errorf("NetUserDel: код %d", r)
+	}
+	return nil
 }
 
 func HideFromLogon(name string) error {

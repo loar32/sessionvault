@@ -11,7 +11,8 @@ const (
 	CommandPipe = `\.\pipe\SessionVault`
 	UnlockPipe  = `\.\pipe\SessionVault-unlock`
 
-	MaxLine = 64
+	MaxLine     = 64
+	MaxPassword = 256
 
 	Ok       = "ok"
 	Locked   = "locked"
