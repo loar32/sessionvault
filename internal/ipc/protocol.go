@@ -8,8 +8,8 @@ import (
 )
 
 const (
-	CommandPipe = `\.\pipe\SessionVault`
-	UnlockPipe  = `\.\pipe\SessionVault-unlock`
+	CommandPipe = `\\.\pipe\SessionVault`
+	UnlockPipe  = `\\.\pipe\SessionVault-unlock`
 
 	MaxLine     = 64
 	MaxPassword = 256

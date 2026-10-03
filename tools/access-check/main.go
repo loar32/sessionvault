@@ -8,7 +8,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
+	"github.com/loar32/sessionvault/internal/ipc"
 	"golang.org/x/sys/windows"
 )
 
@@ -17,11 +20,12 @@ var leaks, skipped int
 func main() {
 	base := filepath.Join(os.Getenv("ProgramData"), "SessionVault")
 	dir := flag.String("dir", filepath.Join(base, "vault"), "защищённая папка")
-	file := flag.String("file", filepath.Join(base, "vault", "telegram", "tdata", "key_datas"), "защищённый файл")
+	file := flag.String("file", filepath.Join(base, "vault", "telegram", "work", "tdata", "key_datas"), "защищённый файл")
 	enc := flag.String("enc", filepath.Join(base, "vault", "telegram", "data.enc"), "зашифрованный архив")
 	meta := flag.String("meta", filepath.Join(base, "vault", "telegram", "vault.json"), "метаданные хранилища")
 	pwd := flag.String("pwd", filepath.Join(base, "vault.pwd"), "файл с паролем vault")
 	pid := flag.Uint("pid", 0, "pid процесса vault")
+	pipe := flag.Bool("pipe", false, "пробы pipe службы")
 	flag.Parse()
 
 	checkList(*dir)
@@ -32,6 +36,9 @@ func main() {
 	checkWriteDACL(*dir)
 	if *pid != 0 {
 		checkProcess(uint32(*pid))
+	}
+	if *pipe {
+		checkPipes()
 	}
 
 	fmt.Printf("итог: утечек %d, не проверено %d\n", leaks, skipped)
@@ -100,4 +107,46 @@ func checkProcess(pid uint32) {
 		_ = windows.CloseHandle(h)
 	}
 	report(fmt.Sprintf("чтение памяти процесса %d", pid), err)
+}
+
+// Пробы pipe: служба не должна ни выполнять посторонние команды, ни отдавать данные, ни падать от мусора.
+func checkPipes() {
+	junk := []string{
+		"", " ", "stop", "unlock", "unlock secret", "quit", "shutdown", "status x", "STATUS",
+		"run", "run telegram arg", "run telegram -workdir C:\\", "run ../telegram", `run ..	elegram`, "run nonexistent",
+		"run telegram\x00", "run telegram; calc", "run $(calc)", "run телеграм",
+		strings.Repeat("A", 1<<20), strings.Repeat("run telegram ", 5000),
+	}
+	for _, q := range junk {
+		resp, err := ipc.Call(ipc.CommandPipe, q, 3*time.Second)
+		name := fmt.Sprintf("pipe: запрос %q", short(q))
+		switch {
+		case err != nil || resp == ipc.Failed:
+			fmt.Println("закрыто  ", name)
+		default:
+			leaks++
+			fmt.Println("УТЕЧКА   ", name, "-> ответ", resp)
+		}
+	}
+	if resp, err := ipc.Call(ipc.CommandPipe, "status", 3*time.Second); err != nil || (resp != ipc.Locked && resp != ipc.Unlocked) {
+		leaks++
+		fmt.Println("УТЕЧКА    служба не отвечает после проб:", resp, err)
+	} else {
+		fmt.Println("закрыто   служба жива после проб, отвечает только статусом:", resp)
+	}
+	c, err := ipc.Dial(ipc.UnlockPipe, time.Second)
+	if err == nil {
+		leaks++
+		c.Close()
+		fmt.Println("УТЕЧКА    pipe пароля доступен обычной учётке")
+	} else {
+		fmt.Println("закрыто   pipe пароля:", err)
+	}
+}
+
+func short(s string) string {
+	if len(s) > 30 {
+		return s[:30] + "…"
+	}
+	return s
 }

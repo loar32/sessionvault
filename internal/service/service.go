@@ -78,6 +78,7 @@ func (s *Service) Serve() {
 	for {
 		c, err := s.cmdL.Accept(0)
 		if err != nil {
+			s.log.Println("pipe команд закрыт:", err)
 			return
 		}
 		go s.handle(c)

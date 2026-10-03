@@ -15,13 +15,15 @@ var procGetClientSession = windows.NewLazySystemDLL("kernel32.dll").NewProc("Get
 var ErrTimeout = errors.New("таймаут")
 
 // Listener отдаёт соединения одного именованного pipe. DACL задаётся SDDL-строкой.
+// Свободный экземпляр создаётся заранее: иначе между двумя клиентами у pipe нет слушателя и подключение не удаётся.
 type Listener struct {
 	name  string
 	sa    *windows.SecurityAttributes
 	first bool
 
 	mu      sync.Mutex
-	pending windows.Handle
+	next    windows.Handle // экземпляр, который ждёт следующего клиента
+	pending windows.Handle // экземпляр, на котором сейчас блокирован Accept
 	closed  bool
 }
 
@@ -31,7 +33,11 @@ func Listen(name, sddl string) (*Listener, error) {
 		return nil, err
 	}
 	sa := &windows.SecurityAttributes{Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), SecurityDescriptor: sd}
-	return &Listener{name: name, sa: sa, first: true}, nil
+	l := &Listener{name: name, sa: sa, first: true}
+	if l.next, err = l.newInstance(); err != nil {
+		return nil, err
+	}
+	return l, nil
 }
 
 func (l *Listener) newInstance() (windows.Handle, error) {
@@ -60,10 +66,14 @@ func (l *Listener) Accept(timeout time.Duration) (*Conn, error) {
 		l.mu.Unlock()
 		return nil, errors.New("listener закрыт")
 	}
-	h, err := l.newInstance()
-	if err != nil {
-		l.mu.Unlock()
-		return nil, err
+	h := l.next
+	l.next = 0
+	if h == 0 {
+		var err error
+		if h, err = l.newInstance(); err != nil {
+			l.mu.Unlock()
+			return nil, err
+		}
 	}
 	l.pending = h
 	l.mu.Unlock()
@@ -78,20 +88,22 @@ func (l *Listener) Accept(timeout time.Duration) (*Conn, error) {
 			_ = windows.CancelIoEx(h, nil)
 		})
 	}
-	err = windows.ConnectNamedPipe(h, nil)
+	err := windows.ConnectNamedPipe(h, nil)
 	if tm != nil {
 		tm.Stop()
 	}
 	l.mu.Lock()
+	defer l.mu.Unlock()
 	l.pending = 0
-	expired := timedOut
-	l.mu.Unlock()
 	if err != nil && !errors.Is(err, windows.ERROR_PIPE_CONNECTED) {
 		_ = windows.CloseHandle(h)
-		if expired {
+		if timedOut {
 			return nil, ErrTimeout
 		}
 		return nil, err
+	}
+	if !l.closed {
+		l.next, _ = l.newInstance()
 	}
 	return &Conn{h: h}, nil
 }
@@ -102,6 +114,10 @@ func (l *Listener) Close() {
 	l.closed = true
 	if l.pending != 0 {
 		_ = windows.CancelIoEx(l.pending, nil)
+	}
+	if l.next != 0 {
+		_ = windows.CloseHandle(l.next)
+		l.next = 0
 	}
 }
 

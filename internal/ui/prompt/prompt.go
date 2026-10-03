@@ -41,40 +41,50 @@ var (
 	pAdjustWindowRect = user32.NewProc("AdjustWindowRectEx")
 	pSetWindowPos     = user32.NewProc("SetWindowPos")
 	pGetModuleHandle  = kernel32.NewProc("GetModuleHandleW")
+	pGetThreadID      = kernel32.NewProc("GetCurrentThreadId")
+	pGetForeground    = user32.NewProc("GetForegroundWindow")
+	pGetWindowThread  = user32.NewProc("GetWindowThreadProcessId")
+	pAttachThread     = user32.NewProc("AttachThreadInput")
+	pBringToTop       = user32.NewProc("BringWindowToTop")
+	pGetWindowRect    = user32.NewProc("GetWindowRect")
+	pSetCursorPos     = user32.NewProc("SetCursorPos")
+	pMouseEvent       = user32.NewProc("mouse_event")
 	pGetStockObject   = gdi32.NewProc("GetStockObject")
 )
 
 const (
-	wsCaption   = 0x00C00000
-	wsSysMenu   = 0x00080000
-	wsChild     = 0x40000000
-	wsVisible   = 0x10000000
-	wsTabStop   = 0x00010000
-	wsBorder    = 0x00800000
-	esPassword  = 0x20
-	esAutoHScrl = 0x80
-	bsDefPush   = 0x1
-	wsExTopmost = 0x8
-	wmDestroy   = 0x2
-	wmClose     = 0x10
-	wmSetFont   = 0x30
-	wmCommand   = 0x111
-	idOK        = 1
-	idCancel    = 2
-	idEdit      = 100
-	idStatus    = 101
-	swShow      = 5
-	idcArrow    = 32512
-	defaultGUI  = 17
-	colorWindow = 5
-	vkMenu      = 0x12
-	keyUp       = 0x2
-	swpNoMove   = 0x2
-	swpNoSize   = 0x1
-	smCxScreen  = 0
-	smCyScreen  = 1
-	winWidth    = 360
-	winHeight   = 150
+	wsCaption     = 0x00C00000
+	wsSysMenu     = 0x00080000
+	wsChild       = 0x40000000
+	wsVisible     = 0x10000000
+	wsTabStop     = 0x00010000
+	wsBorder      = 0x00800000
+	esPassword    = 0x20
+	esAutoHScrl   = 0x80
+	bsDefPush     = 0x1
+	wsExTopmost   = 0x8
+	wmDestroy     = 0x2
+	wmClose       = 0x10
+	wmSetFont     = 0x30
+	wmCommand     = 0x111
+	idOK          = 1
+	idCancel      = 2
+	idEdit        = 100
+	idStatus      = 101
+	swShow        = 5
+	idcArrow      = 32512
+	defaultGUI    = 17
+	colorWindow   = 5
+	vkMenu        = 0x12
+	keyUp         = 0x2
+	mouseLeftDown = 0x2
+	mouseLeftUp   = 0x4
+	swpNoMove     = 0x2
+	swpNoSize     = 0x1
+	smCxScreen    = 0
+	smCyScreen    = 1
+	winWidth      = 360
+	winHeight     = 150
 
 	dialTimeout = 10 * time.Second
 )
@@ -170,11 +180,7 @@ func Run(profile string) error {
 
 	_, _, _ = pShowWindow.Call(hwnd, swShow)
 	_, _, _ = pSetWindowPos.Call(hwnd, hwndTopmost, 0, 0, 0, 0, swpNoMove|swpNoSize)
-	// Процесс запущен службой, а не пользователем: чтобы получить фокус, нужен «нажатый» Alt.
-	_, _, _ = pKeybdEvent.Call(vkMenu, 0, 0, 0)
-	_, _, _ = pSetForeground.Call(hwnd)
-	_, _, _ = pKeybdEvent.Call(vkMenu, 0, keyUp, 0)
-	_, _, _ = pSetFocus.Call(edit)
+	focus(hwnd)
 
 	var m msg
 	for {
@@ -189,6 +195,38 @@ func Run(profile string) error {
 		_, _, _ = pDispatchMessage.Call(uintptr(unsafe.Pointer(&m)))
 	}
 	return result
+}
+
+// Процесс запущен службой, а не пользователем, и система не отдаёт ему передний план просто так:
+// присоединяемся к потоку текущего окна переднего плана и «нажимаем» Alt.
+func focus(hwnd uintptr) {
+	fg, _, _ := pGetForeground.Call()
+	fgThread, _, _ := pGetWindowThread.Call(fg, 0)
+	me, _, _ := pGetThreadID.Call()
+	if fgThread != 0 && fgThread != me {
+		_, _, _ = pAttachThread.Call(me, fgThread, 1)
+		defer func() { _, _, _ = pAttachThread.Call(me, fgThread, 0) }()
+	}
+	_, _, _ = pKeybdEvent.Call(vkMenu, 0, 0, 0)
+	_, _, _ = pBringToTop.Call(hwnd)
+	_, _, _ = pSetForeground.Call(hwnd)
+	_, _, _ = pKeybdEvent.Call(vkMenu, 0, keyUp, 0)
+	_, _, _ = pSetFocus.Call(edit)
+	if now, _, _ := pGetForeground.Call(); now != hwnd {
+		click(hwnd)
+	}
+}
+
+// Если система не отдала передний план, активируем окно как это сделал бы пользователь: кликом по нему.
+// Активация по вводу не подпадает под ограничения SetForegroundWindow.
+func click(hwnd uintptr) {
+	var rc rect
+	_, _, _ = pGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&rc)))
+	x, y := uintptr(rc.Left+(rc.Right-rc.Left)/2), uintptr(rc.Top+(rc.Bottom-rc.Top)/2)
+	_, _, _ = pSetCursorPos.Call(x, y)
+	_, _, _ = pMouseEvent.Call(mouseLeftDown, 0, 0, 0, 0)
+	_, _, _ = pMouseEvent.Call(mouseLeftUp, 0, 0, 0, 0)
+	_, _, _ = pSetFocus.Call(edit)
 }
 
 func wndProc(hwnd, message, wparam, lparam uintptr) uintptr {
