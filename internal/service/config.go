@@ -12,6 +12,9 @@ type Config struct {
 	IdleMinutes int    `json:"idle_minutes"`
 	// Откуда импортирована папка данных профиля: при удалении данные возвращаются туда.
 	Origins map[string]string `json:"origins,omitempty"`
+	// Аудит файловой системы включила служба (а не он уже был): при удалении возвращаем как было.
+	AuditByUs  bool    `json:"audit_by_us,omitempty"`
+	DecoyAllow []Allow `json:"decoy_allow,omitempty"`
 }
 
 const defaultIdleMinutes = 15

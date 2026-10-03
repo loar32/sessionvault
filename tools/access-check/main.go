@@ -26,7 +26,12 @@ func main() {
 	pwd := flag.String("pwd", filepath.Join(base, "vault.pwd"), "файл с паролем vault")
 	pid := flag.Uint("pid", 0, "pid процесса vault")
 	pipe := flag.Bool("pipe", false, "пробы pipe службы")
+	decoy := flag.String("decoy", "", "только прочитать приманку по этому пути (вызывает тревогу службы)")
 	flag.Parse()
+
+	if *decoy != "" {
+		os.Exit(readDecoy(*decoy))
+	}
 
 	checkList(*dir)
 	checkReadOpen(*file)
@@ -149,4 +154,22 @@ func short(s string) string {
 		return s[:30] + "…"
 	}
 	return s
+}
+
+// Читает папку так же, как это делает стилер: список файлов и содержимое каждого.
+func readDecoy(path string) int {
+	fmt.Printf("READ_AT=%d\n", time.Now().UnixMilli())
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		fmt.Println("приманка не прочитана:", err)
+		return 2
+	}
+	n := 0
+	for _, e := range entries {
+		if b, err := os.ReadFile(filepath.Join(path, e.Name())); err == nil {
+			n += len(b)
+		}
+	}
+	fmt.Printf("приманка прочитана: %d файлов/папок, %d байт\n", len(entries), n)
+	return 0
 }

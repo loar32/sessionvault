@@ -11,11 +11,13 @@ import (
 	"slices"
 	"time"
 
+	"github.com/loar32/sessionvault/internal/audit"
 	"github.com/loar32/sessionvault/internal/crypto"
 	"github.com/loar32/sessionvault/internal/ipc"
 	"github.com/loar32/sessionvault/internal/isolation"
 	"github.com/loar32/sessionvault/internal/profiles"
 	"github.com/loar32/sessionvault/internal/service"
+	"github.com/loar32/sessionvault/internal/ui/alert"
 	"github.com/loar32/sessionvault/internal/ui/prompt"
 	"github.com/loar32/sessionvault/internal/ui/tray"
 	"github.com/loar32/sessionvault/internal/vault"
@@ -28,6 +30,7 @@ sessionvault import-tdata [путь-к-tdata]
 sessionvault uninstall
 sessionvault run <профиль>
 sessionvault status
+sessionvault alerts
 sessionvault tray`
 
 // Код выхода 3 — основная учётка состоит в администраторах: установщик показывает отдельное сообщение.
@@ -56,7 +59,7 @@ func main() {
 		pause = true
 	}
 	switch os.Args[1] {
-	case "service", "prompt", "tray", "launch":
+	case "service", "prompt", "tray", "launch", "alert":
 	default:
 		attachConsole()
 	}
@@ -78,6 +81,10 @@ func main() {
 		err = tray.Run()
 	case "prompt":
 		err = promptWindow(args)
+	case "alert":
+		err = alertWindow(args)
+	case "alerts":
+		err = alerts()
 	case "launch":
 		err = launch(args)
 	default:
@@ -252,6 +259,32 @@ func promptWindow(args []string) error {
 		return errors.New("укажи профиль")
 	}
 	return prompt.Run(args[0])
+}
+
+func alertWindow(args []string) error {
+	if len(args) != 1 {
+		return errors.New("нет данных тревоги")
+	}
+	return alert.Run(args[0])
+}
+
+// Журнал тревог читают администраторы: у обычных учёток доступа к файлу нет.
+func alerts() error {
+	if audit.IsEnabled() {
+		fmt.Println("аудит чтения файлов: включён")
+	} else {
+		fmt.Println("аудит чтения файлов: НЕ работает (приманка не сработает)")
+	}
+	b, err := os.ReadFile(service.AlertsPath())
+	if os.IsNotExist(err) {
+		fmt.Println("тревог не было")
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	fmt.Print(string(b))
+	return nil
 }
 
 // Запускается службой от SYSTEM в сессии пользователя: стартует приложение от vault и ждёт его выхода.

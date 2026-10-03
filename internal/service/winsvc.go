@@ -13,6 +13,7 @@ type handler struct{ s *Service }
 func (h handler) Execute(_ []string, r <-chan svc.ChangeRequest, st chan<- svc.Status) (bool, uint32) {
 	st <- svc.Status{State: svc.StartPending}
 	go h.s.Serve()
+	go h.s.StartTraps()
 	st <- svc.Status{State: svc.Running, Accepts: svc.AcceptStop | svc.AcceptShutdown}
 	for c := range r {
 		switch c.Cmd {

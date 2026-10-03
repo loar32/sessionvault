@@ -73,6 +73,7 @@ const (
 	stateDown     = iota // служба недоступна
 	stateLocked          // ключи не в памяти: защищено
 	stateUnlocked        // ключи в памяти службы
+	stateAlarm           // недавно прочитана приманка
 )
 
 type wndClassEx struct {
@@ -129,10 +130,10 @@ type notifyIcon struct {
 
 var (
 	hwnd        uintptr
-	icons       [3]uintptr
+	icons       [4]uintptr
 	state       = stateDown
 	taskbarMsg  uintptr
-	stateTitles = [3]string{"SessionVault: служба недоступна", "SessionVault: заблокировано", "SessionVault: открыто"}
+	stateTitles = [4]string{"SessionVault: служба недоступна", "SessionVault: заблокировано", "SessionVault: открыто", "SessionVault: ТРЕВОГА, прочитана приманка"}
 )
 
 func wstr(s string) *uint16 {
@@ -156,7 +157,7 @@ func Run() error {
 	if errors.Is(e, windows.ERROR_ALREADY_EXISTS) {
 		return errors.New("трей уже запущен")
 	}
-	for i, c := range [3]uint32{0xff8a8a8a, 0xff2e9e4f, 0xffe08a1e} { // серый, зелёный, оранжевый
+	for i, c := range [4]uint32{0xff8a8a8a, 0xff2e9e4f, 0xffe08a1e, 0xffd62b2b} { // серый, зелёный, оранжевый, красный
 		icons[i] = makeIcon(c)
 	}
 	taskbarMsg, _, _ = pRegisterMessage.Call(uintptr(unsafe.Pointer(wstr("TaskbarCreated"))))
@@ -243,6 +244,8 @@ func poll() {
 			s = stateLocked
 		case resp == ipc.Unlocked:
 			s = stateUnlocked
+		case resp == ipc.Alarm:
+			s = stateAlarm
 		}
 		_, _, _ = pPostMessage.Call(hwnd, wmState, uintptr(s), 0)
 		time.Sleep(pollEvery)

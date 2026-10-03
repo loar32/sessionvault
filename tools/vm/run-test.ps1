@@ -267,5 +267,92 @@ $r = Vm {
 Check ($r.up -and $r.user -like '*\vault') "пункт меню трея запустил приложение от vault ($($r.user))"
 Vm { Stop-Process -Name standin -Force; WaitFor { (Files) -eq 'data.enc,vault.json' } 60 | Out-Null } | Out-Null
 
+Write-Host '--- 13. приманка на прежнем месте tdata ---'
+# Проверки приманки читают только атрибуты и права: любое чтение содержимого или списка файлов (даже администратором) — тревога.
+$dec = 'C:\Users\tester\AppData\Roaming\TestTelegram\tdata'
+$r = Vm {
+    param($d)
+    $up = WaitFor { Test-Path "$d\key_datas" } 60
+    Start-Sleep 2
+    $len = (Get-Item "$d\key_datas" -ErrorAction SilentlyContinue).Length
+    @{
+        up = $up; len = $len; owner = (Get-Acl $d).Owner
+        parts = @('D877F783D5D3EF8Cs', 'D877F783D5D3EF8C\maps', 'settingss', 'usertag' | ForEach-Object { Test-Path "$d\$_" }) -notcontains $false
+        sacl = $(try { @((Get-Acl $d -Audit -ErrorAction Stop).Audit).Count -gt 0 } catch { $false })
+        policy = ((auditpol /get /subcategory:"File System") -join ' ')
+        alerts = (Test-Path C:\ProgramData\SessionVault\alerts.log)
+        key = (Test-Path "C:\ProgramData\SessionVault\vault\telegram\work\tdata\key_datas")
+    }
+} @($dec)
+Check ($r.up -and $r.len -ge 1500 -and $r.len -le 3500 -and $r.parts) "приманка появилась, структура как у tdata (key_datas $($r.len) Б)"
+Check ($r.owner -like '*tester') "владелец приманки — основная учётка ($($r.owner))"
+Check $r.sacl 'на приманке стоит аудит чтения (SACL)'
+Check ($r.policy -match 'Success|Успех') 'политика аудита файловой системы включена'
+Check (-not $r.alerts) 'ложных тревог нет (Defender и оболочка приманку не задели)'
+
+Write-Host '  белый список: процесс из config.json читает приманку без тревоги'
+$r = Vm {
+    param($d)
+    Stop-Service SessionVault
+    $c = Get-Content C:\ProgramData\SessionVault\config.json -Raw | ConvertFrom-Json
+    $c | Add-Member -NotePropertyName decoy_allow -NotePropertyValue @(@{ path = 'C:\Program Files\SessionVault\ac-allowed.exe' }) -Force
+    $c | ConvertTo-Json -Depth 5 | Set-Content C:\ProgramData\SessionVault\config.json
+    Copy-Item C:\sv\access-check.exe 'C:\Program Files\SessionVault\ac-allowed.exe'
+    Start-Service SessionVault
+    Start-Sleep 4
+    AsTester 'okc' "`"C:\Program Files\SessionVault\ac-allowed.exe`" -decoy `"$d`""
+    Done 'okc' 30 | Out-Null
+    Start-Sleep 5
+    @{ out = (Out 'okc'); alerts = (Test-Path C:\ProgramData\SessionVault\alerts.log) }
+} @($dec)
+Check ($r.out -match 'приманка прочитана') "процесс из белого списка прочитал приманку ($("$($r.out)" -replace '\s+',' '))"
+Check (-not $r.alerts) 'тревоги нет'
+
+Write-Host '  тревога: стилер-имитация читает приманку, пока приложение открыто'
+Vm { AsTester 'run6' "`"$exe`" run telegram" }
+Check (WaitPrompt) 'окно пароля (после перезапуска службы)'
+Start-Sleep 3
+TypeInVm $MasterPassword
+$r = Vm { Done 'run6' 90 | Out-Null; @{ up = [bool](WaitFor { Standin } 30) } }
+Check $r.up 'приложение запущено от vault'
+$r = Vm {
+    param($d)
+    AsTester 'dc' "C:\sv\access-check.exe -decoy `"$d`""
+    WaitFor { (Out 'dc') -match 'READ_AT=\d+' } 30 | Out-Null
+    $readAt = [int64][regex]::Match((Out 'dc'), 'READ_AT=(\d+)').Groups[1].Value
+    $end = (Get-Date).AddSeconds(15)
+    while ((Get-Date) -lt $end -and (Standin)) { Start-Sleep -Milliseconds 20 }
+    $deadAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    $appDead = -not (Standin)
+    $enc = WaitFor { (Files) -eq 'data.enc,vault.json' } 30
+    $lockedAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    AsTester 'st' "`"$exe`" status"; Done 'st' | Out-Null
+    $line = Get-Content C:\ProgramData\SessionVault\alerts.log -Encoding UTF8 -ErrorAction SilentlyContinue | Select-Object -First 1
+    $win = @(Get-CimInstance Win32_Process -Filter "Name='sessionvault.exe'" | Where-Object { $_.CommandLine -like '* alert *' })
+    @{ ms = ($deadAt - $readAt); appDead = $appDead; enc = $enc; files = (Files); st = (Out 'st'); line = $line; win = $win.Count; winSession = $win[0].SessionId; lockedMs = ($lockedAt - $readAt) }
+} @($dec)
+Check ($r.appDead -and $r.ms -lt 2000) "приложение закрыто через $($r.ms) мс после чтения приманки (нужно < 2000)"
+Check $r.enc "данные зашифрованы обратно (через $($r.lockedMs) мс; на диске: $($r.files))"
+Check ($r.st -match '(?m)^alarm') "status: alarm ($("$($r.st)" -replace '\s+',' '))"
+Check ($r.line -match 'access-check\.exe' -and $r.line -match '[0-9a-f]{64}') "в журнале тревог процесс, путь и SHA-256: $($r.line)"
+Check ($r.win -ge 1 -and $r.winSession -ne 0) "окно тревоги показано в сессии пользователя ($($r.win), сессия $($r.winSession))"
+& "$PSScriptRoot\screenshot.ps1" -VmName $VmName -Path "$env:TEMP\sv-alarm.png" | Out-Null
+Write-Host "  снимок экрана: $env:TEMP\sv-alarm.png"
+Vm { Get-CimInstance Win32_Process -Filter "Name='sessionvault.exe'" | Where-Object { $_.CommandLine -like '* alert *' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force } } | Out-Null
+
+Write-Host '  после тревоги служба работает: хранилище заблокировано, запуск снова просит пароль'
+Vm { AsTester 'run7' "`"$exe`" run telegram" }
+Check (WaitPrompt) 'окно пароля после тревоги'
+Start-Sleep 3
+TypeInVm $MasterPassword
+$r = Vm {
+    Done 'run7' 90 | Out-Null
+    $up = WaitFor { Standin } 30
+    Start-Sleep 2
+    @{ up = [bool]$up; key = (Get-Content "C:\ProgramData\SessionVault\vault\telegram\work\tdata\key_datas" -ErrorAction SilentlyContinue) }
+}
+Check ($r.up -and $r.key -eq 'secret-session-data') 'после тревоги приложение снова запускается, данные целы'
+Vm { Stop-Process -Name standin -Force; WaitFor { (Files) -eq 'data.enc,vault.json' } 60 | Out-Null } | Out-Null
+
 if ($fails.Count -eq 0) { Write-Host 'ТЕСТ ПРОЙДЕН'; exit 0 }
 Write-Host "ТЕСТ ПРОВАЛЕН ($($fails.Count))"; exit 1

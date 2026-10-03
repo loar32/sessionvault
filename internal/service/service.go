@@ -10,6 +10,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/loar32/sessionvault/internal/audit"
 	"github.com/loar32/sessionvault/internal/crypto"
 	"github.com/loar32/sessionvault/internal/ipc"
 	"github.com/loar32/sessionvault/internal/isolation"
@@ -31,8 +32,18 @@ type Service struct {
 	idleAfter time.Duration
 	exe       string
 	log       *log.Logger
-	job       windows.Handle
+	job       windows.Handle // под mu: после тревоги заменяется новым
 	cmdL      *ipc.Listener
+
+	allow     allowlist
+	stopAudit func()
+	quit      chan struct{}
+	trapMu    sync.Mutex
+	watch     map[string]bool // папки приманок в формате устройства
+	events    chan audit.Read
+	quitOnce  sync.Once
+	alarmAt   time.Time
+	warned    map[string]bool
 
 	mu        sync.Mutex
 	keys      map[string][]byte // DEK профилей, пока хранилище разблокировано
@@ -47,7 +58,7 @@ func New(cfg Config, exe string, l *log.Logger) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Service{cfg: cfg, idleAfter: time.Duration(cfg.IdleMinutes) * time.Minute, exe: exe, log: l, job: job, keys: map[string][]byte{}, running: map[string]bool{}}, nil
+	return &Service{cfg: cfg, idleAfter: time.Duration(cfg.IdleMinutes) * time.Minute, exe: exe, log: l, job: job, keys: map[string][]byte{}, running: map[string]bool{}, quit: make(chan struct{}), events: make(chan audit.Read, eventQueue), warned: map[string]bool{}}, nil
 }
 
 func killOnCloseJob() (windows.Handle, error) {
@@ -107,8 +118,11 @@ func (s *Service) Serve() {
 
 // Остановка: закрытие job убивает приложения, затем данные шифруются кэшированными ключами.
 func (s *Service) Stop() {
+	s.stopTraps()
 	s.cmdL.Close()
+	s.mu.Lock()
 	_ = windows.CloseHandle(s.job)
+	s.mu.Unlock()
 	done := make(chan struct{})
 	go func() { s.wg.Wait(); close(done) }()
 	select {
@@ -142,6 +156,9 @@ func (s *Service) handle(c *ipc.Conn) {
 }
 
 func (s *Service) state() string {
+	if s.alarmed() {
+		return ipc.Alarm
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(s.keys) == 0 {
@@ -222,7 +239,7 @@ func (s *Service) start(p profiles.Profile, v vault.Vault, dek []byte, session u
 		unlock()
 		return "", errors.Join(err, v.Encrypt(dek))
 	}
-	if err := windows.AssignProcessToJobObject(s.job, proc); err != nil {
+	if err := windows.AssignProcessToJobObject(s.jobHandle(), proc); err != nil {
 		_ = windows.TerminateProcess(proc, 1)
 		_ = windows.CloseHandle(proc)
 		_ = windows.CloseHandle(thread)
@@ -371,4 +388,10 @@ func OpenLog() (*log.Logger, func(), error) {
 	// Паника службы иначе пропала бы: у службы нет stderr.
 	_ = debug.SetCrashOutput(f, debug.CrashOptions{})
 	return log.New(f, "", log.LstdFlags), func() { _ = f.Close() }, nil
+}
+
+func (s *Service) jobHandle() windows.Handle {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.job
 }

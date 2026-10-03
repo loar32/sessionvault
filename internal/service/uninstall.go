@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/loar32/sessionvault/internal/audit"
 	"github.com/loar32/sessionvault/internal/crypto"
+	"github.com/loar32/sessionvault/internal/decoy"
 	"github.com/loar32/sessionvault/internal/isolation"
 	"github.com/loar32/sessionvault/internal/profiles"
 	"github.com/loar32/sessionvault/internal/vault"
@@ -22,7 +24,7 @@ func Uninstall(password []byte) (err error) {
 	if !isolation.IsElevated() {
 		return errors.New("нужен запуск от администратора")
 	}
-	if err := isolation.EnablePrivileges("SeTakeOwnershipPrivilege", "SeRestorePrivilege", "SeBackupPrivilege"); err != nil {
+	if err := isolation.EnablePrivileges("SeTakeOwnershipPrivilege", "SeRestorePrivilege", "SeBackupPrivilege", "SeSecurityPrivilege"); err != nil {
 		return err
 	}
 	cfg, err := LoadConfig()
@@ -74,6 +76,9 @@ func Uninstall(password []byte) (err error) {
 	}
 
 	// Данные возвращены: дальше откатываться нечему, ошибки не прерывают удаление.
+	if cfg.AuditByUs {
+		_ = audit.DisableFileSystem()
+	}
 	if s, e := m.OpenService(Name); e == nil {
 		_ = s.Delete()
 		_ = s.Close()
@@ -102,6 +107,10 @@ func restoreProfile(cfg Config, user *windows.SID, name string, v vault.Vault, p
 		return err
 	}
 	defer crypto.Wipe(dek)
+	// Приманка занимает место, куда вернутся настоящие данные; чужую папку тут не трогаем: ниже её отложат в сторону.
+	if err := decoy.Remove(name, origin); err != nil && !errors.Is(err, decoy.ErrForeign) {
+		return err
+	}
 	// Открытая копия после сбоя свежее архива: её и возвращаем.
 	if !v.NeedsRecovery() {
 		if err := v.Decrypt(dek); err != nil {

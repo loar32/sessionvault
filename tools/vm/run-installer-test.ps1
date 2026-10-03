@@ -72,6 +72,7 @@ $hash = Invoke-Command $a {
     Set-Content "$d\tdata\emoji\cache" 'cache'
     (Get-FileHash "$d\tdata\key_datas").Hash
 }
+$pol0 = Invoke-Command $a { (auditpol /get /subcategory:"File System") -join ' ' }
 
 Write-Host '--- 1. установка под учётку-администратора отклоняется ---'
 $r = Vm { & C:\sv\sessionvault.exe install -user svadmin 2>&1 | Out-Null; @{ code = $LASTEXITCODE; svc = [bool](Get-Service SessionVault -ErrorAction SilentlyContinue); dir = (Test-Path C:\ProgramData\SessionVault) } }
@@ -100,11 +101,18 @@ $r = Vm {
     param($pw)
     $pw | & $exe import-tdata -password-stdin | Out-Null
     $cfg = Get-Content C:\ProgramData\SessionVault\config.json -Raw | ConvertFrom-Json
-    @{ files = (Files); old = (Test-Path 'C:\Users\tester\AppData\Roaming\Telegram Desktop\tdata'); origin = $cfg.origins.telegram }
+    @{ files = (Files); old = (Test-Path 'C:\Users\tester\AppData\Roaming\Telegram Desktop\tdata\emoji\cache'); origin = $cfg.origins.telegram }
 } @($MasterPassword)
 Check ($r.files -eq 'data.enc,vault.json') "в хранилище только шифр (есть: $($r.files))"
 Check (-not $r.old) 'открытой tdata у пользователя не осталось'
 Check ($r.origin -like '*Telegram Desktop\tdata') "исходный путь записан ($($r.origin))"
+
+$r = Vm {
+    $d = 'C:\Users\tester\AppData\Roaming\Telegram Desktop\tdata'
+    $up = WaitFor { Test-Path "$d\key_datas" } 60
+    @{ up = $up; len = (Get-Item "$d\key_datas" -ErrorAction SilentlyContinue).Length; real = (Test-Path "$d\emoji") }
+}
+Check ($r.up -and $r.len -ge 1500 -and $r.len -le 3500 -and -not $r.real) "на месте tdata появилась приманка ($($r.len) Б), настоящих данных там нет"
 
 Write-Host '--- 4. запуск Telegram из трея ---'
 Vm {
@@ -170,12 +178,14 @@ $r = Vm {
         run = [bool](Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run' -Name SessionVaultTray -ErrorAction SilentlyContinue)
         profile = (Test-Path C:\Users\vault)
         apps = (Test-Path "$pf\apps")
+        pol = ((auditpol /get /subcategory:"File System") -join ' ')
     }
 } @($MasterPassword)
 Check ($r.code -eq 0) "uninstall с верным паролем успешен (код $($r.code))"
 Check ($r.hash -eq $hash -and $r.cache) 'tdata вернулась на прежнее место, содержимое то же'
 Check (-not $r.svc -and -not $r.user -and -not $r.data -and -not $r.run) 'служба, учётка vault, ProgramData и автозапуск удалены'
 Check (-not $r.profile -and -not $r.apps) 'профиль vault и копия Telegram убраны'
+Check ($r.pol -eq $pol0) 'политика аудита файловой системы возвращена как была'
 $r = Invoke-Command $a -ArgumentList $tester {
     param($cred)
     $key = 'C:\Users\tester\AppData\Roaming\Telegram Desktop\tdata\key_datas'

@@ -18,7 +18,9 @@ const (
 	Locked   = "locked"
 	Unlocked = "unlocked"
 	Busy     = "busy"
-	Failed   = "error"
+	// Только в ответе на status: недавно прочитана приманка.
+	Alarm  = "alarm"
+	Failed = "error"
 )
 
 type Request struct {
