@@ -118,10 +118,10 @@ $r = Vm {
     if (-not (WaitOut 'pid:')) { return @{ started = $false } }
     $p = RunPid; Start-Sleep 2
     Stop-Process -Name sessionvault -Force
-    Stop-Process -Id $p -Force
     Start-Sleep 3
-    @{ started = $true; files = (Files) }
+    @{ started = $true; appAlive = [bool](Get-Process -Id $p -ErrorAction SilentlyContinue); files = (Files) }
 } @($MasterPassword)
+Check (-not $r.appAlive) 'приложение завершилось вместе с sessionvault (job object)'
 Check ($r.files -match 'tdata' -and $r.files -match 'open') "после сбоя остались открытые данные и маркер (есть: $($r.files))"
 $r = Vm {
     param($pw)

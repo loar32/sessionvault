@@ -6,6 +6,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -142,5 +144,21 @@ func TestUnpackRejectsSymlink(t *testing.T) {
 	_ = tw.Close()
 	if err := unpackDir(buf.Bytes(), filepath.Join(t.TempDir(), "d")); err == nil {
 		t.Fatal("симлинк принят")
+	}
+}
+
+func TestUnlockRejectsBadParams(t *testing.T) {
+	v := newVault(t)
+	if _, err := v.Create([]byte("pw")); err != nil {
+		t.Fatal(err)
+	}
+	b := read(t, v.path(metaFile))
+	for _, bad := range []string{`"Memory":4194304`, `"Memory":1`, `"Time":0`, `"Threads":0`} {
+		key := bad[:strings.Index(bad, ":")]
+		re := regexp.MustCompile(key + `:\d+`)
+		write(t, v.path(metaFile), re.ReplaceAllString(b, bad))
+		if _, err := v.Unlock([]byte("pw")); err == nil || errors.Is(err, ErrWrongPassword) {
+			t.Fatalf("параметры %s приняты или приняты за неверный пароль: %v", bad, err)
+		}
 	}
 }

@@ -88,6 +88,11 @@ func (v Vault) Unlock(password []byte) ([]byte, error) {
 	if m.Version != 1 {
 		return nil, fmt.Errorf("версия хранилища %d не поддерживается", m.Version)
 	}
+	// Файл читается до проверки пароля: огромные параметры вывода ключа не должны выбить память.
+	if len(m.Salt) != crypto.SaltSize || m.Params.Time < 1 || m.Params.Time > 20 ||
+		m.Params.Threads < 1 || m.Params.Memory < 8*1024 || m.Params.Memory > 1024*1024 {
+		return nil, errors.New("vault.json повреждён: недопустимые параметры")
+	}
 	kek := crypto.DeriveKey(password, m.Salt, m.Params)
 	defer crypto.Wipe(kek)
 	dek, err := crypto.Open(kek, m.WrappedDEK)
@@ -133,7 +138,7 @@ func (v Vault) Decrypt(dek []byte) error {
 		return err
 	}
 	if err := unpackDir(tar, v.dataDir()); err != nil {
-		return err
+		return errors.Join(err, removeAll(v.dataDir()))
 	}
 	return os.WriteFile(v.path(openFile), nil, 0o600)
 }
@@ -156,7 +161,20 @@ func removeAll(path string) error {
 
 func writeAtomic(path string, b []byte) error {
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	// Sync до rename: после потери питания на месте data.enc не должно оказаться пустого файла.
+	if _, err := f.Write(b); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
 		return err
 	}
 	return retry(func() error { return os.Rename(tmp, path) })

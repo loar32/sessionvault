@@ -14,6 +14,7 @@ import (
 	"github.com/loar32/sessionvault/internal/isolation"
 	"github.com/loar32/sessionvault/internal/profiles"
 	"github.com/loar32/sessionvault/internal/vault"
+	"golang.org/x/sys/windows"
 	"golang.org/x/term"
 )
 
@@ -110,6 +111,9 @@ func importTdata(args []string) error {
 	}
 	p := profiles.Telegram
 	v := vault.Vault{Dir: isolation.DataPath(p.Name), DataName: p.DataDir}
+	if _, err := os.Stat(isolation.VaultDir()); err != nil {
+		return errors.New("защищённой папки нет: сначала setup")
+	}
 	if v.Exists() {
 		return fmt.Errorf("хранилище %s уже создано", v.Dir)
 	}
@@ -188,6 +192,10 @@ func run(args []string) error {
 	}
 	defer crypto.Unlock(dek)
 
+	lpw, err := isolation.LoadPassword()
+	if err != nil {
+		return fmt.Errorf("пароль vault не прочитан (был setup?): %w", err)
+	}
 	if v.NeedsRecovery() {
 		fmt.Println("после прошлого запуска остались открытые данные, дошифровываю")
 		if err := v.Encrypt(dek); err != nil {
@@ -198,12 +206,12 @@ func run(args []string) error {
 		return err
 	}
 
-	lpw, err := isolation.LoadPassword()
-	if err != nil {
-		return fmt.Errorf("пароль vault не прочитан (был setup?): %w", err)
-	}
 	pid, h, err := isolation.Launch(isolation.VaultUser, lpw, p.CommandLine(*exe, v.Dir), v.Dir)
 	if err != nil {
+		return errors.Join(err, v.Encrypt(dek))
+	}
+	if err := isolation.KillOnClose(h); err != nil {
+		_ = windows.TerminateProcess(h, 1)
 		return errors.Join(err, v.Encrypt(dek))
 	}
 	fmt.Println("pid:", pid)
