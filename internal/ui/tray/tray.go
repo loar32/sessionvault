@@ -5,6 +5,7 @@ import (
 	"errors"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -70,7 +71,9 @@ const (
 	maxMenuApps   = 16
 	idHello       = 1050
 	idExit        = 1100
-	pollEvery     = 2 * time.Second
+	pollEvery     = 2 * time.Second  // частый опрос: после действия пользователя, чтобы иконка не отставала
+	pollIdle      = 10 * time.Second // обычный опрос в простое
+	pollFastFor   = time.Minute
 	iconSize      = 32
 )
 
@@ -245,6 +248,20 @@ func notify(op uintptr, balloon string) {
 	_, _, _ = pNotifyIcon.Call(op, uintptr(unsafe.Pointer(&n)))
 }
 
+var (
+	fastUntil atomic.Int64
+	wake      = make(chan struct{}, 1)
+)
+
+// После запуска или ввода пароля состояние меняется быстро: минуту опрашиваем чаще, в остальное время службу не дёргаем.
+func speedUp() {
+	fastUntil.Store(time.Now().Add(pollFastFor).UnixNano())
+	select {
+	case wake <- struct{}{}:
+	default:
+	}
+}
+
 func poll() {
 	for {
 		s := stateDown
@@ -258,7 +275,14 @@ func poll() {
 			s = stateAlarm
 		}
 		_, _, _ = pPostMessage.Call(hwnd, wmState, uintptr(s), 0)
-		time.Sleep(pollEvery)
+		delay := pollIdle
+		if time.Now().UnixNano() < fastUntil.Load() {
+			delay = pollEvery
+		}
+		select {
+		case <-time.After(delay):
+		case <-wake:
+		}
 	}
 }
 
@@ -268,6 +292,8 @@ var runMessages = map[string]string{
 }
 
 func runApp(profile string) {
+	speedUp()
+	defer speedUp()
 	resp, err := ipc.Call(ipc.CommandPipe, "run "+profile, 3*time.Minute)
 	text := runMessages[resp]
 	if err != nil {
@@ -286,6 +312,8 @@ func runApp(profile string) {
 
 // Для каждого защищённого приложения служба спрашивает мастер-пароль, затем Windows Hello создаёт ключ и подтверждает вход.
 func enableHello() {
+	speedUp()
+	defer speedUp()
 	// Проверка без жеста и до вопроса про мастер-пароль: без настроенного Hello пароль вводить незачем.
 	if ok, _ := hello.Supported(); !ok {
 		_, _, _ = pPostMessage.Call(hwnd, wmBalloon, 6, 0)

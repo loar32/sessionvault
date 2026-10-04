@@ -76,8 +76,10 @@ func main() {
 		err = install(args)
 	case "protect":
 		err = protect(args)
+		nudgeService(err)
 	case "import-tdata":
 		err = importTdata(args)
+		nudgeService(err)
 	case "uninstall":
 		err = uninstall(args)
 	case "restore-backup":
@@ -540,4 +542,11 @@ func openLink(args []string) error {
 		return errors.New("ссылка не открыта")
 	}
 	return nil
+}
+
+// Служба проверяет приманки раз в несколько минут; после защиты нового приложения просим сделать это сразу.
+func nudgeService(err error) {
+	if err == nil {
+		service.SyncService()
+	}
 }
