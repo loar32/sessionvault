@@ -152,7 +152,7 @@ function HelloBlock() {
     Check (WaitPrompt) 'после отмены Hello открывается окно мастер-пароля (запасной способ)'
     Vm { Get-Process sessionvault -ErrorAction SilentlyContinue | Where-Object { (Get-CimInstance Win32_Process -Filter "ProcessId=$($_.Id)").CommandLine -like '* prompt *' } | Stop-Process -Force; Restart-Service SessionVault; Start-Sleep 3 } | Out-Null
 
-    $r = Vm { param($e) $o = & $e hello disable 2>&1 | Out-String; @{ out = ($o -replace '\s+', ' '); hello = ((Get-Content "$v\vault.json" -Raw | ConvertFrom-Json).Hello) } } @($exe)
+    $r = Vm { $o = & $exe hello disable 2>&1 | Out-String; @{ out = ($o -replace '\s+', ' '); hello = ((Get-Content "$v\vault.json" -Raw | ConvertFrom-Json).Hello) } }
     Check ($null -eq $r.hello) "hello disable убрал слот ($($r.out))"
     Vm { Restart-Service SessionVault; Start-Sleep 3 }
 }
