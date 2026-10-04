@@ -3,6 +3,7 @@
 //	hello-spike                          — поддерживается ли Hello; подпись fixed challenge дважды (ключ должен существовать)
 //	hello-spike create                   — то же, но ключ сначала создаётся
 //	hello-spike secret <challengeHex>    — создать ключ SessionVault при необходимости и напечатать секрет (из сеанса пользователя)
+//	hello-spike delete                   — удалить ключ SessionVault у пользователя
 //	hello-spike enable <профиль> <challengeHex> <secretHex> — слот Hello в хранилище; мастер-пароль со stdin (от администратора)
 package main
 
@@ -33,6 +34,9 @@ func main() {
 func run(args []string) error {
 	if len(args) >= 1 && args[0] == "secret" {
 		return secret(args[1:])
+	}
+	if len(args) >= 1 && args[0] == "delete" {
+		return hello.Delete(keyName)
 	}
 	if len(args) >= 1 && args[0] == "enable" {
 		return enable(args[1:])

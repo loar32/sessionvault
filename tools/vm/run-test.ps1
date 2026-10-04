@@ -152,9 +152,36 @@ function HelloBlock() {
     Check (WaitPrompt) 'после отмены Hello открывается окно мастер-пароля (запасной способ)'
     Vm { Get-Process sessionvault -ErrorAction SilentlyContinue | Where-Object { (Get-CimInstance Win32_Process -Filter "ProcessId=$($_.Id)").CommandLine -like '* prompt *' } | Stop-Process -Force; Restart-Service SessionVault; Start-Sleep 3 } | Out-Null
 
+    # Таймаут: жеста нет. Помощник сам отменяет операцию (70 с), окно Hello закрывается, затем открывается окно пароля.
+    Copy-Item "$PSScriptRoot\enum-windows.ps1" -Destination C:\sv\ -ToSession $a
+    Vm { Restart-Service SessionVault; Start-Sleep 3; AsTester 'rt' "`"$exe`" run telegram" }
+    Check (Vm { WaitFor { HelloUp } 40 }) 'таймаут Hello: окно Hello показано'
+    Check (Vm { WaitFor { PromptUp } 120 }) 'таймаут Hello: без жеста открывается окно мастер-пароля'
+    $w = Vm { AsTester 'ew' 'powershell -NoProfile -ExecutionPolicy Bypass -File C:\sv\enum-windows.ps1'; Done 'ew' 40 | Out-Null; Out 'ew' }
+    Check ($w -notmatch 'Credential Dialog Xaml Host') 'таймаут Hello: окно Hello закрыто, а не осталось висеть на экране'
+    Vm { Get-Process sessionvault -ErrorAction SilentlyContinue | Where-Object { (Get-CimInstance Win32_Process -Filter "ProcessId=$($_.Id)").CommandLine -like '* prompt *' } | Stop-Process -Force; Restart-Service SessionVault; Start-Sleep 3 } | Out-Null
+
     $r = Vm { $o = & $exe hello disable 2>&1 | Out-String; @{ out = ($o -replace '\s+', ' '); hello = ((Get-Content "$v\vault.json" -Raw | ConvertFrom-Json).Hello) } }
     Check ($null -eq $r.hello) "hello disable убрал слот ($($r.out))"
     Vm { Restart-Service SessionVault; Start-Sleep 3 }
+
+    # Включение через службу, как из трея: мастер-пароль, затем Hello создаёт ключ (прежний удалён) и подписывает challenge.
+    Vm { AsTester 'hd' 'C:\sv\hello-spike.exe delete' } | Out-Null
+    Vm { Done 'hd' 40 | Out-Null } | Out-Null
+    Vm { Restart-Service SessionVault; Start-Sleep 3; AsTester 'he' 'powershell -NoProfile -ExecutionPolicy Bypass -File C:\sv\ipc-call.ps1 "hello telegram"' }
+    Check (WaitPrompt) 'включение Hello: служба просит мастер-пароль'
+    TypeInVm $MasterPassword
+    Check (Vm { WaitFor { HelloUp } 40 }) 'включение Hello: помощник показал окно Windows Hello'
+    HelloPin 'he'
+    $r = Vm { Done 'he' 60 | Out-Null; @{ out = ((Out 'he') -replace '\s+', ' '); hello = ((Get-Content "$v\vault.json" -Raw | ConvertFrom-Json).Hello.Name) } }
+    Check ($r.out -match 'ok' -and $r.hello -eq 'SessionVault') "включение Hello через службу: ключ создан, слот записан ($($r.out))"
+    Vm { Restart-Service SessionVault; Start-Sleep 3; AsTester 'rn' "`"$exe`" run telegram" }
+    Check (Vm { WaitFor { HelloUp } 40 }) 'новый слот: окно Hello показано'
+    HelloPin 'rn'
+    $r = Vm { Done 'rn' 90 | Out-Null; Start-Sleep 3; @{ out = ((Out 'rn') -replace '\s+', ' '); user = (Standin).UserName } }
+    Check ($r.out -match 'ok' -and $r.user -like '*\vault') 'слот, созданный службой, открывает хранилище'
+    Vm { Stop-Process -Name standin -Force; WaitFor { (Files) -eq 'data.enc,vault.json' } 60 | Out-Null } | Out-Null
+    Vm { & $exe hello disable 2>&1 | Out-Null; Restart-Service SessionVault; Start-Sleep 3 } | Out-Null
 }
 
 
