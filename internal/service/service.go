@@ -32,6 +32,7 @@ const (
 	// Процесс основной учётки может слать run сколько угодно: без пауз он засыпал бы пользователя окнами пароля.
 	runGap         = 2 * time.Second
 	promptCooldown = 10 * time.Second
+	failLogEvery   = 5 * time.Second
 )
 
 type Service struct {
@@ -52,14 +53,15 @@ type Service struct {
 	alarmAt   time.Time
 	warned    map[string]bool
 
-	mu        sync.Mutex
-	keys      map[string][]byte // DEK профилей, пока хранилище разблокировано
-	running   map[string]bool
-	prompting bool
-	lastRun   map[string]time.Time // по профилям: запуск одного приложения не задерживает другое
-	promptEnd map[string]time.Time // когда последнее окно пароля профиля закончилось отказом или закрытием
-	idle      *time.Timer
-	wg        sync.WaitGroup
+	mu          sync.Mutex
+	keys        map[string][]byte // DEK профилей, пока хранилище разблокировано
+	running     map[string]bool
+	prompting   bool
+	lastFailLog time.Time            // когда последний раз писали об ошибке запуска
+	lastRun     map[string]time.Time // по профилям: запуск одного приложения не задерживает другое
+	promptEnd   map[string]time.Time // когда последнее окно пароля профиля закончилось отказом или закрытием
+	idle        *time.Timer
+	wg          sync.WaitGroup
 }
 
 func New(cfg Config, exe string, l *log.Logger) (*Service, error) {
@@ -147,6 +149,12 @@ func (s *Service) Stop() {
 
 func (s *Service) handle(c *ipc.Conn) {
 	defer c.Close()
+	// Паника в обработчике одного подключения не должна останавливать службу.
+	defer func() {
+		if p := recover(); p != nil {
+			s.log.Printf("паника при обработке запроса: %v", p)
+		}
+	}()
 	line, err := c.ReadLine(5*time.Second, ipc.MaxLine)
 	if err != nil {
 		return
@@ -200,7 +208,7 @@ func (s *Service) state() string {
 func (s *Service) run(c *ipc.Conn, name string) string {
 	p, err := profiles.Load(isolation.ProfilesDir(), name)
 	if err != nil {
-		s.log.Printf("run %s: %v", name, err)
+		s.logRunFailure("run %s: %v", name, err)
 		return ipc.Failed
 	}
 	session, err := c.ClientSession()
@@ -209,7 +217,7 @@ func (s *Service) run(c *ipc.Conn, name string) string {
 	}
 	v := vault.Vault{Dir: isolation.DataPath(name), DataName: workDataName, Exclude: p.Exclude}
 	if !v.Exists() {
-		s.log.Printf("run %s: хранилища нет", name)
+		s.logRunFailure("run %s: хранилища нет", name)
 		return ipc.Failed
 	}
 
@@ -236,6 +244,19 @@ func (s *Service) run(c *ipc.Conn, name string) string {
 }
 
 var errBusy = errors.New("занято")
+
+// Запросы run с несуществующими именами может слать любой процесс основной учётки: без ограничения журнал рос бы без предела.
+func (s *Service) logRunFailure(format string, args ...any) {
+	s.mu.Lock()
+	ok := time.Since(s.lastFailLog) > failLogEvery
+	if ok {
+		s.lastFailLog = time.Now()
+	}
+	s.mu.Unlock()
+	if ok {
+		s.log.Printf(format, args...)
+	}
+}
 
 // Вызывается под mu. Окно пароля после отказа или закрытия не появляется снова сразу;
 // при разблокированном хранилище окна нет и пауза не нужна.

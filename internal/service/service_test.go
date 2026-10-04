@@ -1,9 +1,11 @@
 package service
 
 import (
+	"bytes"
 	"io"
 	"log"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -116,5 +118,17 @@ func TestAdmitPromptCooldown(t *testing.T) {
 	s.promptEnd = map[string]time.Time{"telegram": now.Add(time.Hour)}
 	if !s.admit("telegram", now.Add(time.Hour+runGap*2)) {
 		t.Fatal("при разблокированном хранилище пауза окна не нужна")
+	}
+}
+
+func TestRunFailureLogThrottled(t *testing.T) {
+	var buf bytes.Buffer
+	s := testService(time.Minute)
+	s.log = log.New(&buf, "", 0)
+	for range 50 {
+		s.logRunFailure("run %s: нет", "x")
+	}
+	if n := strings.Count(buf.String(), "\n"); n != 1 {
+		t.Fatalf("записей в журнале %d, ждали 1", n)
 	}
 }

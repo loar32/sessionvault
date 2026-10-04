@@ -363,3 +363,15 @@ func TestArchiveSizeLimit(t *testing.T) {
 		t.Fatal("при отказе открытая папка должна остаться")
 	}
 }
+
+func TestExcludePatterns(t *testing.T) {
+	ex := []string{`*\Cache`, `*\Service Worker\CacheStorage`, `Crashpad`}
+	for rel, want := range map[string]bool{
+		`Default\Cache`: true, `Profile 1\cache`: true, `Default\Service Worker\CacheStorage`: true, `Crashpad`: true,
+		`Default\Cookies`: false, `Cache`: false, `Default\Cache\x`: false, `Default\Network\Cookies`: false,
+	} {
+		if got := excluded(rel, ex); got != want {
+			t.Errorf("%q: получили %v, ждали %v", rel, got, want)
+		}
+	}
+}

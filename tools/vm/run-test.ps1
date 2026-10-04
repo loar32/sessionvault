@@ -386,105 +386,226 @@ $r = Vm {
 Check ($r.up -and $r.key -eq 'secret-session-data') 'после тревоги приложение снова запускается, данные целы'
 Vm { Stop-Process -Name standin -Force; WaitFor { (Files) -eq 'data.enc,vault.json' } 60 | Out-Null } | Out-Null
 
-Write-Host '--- 14. браузер Edge: protect, запуск от vault, шифрование, приманка ---'
-$edgeExe = 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'
-$origin = 'C:\Users\tester\AppData\Local\Microsoft\Edge\User Data'
-$r = Vm { param($e) @{ edge = (Test-Path $e) } } @($edgeExe)
-Check $r.edge 'Edge установлен в ВМ'
-if ($r.edge) {
+function BrowserTest($app, $title, $exePath, $proc, $originRel, $required) {
+    Write-Host "--- 14. браузер ${title}: protect, запуск от vault, шифрование, приманка ---"
+    $origin = "C:\Users\tester\$originRel"
+    $r = Vm { param($e) @{ ok = (Test-Path $e) } } @($exePath)
+    if (-not $r.ok -and -not $required) { Write-Host "  пропуск: $title не установлен в ВМ"; return }
+    Check $r.ok "$title установлен в ВМ"
+    if (-not $r.ok) { return }
+    # Предыдущая тревога блокирует разбор новых на 30 секунд (одна серия чтений = одна тревога).
+    Start-Sleep 35
     Invoke-Command $a {
-        $d = 'C:\Users\tester\AppData\Local\Microsoft\Edge\User Data\Default'
+        param($o)
+        $d = "$o\Default"
         New-Item -ItemType Directory -Force $d | Out-Null
         Set-Content "$d\Cookies" 'old-cookie'
-    }
+    } -ArgumentList $origin
     $r = Vm {
-        param($pw)
-        # Подпись Edge проверяется по-настоящему: пропуск проверки нужен только подставному Telegram.
+        param($pw, $app, $o)
+        # Подпись браузера проверяется по-настоящему: пропуск проверки нужен только подставному Telegram.
         Remove-Item Env:SESSIONVAULT_SKIP_SIGNATURE -ErrorAction SilentlyContinue
         # exe собран для подсистемы Windows: без конвейера PowerShell его не дожидается.
-        $out = $pw | & C:\sv\sessionvault.exe protect edge -yes -password-stdin 2>&1 | Out-String
+        $out = $pw | & C:\sv\sessionvault.exe protect $app -yes -password-stdin 2>&1 | Out-String
         $code = $LASTEXITCODE
-        $ve = 'C:\ProgramData\SessionVault\vault\edge'
+        $ve = "C:\ProgramData\SessionVault\vault\$app"
         @{ code = $code; out = ($out -replace '\s+', ' ')
            files = (Get-ChildItem $ve -Recurse -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -notin 'running.lock', 'data.enc.bak' } | ForEach-Object { $_.FullName.Substring($ve.Length + 1) }) -join ','
-           aside = (Test-Path 'C:\Users\tester\AppData\Local\Microsoft\Edge\User Data.sessionvault-delete')
-           oldCookie = (Test-Path 'C:\Users\tester\AppData\Local\Microsoft\Edge\User Data\Default\Cookies') }
-    } @($MasterPassword)
-    Check ($r.code -eq 0) "protect edge завершился успешно ($($r.out))"
-    Check ($r.files -eq 'data.enc,vault.json') "в хранилище Edge только шифр (есть: $($r.files))"
-    Check (-not $r.aside -and -not $r.oldCookie) 'прежний профиль Edge удалён из основной учётки'
+           aside = (Test-Path "$o.sessionvault-delete")
+           oldCookie = (Test-Path "$o\Default\Cookies") }
+    } @($MasterPassword, $app, $origin)
+    Check ($r.code -eq 0) "protect $app завершился успешно"
+    Check ($r.files -eq 'data.enc,vault.json') "в хранилище $title только шифр (есть: $($r.files))"
+    Check (-not $r.aside -and -not $r.oldCookie) "прежний профиль $title удалён из основной учётки"
     $r = Vm {
-        $o = 'C:\Users\tester\AppData\Local\Microsoft\Edge\User Data'
-        # Файлы приманки создаются по очереди: ждём последний и владельца.
+        param($o)
+        # Файлы приманки создаются по очереди: ждём последний и владельца. Содержимое не читаем: это настоящая тревога.
         $ok = WaitFor { Test-Path "$o\Default\Network\Cookies" } 90
         Start-Sleep 3
-        # Содержимое приманки не читаем: это вызвало бы настоящую тревогу.
         $c = Get-Item "$o\Default\Network\Cookies" -ErrorAction SilentlyContinue
         @{ ok = $ok; size = $c.Length; old = (Test-Path "$o\Default\Cookies"); owner = (Get-Acl $o).Owner }
-    }
+    } @($origin)
     Check ($r.ok -and $r.size -ge 24576 -and -not $r.old) "приманка Chromium на месте прежнего профиля (Cookies $($r.size) Б)"
     Check ($r.owner -like '*\tester') "владелец приманки — основная учётка ($($r.owner))"
 
-    Write-Host '  запуск Edge от vault'
-    Vm { AsTester 'runE' "`"$exe`" run edge" }
-    Check (WaitPrompt) 'окно пароля для Edge'
+    Write-Host "  запуск $title от vault"
+    Vm { param($app) AsTester 'runB' "`"$exe`" run $app" } @($app)
+    Check (WaitPrompt) "окно пароля для $title"
     Start-Sleep 3
     TypeInVm $MasterPassword
     $r = Vm {
-        Done 'runE' 90 | Out-Null
-        $up = WaitFor { [bool](Get-Process msedge -IncludeUserName -ErrorAction SilentlyContinue | Where-Object { $_.UserName -like '*\vault' }) } 60
-        $ok = WaitFor { Test-Path 'C:\ProgramData\SessionVault\vault\edge\work\User Data\Local State' } 60
+        param($app, $proc)
+        Done 'runB' 90 | Out-Null
+        $up = WaitFor { [bool](Get-Process $proc -IncludeUserName -ErrorAction SilentlyContinue | Where-Object { $_.UserName -like '*\vault' }) } 60
+        $ud = "C:\ProgramData\SessionVault\vault\$app\work\User Data"
+        $ok = WaitFor { Test-Path "$ud\Local State" } 60
         Start-Sleep 5
-        $cl = (Get-CimInstance Win32_Process -Filter "Name='msedge.exe'" | Select-Object -First 1).CommandLine
-        if ($ok) { Set-Content 'C:\ProgramData\SessionVault\vault\edge\work\User Data\marker.txt' 'edge-session-marker' }
-        @{ out = (Out 'runE'); up = [bool]$up; profile = $ok; cmd = $cl }
-    }
-    Check ($r.out -match 'ok' -and $r.up) "Edge запущен от vault ($("$($r.out)" -replace '\s+',' '))"    Check ($r.profile -and $r.cmd -like '*vault\edge\work\User Data*') 'Edge работает с профилем в защищённой папке'
+        $cl = (Get-CimInstance Win32_Process -Filter "Name='$proc.exe'" | Select-Object -First 1).CommandLine
+        $vp = (Get-Process $proc -IncludeUserName -ErrorAction SilentlyContinue | Where-Object { $_.UserName -like '*\vault' } | Select-Object -First 1).Id
+        if ($ok) { Set-Content "$ud\marker.txt" 'browser-session-marker' }
+        @{ out = (Out 'runB'); up = [bool]$up; profile = $ok; cmd = $cl; vp = $vp }
+    } @($app, $proc)
+    Check ($r.out -match 'ok' -and $r.up) "$title запущен от vault ($("$($r.out)" -replace '\s+',' '))"
+    Check ($r.profile -and $r.cmd -like "*vault\$app\work\User Data*") "$title работает с профилем в защищённой папке"
+
+    # Пока браузер работает, обычная учётка не должна дотянуться ни до файлов, ни до памяти его процесса.
+    $ac = Vm {
+        param($app, $vp)
+        $ve = "C:\ProgramData\SessionVault\vault\$app"
+        AsTester 'acB' "C:\sv\access-check.exe -file `"$ve\work\User Data\Local State`" -enc `"$ve\data.enc`" -meta `"$ve\vault.json`" -pid $vp"
+        Done 'acB' 120 | Out-Null
+        Out 'acB'
+    } @($app, $r.vp)
+    Check ($ac -match 'EXIT=0') "access-check при работающем ${title}: утечек нет ($((($ac -split "`n") | Where-Object { $_ -match 'УТЕЧКА' }) -join '; '))"
+
     $r = Vm {
-        Get-Process msedge -ErrorAction SilentlyContinue | Stop-Process -Force
-        $ve = 'C:\ProgramData\SessionVault\vault\edge'
+        param($app, $proc)
+        Get-Process $proc -ErrorAction SilentlyContinue | Stop-Process -Force
+        $ve = "C:\ProgramData\SessionVault\vault\$app"
         $enc = WaitFor { -not (Test-Path "$ve\work") -and (Test-Path "$ve\data.enc") } 60
-        @{ enc = $enc; left = @(Get-Process msedge -ErrorAction SilentlyContinue).Count }
-    }
-    Check ($r.enc -and $r.left -eq 0) 'после закрытия Edge данные зашифрованы, фоновых процессов нет'
+        @{ enc = $enc; left = @(Get-Process $proc -ErrorAction SilentlyContinue).Count }
+    } @($app, $proc)
+    Check ($r.enc -and $r.left -eq 0) "после закрытия $title данные зашифрованы, фоновых процессов нет"
 
     Write-Host '  повторный запуск: данные сохранились'
-    Vm { AsTester 'runE2' "`"$exe`" run edge" }
+    Vm { param($app) AsTester 'runB2' "`"$exe`" run $app" } @($app)
     $r = Vm {
-        Done 'runE2' 90 | Out-Null
-        $up = WaitFor { [bool](Get-Process msedge -IncludeUserName -ErrorAction SilentlyContinue | Where-Object { $_.UserName -like '*\vault' }) } 60
+        param($app, $proc)
+        Done 'runB2' 90 | Out-Null
+        $up = WaitFor { [bool](Get-Process $proc -IncludeUserName -ErrorAction SilentlyContinue | Where-Object { $_.UserName -like '*\vault' }) } 60
         Start-Sleep 3
-        @{ out = (Out 'runE2'); up = [bool]$up; marker = (Get-Content 'C:\ProgramData\SessionVault\vault\edge\work\User Data\marker.txt' -ErrorAction SilentlyContinue) }
-    }
-    Check ($r.up -and $r.marker -eq 'edge-session-marker') "профиль Edge сохранился между запусками ($("$($r.out)" -replace '\s+',' '))"
+        @{ out = (Out 'runB2'); up = [bool]$up; marker = (Get-Content "C:\ProgramData\SessionVault\vault\$app\work\User Data\marker.txt" -ErrorAction SilentlyContinue) }
+    } @($app, $proc)
+    Check ($r.up -and $r.marker -eq 'browser-session-marker') "профиль $title сохранился между запусками ($("$($r.out)" -replace '\s+',' '))"
 
-    Write-Host '  тревога: стилер-имитация читает приманку Edge'
+    Write-Host "  тревога: стилер-имитация читает приманку $title"
+    $before = Vm { @(Get-Content C:\ProgramData\SessionVault\alerts.log -Encoding UTF8 -ErrorAction SilentlyContinue).Count }
     $r = Vm {
-        param($d)
-        AsTester 'dcE' "C:\sv\access-check.exe -decoy `"$d`""
-        WaitFor { (Out 'dcE') -match 'READ_AT=\d+' } 30 | Out-Null
-        $dead = WaitFor { -not (Get-Process msedge -ErrorAction SilentlyContinue) } 20
-        $ve = 'C:\ProgramData\SessionVault\vault\edge'
+        param($d, $app, $proc)
+        AsTester 'dcB' "C:\sv\access-check.exe -decoy `"$d`""
+        WaitFor { (Out 'dcB') -match 'READ_AT=\d+' } 30 | Out-Null
+        $dead = WaitFor { -not (Get-Process $proc -ErrorAction SilentlyContinue) } 20
+        $ve = "C:\ProgramData\SessionVault\vault\$app"
         $enc = WaitFor { -not (Test-Path "$ve\work") -and (Test-Path "$ve\data.enc") } 40
-        AsTester 'stE' "`"$exe`" status"; Done 'stE' | Out-Null
-        @{ dead = $dead; enc = $enc; st = (Out 'stE'); alerts = @(Get-Content C:\ProgramData\SessionVault\alerts.log -Encoding UTF8 -ErrorAction SilentlyContinue).Count }
-    } @($origin)
-    Check ($r.dead -and $r.enc) 'тревога по приманке Edge: браузер закрыт, данные зашифрованы'
-    Check ($r.st -match '(?m)^alarm') "status: alarm ($("$($r.st)" -replace '\s+',' '))"
+        AsTester 'stB' "`"$exe`" status"; Done 'stB' | Out-Null
+        @{ dead = $dead; enc = $enc; st = (Out 'stB'); alerts = @(Get-Content C:\ProgramData\SessionVault\alerts.log -Encoding UTF8 -ErrorAction SilentlyContinue).Count }
+    } @($origin, $app, $proc)
+    Check ($r.dead -and $r.enc) "тревога по приманке ${title}: браузер закрыт, данные зашифрованы"
+    Check ($r.st -match '(?m)^alarm' -and $r.alerts -gt $before) "status: alarm и новая запись в журнале тревог ($($before) -> $($r.alerts))"
     $alertsBefore = $r.alerts
     Vm { Get-CimInstance Win32_Process -Filter "Name='sessionvault.exe'" | Where-Object { $_.CommandLine -like '* alert *' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force } } | Out-Null
 
-    Write-Host '  обычный Edge основной учётки не вызывает тревогу'
+    Write-Host "  обычный $title основной учётки не вызывает тревогу"
     $r = Vm {
-        param($e)
-        AsTester 'userEdge' "`"$e`" --headless --disable-gpu --user-data-dir=`"C:\Users\tester\AppData\Local\Microsoft\Edge\User Data`" about:blank"
+        param($e, $o, $proc)
+        AsTester 'userB' "`"$e`" --headless --disable-gpu --user-data-dir=`"$o`" about:blank"
         Start-Sleep 12
-        Get-Process msedge -ErrorAction SilentlyContinue | Stop-Process -Force
+        Get-Process $proc -ErrorAction SilentlyContinue | Stop-Process -Force
         Start-Sleep 3
         @{ alerts = @(Get-Content C:\ProgramData\SessionVault\alerts.log -Encoding UTF8 -ErrorAction SilentlyContinue).Count }
-    } @($edgeExe)
-    Check ($r.alerts -eq $alertsBefore) "чтение профиля подписанным Edge не создало новых тревог ($($r.alerts) = $alertsBefore)"
+    } @($exePath, $origin, $proc)
+    Check ($r.alerts -eq $alertsBefore) "чтение профиля подписанным $title не создало новых тревог ($($r.alerts) = $alertsBefore)"
 }
+
+$browsers = @(
+    @{ app = 'edge'; title = 'Microsoft Edge'; exePath = 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'; proc = 'msedge'; originRel = 'AppData\Local\Microsoft\Edge\User Data'; required = $true },
+    @{ app = 'chrome'; title = 'Google Chrome'; exePath = 'C:\Program Files\Google\Chrome\Application\chrome.exe'; proc = 'chrome'; originRel = 'AppData\Local\Google\Chrome\User Data'; required = $false },
+    @{ app = 'brave'; title = 'Brave'; exePath = 'C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe'; proc = 'brave'; originRel = 'AppData\Local\BraveSoftware\Brave-Browser\User Data'; required = $false }
+)
+foreach ($b in $browsers) { BrowserTest @b }
+
+Write-Host '--- 15. попытки обычной учётки обойти защиту ---'
+# Хранилище после тревоги заблокировано: спам run должен дать одно окно пароля, а не десять.
+$r = Vm {
+    1..12 | ForEach-Object { AsTester "sp$_" "`"$exe`" run telegram" }
+    Start-Sleep 12
+    $n = @(Get-CimInstance Win32_Process -Filter "Name='sessionvault.exe'" | Where-Object { $_.CommandLine -like '* prompt *' }).Count
+    $busy = 0
+    1..12 | ForEach-Object { if ((Out "sp$_") -match 'busy') { $busy++ } }
+    Get-CimInstance Win32_Process -Filter "Name='sessionvault.exe'" | Where-Object { $_.CommandLine -like '* prompt *' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+    Start-Sleep 5
+    @{ prompts = $n; busy = $busy }
+}
+Check ($r.prompts -le 1) "12 запросов run подряд дали окон пароля: $($r.prompts) (должно быть не больше одного), ответов busy: $($r.busy)"
+
+# Прямой запуск помощника launch: пароль vault читает только SYSTEM.
+$r = Vm {
+    AsTester 'ln' "`"$exe`" launch telegram"
+    Done 'ln' 30 | Out-Null
+    @{ out = (Out 'ln'); vaultProc = @(Get-Process standin -IncludeUserName -ErrorAction SilentlyContinue | Where-Object { $_.UserName -like '*\vault' }).Count }
+}
+Check ($r.out -notmatch 'EXIT=0' -and $r.vaultProc -eq 0) "launch из обычной учётки не запускает приложение ($("$($r.out)" -replace '\s+',' '))"
+
+# Метаданные службы закрыты для обычной учётки.
+$r = Vm {
+    AsTester 'rd' 'cmd /c type C:\ProgramData\SessionVault\profiles\telegram.json & type C:\ProgramData\SessionVault\config.json & type C:\ProgramData\SessionVault\vault.pwd'
+    Done 'rd' 30 | Out-Null
+    Out 'rd'
+}
+Check ($r -notmatch 'main_user' -and $r -notmatch 'launch_args') "profiles, config.json и vault.pwd недоступны обычной учётке"
+
+# Список защищённых приложений для трея: только имена.
+$r = Vm {
+    $ps1 = @'
+$p = New-Object IO.Pipes.NamedPipeClientStream('.', 'SessionVault', [IO.Pipes.PipeAccessRights]'ReadData,WriteData', [IO.Pipes.PipeOptions]::None, [Security.Principal.TokenImpersonationLevel]::None, [IO.HandleInheritability]::None)
+$p.Connect(5000)
+$w = New-Object IO.StreamWriter($p); $w.WriteLine('list'); $w.Flush()
+(New-Object IO.StreamReader($p)).ReadLine()
+'@
+    Set-Content C:\sv\list.ps1 $ps1 -Encoding UTF8
+    AsTester 'ls' 'powershell -NoProfile -ExecutionPolicy Bypass -File C:\sv\list.ps1'
+    Done 'ls' 30 | Out-Null
+    Out 'ls'
+}
+Check ($r -match 'telegram' -and $r -match 'edge' -and $r -notmatch '\\' -and $r -notmatch ':') "list отдаёт только имена профилей ($("$r" -replace '\s+',' '))"
+
+# Подмена пути приманки ссылкой: SYSTEM не должен ставить аудит на чужую папку.
+$r = Vm {
+    $edgeDir = 'C:\Users\tester\AppData\Local\Microsoft\Edge'
+    [IO.Directory]::CreateDirectory('C:\sv\jt\User Data') | Out-Null
+    Set-Content 'C:\sv\jt\file.txt' 'x'
+    cmd /c "rmdir /s /q `"$edgeDir`"" | Out-Null
+    cmd /c "mklink /J `"$edgeDir`" C:\sv\jt" | Out-Null
+    Start-Sleep 75
+    $acl = Get-Acl 'C:\sv\jt\User Data' -Audit
+    $log = Get-Content C:\ProgramData\SessionVault\service.log -Tail 30 -Encoding UTF8 | Where-Object { $_ -match 'ссылка или junction' }
+    @{ audit = @($acl.Audit).Count; logged = @($log).Count }
+}
+Check ($r.audit -eq 0) "аудит не поставлен на папку, на которую указывает подменённый путь (записей аудита: $($r.audit))"
+Check ($r.logged -ge 1) 'служба записала в журнал, что на пути приманки ссылка'
+
+Write-Host '--- 16. удаление программы возвращает данные браузеров ---'
+# Путь приманки Edge подменён ссылкой (блок 15): удаление должно отказаться и ничего не увести в чужую папку.
+$r = Vm {
+    param($pw)
+    $out = $pw | & C:\sv\sessionvault.exe uninstall -password-stdin 2>&1 | Out-String
+    $code = $LASTEXITCODE
+    Start-Sleep 5
+    @{ code = $code; out = ($out -replace '\s+', ' ')
+       svc = [bool](Get-Service SessionVault -ErrorAction SilentlyContinue)
+       edgeVault = (Test-Path 'C:\ProgramData\SessionVault\vault\edge\data.enc')
+       target = @(Get-ChildItem 'C:\sv\jt\User Data' -Force -ErrorAction SilentlyContinue).Count }
+} @($MasterPassword)
+Check ($r.code -ne 0 -and $r.svc -and $r.edgeVault -and $r.target -eq 0) "удаление при подменённом пути отказало: служба на месте, данные Edge в хранилище, чужая папка пуста ($($r.out))"
+
+# Ссылку убрали: удаление проходит и возвращает профили на прежние места.
+$r = Vm {
+    param($pw)
+    cmd /c 'rmdir "C:\Users\tester\AppData\Local\Microsoft\Edge"' | Out-Null
+    $out = $pw | & C:\sv\sessionvault.exe uninstall -password-stdin 2>&1 | Out-String
+    $code = $LASTEXITCODE
+    Start-Sleep 5
+    $m = @{}
+    foreach ($p in @{ edge = 'C:\Users\tester\AppData\Local\Microsoft\Edge\User Data'; chrome = 'C:\Users\tester\AppData\Local\Google\Chrome\User Data'; brave = 'C:\Users\tester\AppData\Local\BraveSoftware\Brave-Browser\User Data' }.GetEnumerator()) {
+        $m[$p.Key] = (Get-Content "$($p.Value)\marker.txt" -ErrorAction SilentlyContinue)
+    }
+    @{ code = $code; out = ($out -replace '\s+', ' '); svc = [bool](Get-Service SessionVault -ErrorAction SilentlyContinue)
+       base = (Test-Path 'C:\ProgramData\SessionVault'); markers = $m
+       owner = (Get-Acl 'C:\Users\tester\AppData\Local\Google\Chrome\User Data').Owner }
+} @($MasterPassword)
+Check ($r.code -eq 0 -and -not $r.svc -and -not $r.base) "удаление после устранения ссылки прошло: служба и каталог данных убраны ($($r.out))"
+Check ($r.markers.edge -eq 'browser-session-marker' -and $r.markers.chrome -eq 'browser-session-marker' -and $r.markers.brave -eq 'browser-session-marker') 'профили Edge, Chrome и Brave возвращены на прежние места с данными'
+Check ($r.owner -like '*\tester') "владелец вернувшихся данных — основная учётка ($($r.owner))"
 
 if ($fails.Count -eq 0) { Write-Host 'ТЕСТ ПРОЙДЕН'; exit 0 }
 Write-Host "ТЕСТ ПРОВАЛЕН ($($fails.Count))"; exit 1

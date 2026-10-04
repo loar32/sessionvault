@@ -103,6 +103,10 @@ func restoreProfile(cfg Config, user *windows.SID, name string, v vault.Vault, p
 	if origin == "" {
 		return errors.New("неизвестно, куда вернуть данные (не записан исходный путь)")
 	}
+	// Администратор переносит и удаляет файлы по пути из профиля пользователя: ссылка на нём увела бы это в чужую папку.
+	if err := decoy.NoReparse(origin); err != nil {
+		return err
+	}
 	dek, err := v.Unlock(password)
 	if err != nil {
 		return err

@@ -126,6 +126,11 @@ func (s *Service) syncDecoys() {
 			continue
 		}
 		s.warned[name] = false
+		// Путь лежит в профиле пользователя: ссылка или junction на нём увела бы SACL (и шум в журнале) на чужую папку.
+		if err := decoy.NoReparse(origin); err != nil {
+			s.log.Printf("приманка %s: %v", name, err)
+			continue
+		}
 		if err := audit.WatchReads(origin); err != nil {
 			s.log.Printf("аудит приманки %s: %v", name, err)
 			continue

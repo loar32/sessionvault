@@ -17,9 +17,12 @@ var maxArchive = 1 << 30
 
 var ErrTooLarge = errors.New("данные приложения больше 1 ГиБ: шифрование отменено")
 
+// Шаблон сравнивается с относительным путём по сегментам: `*` заменяет часть имени, но не границу папки
+// (`*\Cache` — кэш в любом профиле браузера). Регистр не важен.
 func excluded(rel string, exclude []string) bool {
+	rel = strings.ToLower(rel)
 	for _, x := range exclude {
-		if strings.EqualFold(rel, filepath.Clean(x)) {
+		if ok, _ := filepath.Match(strings.ToLower(filepath.Clean(x)), rel); ok {
 			return true
 		}
 	}

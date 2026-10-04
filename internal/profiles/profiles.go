@@ -42,15 +42,27 @@ var Telegram = Profile{
 }
 
 // Кэши Chromium пересоздаются сами: шифровать их незачем, а архив держится в памяти целиком.
+// `*\` — в любом профиле браузера (Default, Profile 1, ...).
 var chromiumExclude = []string{
-	`Default\Cache`, `Default\Code Cache`, `Default\GPUCache`, `Default\Service Worker\CacheStorage`,
-	`GrShaderCache`, `ShaderCache`, `GraphiteDawnCache`, `Crashpad`,
+	`*\Cache`, `*\Code Cache`, `*\GPUCache`, `*\DawnCache`, `*\DawnGraphiteCache`, `*\DawnWebGPUCache`, `*\Media Cache`,
+	`*\Service Worker\CacheStorage`,
+	`GrShaderCache`, `ShaderCache`, `GraphiteDawnCache`, `Crashpad`, `BrowserMetrics`, `DeferredBrowserMetrics`,
+	`component_crx_cache`, `extensions_crx_cache`, `optimization_guide_model_store`,
 }
 
+// Браузер ставится и в Program Files, и в Program Files (x86); x86 — где его обычно ждут. Берём тот путь, где файл есть.
 func chromium(name, title, exe, publisher, origin string, x86 bool) Profile {
-	pf := knownDir(windows.FOLDERID_ProgramFiles, `C:\Program Files`)
+	pf64 := knownDir(windows.FOLDERID_ProgramFiles, `C:\Program Files`)
+	pf86 := knownDir(windows.FOLDERID_ProgramFilesX86, `C:\Program Files (x86)`)
+	first, second := pf64, pf86
 	if x86 {
-		pf = knownDir(windows.FOLDERID_ProgramFilesX86, `C:\Program Files (x86)`)
+		first, second = pf86, pf64
+	}
+	pf := first
+	if _, err := os.Stat(filepath.Join(first, exe)); err != nil {
+		if _, err := os.Stat(filepath.Join(second, exe)); err == nil {
+			pf = second
+		}
 	}
 	return Profile{
 		Name:    name,
