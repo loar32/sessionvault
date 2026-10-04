@@ -26,6 +26,7 @@ var (
 	procSetForegroundWnd   = user32.NewProc("SetForegroundWindow")
 	procShowWindow         = user32.NewProc("ShowWindow")
 	procKeybdEvent         = user32.NewProc("keybd_event")
+	procPostMessage        = user32.NewProc("PostMessageW")
 	iidKeyCredentialStatic = windows.GUID{Data1: 0x6aac468b, Data2: 0x0ef1, Data3: 0x4ce0, Data4: [8]byte{0x82, 0x90, 0x41, 0x06, 0xda, 0x6a, 0x63, 0xb5}}
 	iidAsyncInfo           = windows.GUID{Data1: 0x00000036, Data2: 0, Data3: 0, Data4: [8]byte{0xC0, 0, 0, 0, 0, 0, 0, 0x46}}
 	iidBufferFactory       = windows.GUID{Data1: 0x71af914d, Data2: 0xc10f, Data3: 0x484b, Data4: [8]byte{0xbc, 0x50, 0x14, 0xbc, 0x62, 0x3b, 0x3a, 0x27}}
@@ -130,6 +131,17 @@ func raiseDialog() {
 	_, _, _ = procSetForegroundWnd.Call(h)
 }
 
+// Отмена операции не всегда убирает окно Hello с экрана: закрываем его сами, иначе оно висит, пока пользователь не нажмёт «Отмена».
+func closeDialog() {
+	cls, err := windows.UTF16PtrFromString(dialogClass)
+	if err != nil {
+		return
+	}
+	if h, _, _ := procFindWindow.Call(uintptr(unsafe.Pointer(cls)), 0); h != 0 {
+		_, _, _ = procPostMessage.Call(h, 0x0010, 0, 0) // WM_CLOSE
+	}
+}
+
 // await ждёт завершения асинхронной операции и вызывает raiseDialog, пока идёт диалог.
 func await(op com, timeout time.Duration) error {
 	info, err := op.query(&iidAsyncInfo)
@@ -155,6 +167,7 @@ func await(op com, timeout time.Duration) error {
 		}
 		if time.Now().After(deadline) {
 			_, _ = info.call(9) // Cancel
+			closeDialog()
 			return errors.New("время ожидания Windows Hello вышло")
 		}
 		raiseDialog()
