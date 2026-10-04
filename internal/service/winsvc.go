@@ -10,9 +10,11 @@ import (
 const Name = "SessionVault"
 
 const (
-	wtsSessionLogoff = 6 // WTS_SESSION_LOGOFF
-	wtsSessionLock   = 7 // WTS_SESSION_LOCK
-	pbtApmSuspend    = 4 // PBT_APMSUSPEND
+	wtsConsoleDisconnect = 2 // WTS_CONSOLE_DISCONNECT: смена пользователя
+	wtsRemoteDisconnect  = 4 // WTS_REMOTE_DISCONNECT
+	wtsSessionLogoff     = 6 // WTS_SESSION_LOGOFF
+	wtsSessionLock       = 7 // WTS_SESSION_LOCK
+	pbtApmSuspend        = 4 // PBT_APMSUSPEND
 )
 
 type handler struct{ s *Service }
@@ -27,7 +29,8 @@ func (h handler) Execute(_ []string, r <-chan svc.ChangeRequest, st chan<- svc.S
 		case svc.Interrogate:
 			st <- c.CurrentStatus
 		case svc.SessionChange:
-			if c.EventType == wtsSessionLogoff || c.EventType == wtsSessionLock {
+			switch c.EventType {
+			case wtsSessionLogoff, wtsSessionLock, wtsConsoleDisconnect, wtsRemoteDisconnect:
 				h.s.lockRequested()
 			}
 		case svc.PowerEvent:

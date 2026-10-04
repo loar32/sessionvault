@@ -78,3 +78,15 @@ func TestHibernateAbsentIsUntouched(t *testing.T) {
 		t.Fatal("значение гибернации создано там, где его не было")
 	}
 }
+
+// config.json читает только администратор, но откат всё равно не должен писать в реестр произвольные числа.
+func TestRevertRejectsOutOfRange(t *testing.T) {
+	f := newFake()
+	err := revert(f, State{"crash_dumps": 1 << 40, "encrypt_pagefile": -5})
+	if err == nil {
+		t.Fatal("недопустимые значения приняты")
+	}
+	if f.vals[settings[2].key+"|"+settings[2].value] != 7 {
+		t.Fatalf("значение в реестре изменено: %v", f.vals)
+	}
+}

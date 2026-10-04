@@ -15,7 +15,10 @@ import (
 // State — прежние значения мер по именам; absent — значения в реестре не было.
 type State map[string]int64
 
-const absent int64 = -1
+const (
+	absent   int64 = -1
+	maxValue int64 = 0xFFFF
+)
 
 type setting struct {
 	name, key, value string
@@ -134,6 +137,11 @@ func revert(sys system, st State) error {
 	for _, s := range settings {
 		old, ok := st[s.name]
 		if !ok {
+			continue
+		}
+		// Значение приходит из config.json: в реестр пишется только разумное число.
+		if old < absent || old > maxValue {
+			errs = append(errs, fmt.Errorf("%s: недопустимое прежнее значение %d", s.name, old))
 			continue
 		}
 		var err error

@@ -574,6 +574,15 @@ $r = Vm {
 Check ($r.audit -eq 0) "аудит не поставлен на папку, на которую указывает подменённый путь (записей аудита: $($r.audit))"
 Check ($r.logged -ge 1) 'служба записала в журнал, что на пути приманки ссылка'
 
+$r = Vm {
+    $k = 'HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl'
+    $before = (Get-ItemProperty $k).CrashDumpEnabled
+    AsTester 'hd' "`"$exe`" harden -off"
+    Done 'hd' 20 | Out-Null
+    @{ out = ((Out 'hd') -replace '\s+', ' '); same = ((Get-ItemProperty $k).CrashDumpEnabled -eq $before) }
+}
+Check ($r.out -match 'администратора' -and $r.same) "harden из обычной учётки отказывает и ничего не меняет ($($r.out))"
+
 Write-Host '--- 15b. тихие меры ОС и блокировка по событию ---'
 $r = Vm {
     $keys = @(
