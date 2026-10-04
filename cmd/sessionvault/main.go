@@ -29,6 +29,7 @@ import (
 const usage = `sessionvault install [-user имя] [-telegram-exe путь]
 sessionvault import-tdata [путь-к-tdata]
 sessionvault uninstall
+sessionvault restore-backup <профиль>
 sessionvault run <профиль>
 sessionvault status
 sessionvault alerts
@@ -72,6 +73,8 @@ func main() {
 		err = importTdata(args)
 	case "uninstall":
 		err = uninstall(args)
+	case "restore-backup":
+		err = restoreBackup(args)
 	case "run":
 		err = run(args)
 	case "status":
@@ -172,11 +175,13 @@ func importTdata(args []string) error {
 		return err
 	}
 	// Исходное место нужно удалению программы, чтобы вернуть данные пользователю; пишем до переноса.
-	if cfg.Origins == nil {
-		cfg.Origins = map[string]string{}
-	}
-	cfg.Origins[p.Name] = src
-	if err := service.SaveConfig(cfg); err != nil {
+	err = service.UpdateConfig(func(c *service.Config) {
+		if c.Origins == nil {
+			c.Origins = map[string]string{}
+		}
+		c.Origins[p.Name] = src
+	})
+	if err != nil {
 		return err
 	}
 	// Перенос, а не копия: на старом месте открытых данных не остаётся.
@@ -227,6 +232,49 @@ func uninstall(args []string) error {
 		return err
 	}
 	fmt.Println("готово: данные возвращены, SessionVault удалён")
+	return nil
+}
+
+// Возвращает предыдущий архив из data.enc.bak, если текущий оказался испорчен. Приложение должно быть закрыто.
+func restoreBackup(args []string) error {
+	fs := flag.NewFlagSet("restore-backup", flag.ContinueOnError)
+	stdin := fs.Bool("password-stdin", false, "")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 || !profiles.ValidName(fs.Arg(0)) {
+		return errors.New("укажи профиль: sessionvault restore-backup telegram")
+	}
+	if !isolation.IsElevated() {
+		return errors.New("нужен запуск от администратора")
+	}
+	if err := isolation.EnablePrivileges("SeTakeOwnershipPrivilege", "SeRestorePrivilege", "SeBackupPrivilege"); err != nil {
+		return err
+	}
+	name := fs.Arg(0)
+	v := vault.Vault{Dir: isolation.DataPath(name), DataName: filepath.Base(isolation.WorkPath(name))}
+	if !v.Exists() {
+		return fmt.Errorf("хранилища %s нет", name)
+	}
+	pw, err := readPassword(*stdin, false)
+	if err != nil {
+		return err
+	}
+	defer crypto.Wipe(pw)
+	dek, err := v.Unlock(pw)
+	if err != nil {
+		return err
+	}
+	defer crypto.Wipe(dek)
+	release, err := v.Lock()
+	if err != nil {
+		return err
+	}
+	defer release()
+	if err := v.RestoreBackup(dek); err != nil {
+		return err
+	}
+	fmt.Println("предыдущий архив возвращён")
 	return nil
 }
 

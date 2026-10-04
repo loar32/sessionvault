@@ -1,16 +1,28 @@
 package isolation
 
 import (
-	"os"
 	"path/filepath"
+
+	"golang.org/x/sys/windows"
 )
 
 const VaultUser = "vault"
 
+// ProgramData, если задан, подменяет системный каталог: только для тестов, которые не должны трогать настоящий.
+var ProgramData string
+
+// Системные каталоги берём у Windows, а не из переменных окружения: служба и установщик работают с высокими правами.
+func KnownDir(id *windows.KNOWNFOLDERID, fallback string) string {
+	if p, err := windows.KnownFolderPath(id, windows.KF_FLAG_DEFAULT); err == nil && p != "" {
+		return p
+	}
+	return fallback
+}
+
 func BaseDir() string {
-	pd := os.Getenv("ProgramData")
+	pd := ProgramData
 	if pd == "" {
-		pd = `C:\ProgramData`
+		pd = KnownDir(windows.FOLDERID_ProgramData, `C:\ProgramData`)
 	}
 	return filepath.Join(pd, "SessionVault")
 }

@@ -2,6 +2,7 @@ package service
 
 import (
 	"os"
+	"time"
 
 	"golang.org/x/sys/windows/svc"
 )
@@ -14,13 +15,14 @@ func (h handler) Execute(_ []string, r <-chan svc.ChangeRequest, st chan<- svc.S
 	st <- svc.Status{State: svc.StartPending}
 	go h.s.Serve()
 	go h.s.StartTraps()
-	st <- svc.Status{State: svc.Running, Accepts: svc.AcceptStop | svc.AcceptShutdown}
+	st <- svc.Status{State: svc.Running, Accepts: svc.AcceptStop | svc.AcceptShutdown | svc.AcceptPreShutdown}
 	for c := range r {
 		switch c.Cmd {
 		case svc.Interrogate:
 			st <- c.CurrentStatus
-		case svc.Stop, svc.Shutdown:
-			st <- svc.Status{State: svc.StopPending}
+		case svc.Stop, svc.Shutdown, svc.PreShutdown:
+			// Шифрование открытых данных при остановке может занять до stopWait: без WaitHint система выключилась бы раньше.
+			st <- svc.Status{State: svc.StopPending, WaitHint: uint32((stopWait + 5*time.Second).Milliseconds())}
 			h.s.Stop()
 			return false, 0
 		}

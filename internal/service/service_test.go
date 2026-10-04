@@ -85,3 +85,36 @@ func TestVerifyPublisherRejectsUnsigned(t *testing.T) {
 		t.Fatal("неподписанный exe должен отклоняться")
 	}
 }
+
+func TestAdmitThrottlesRuns(t *testing.T) {
+	s := testService(time.Minute)
+	now := time.Now()
+	if !s.admit("telegram", now) {
+		t.Fatal("первый запуск должен проходить")
+	}
+	if s.admit("telegram", now.Add(runGap/2)) {
+		t.Fatal("запуск вплотную к предыдущему должен отклоняться")
+	}
+	if !s.admit("telegram", now.Add(runGap)) {
+		t.Fatal("после паузы запуск должен проходить")
+	}
+}
+
+func TestAdmitPromptCooldown(t *testing.T) {
+	s := testService(time.Minute)
+	now := time.Now()
+	s.keys = map[string][]byte{}
+	s.promptEnd = now
+	if s.admit("telegram", now.Add(promptCooldown/2)) {
+		t.Fatal("окно пароля не должно появляться снова сразу после закрытия")
+	}
+	if !s.admit("telegram", now.Add(promptCooldown)) {
+		t.Fatal("после паузы окно снова доступно")
+	}
+	// Разблокированное хранилище окна не показывает: пауза после окна на него не действует.
+	s.keys["telegram"] = make([]byte, 32)
+	s.promptEnd = now.Add(time.Hour)
+	if !s.admit("telegram", now.Add(time.Hour+runGap*2)) {
+		t.Fatal("при разблокированном хранилище пауза окна не нужна")
+	}
+}

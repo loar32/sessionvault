@@ -12,13 +12,14 @@ import (
 	"time"
 
 	"github.com/loar32/sessionvault/internal/ipc"
+	"github.com/loar32/sessionvault/internal/isolation"
 	"golang.org/x/sys/windows"
 )
 
 var leaks, skipped int
 
 func main() {
-	base := filepath.Join(os.Getenv("ProgramData"), "SessionVault")
+	base := isolation.BaseDir()
 	dir := flag.String("dir", filepath.Join(base, "vault"), "защищённая папка")
 	file := flag.String("file", filepath.Join(base, "vault", "telegram", "work", "tdata", "key_datas"), "защищённый файл")
 	enc := flag.String("enc", filepath.Join(base, "vault", "telegram", "data.enc"), "зашифрованный архив")

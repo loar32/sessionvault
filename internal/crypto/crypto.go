@@ -49,7 +49,10 @@ func newGCM(key []byte) (cipher.AEAD, error) {
 }
 
 // Результат: nonce ‖ шифротекст. Nonce новый на каждый вызов: повтор с тем же ключом ломает GCM.
-func Seal(key, plaintext []byte) ([]byte, error) {
+func Seal(key, plaintext []byte) ([]byte, error) { return SealAAD(key, plaintext, nil) }
+
+// aad не шифруется, но входит в проверку подлинности: изменённый или подставленный из другого места блок не откроется.
+func SealAAD(key, plaintext, aad []byte) ([]byte, error) {
 	gcm, err := newGCM(key)
 	if err != nil {
 		return nil, err
@@ -58,10 +61,12 @@ func Seal(key, plaintext []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return gcm.Seal(nonce, nonce, plaintext, nil), nil
+	return gcm.Seal(nonce, nonce, plaintext, aad), nil
 }
 
-func Open(key, blob []byte) ([]byte, error) {
+func Open(key, blob []byte) ([]byte, error) { return OpenAAD(key, blob, nil) }
+
+func OpenAAD(key, blob, aad []byte) ([]byte, error) {
 	gcm, err := newGCM(key)
 	if err != nil {
 		return nil, err
@@ -69,7 +74,7 @@ func Open(key, blob []byte) ([]byte, error) {
 	if len(blob) < gcm.NonceSize() {
 		return nil, errors.New("данные слишком короткие")
 	}
-	return gcm.Open(nil, blob[:gcm.NonceSize()], blob[gcm.NonceSize():], nil)
+	return gcm.Open(nil, blob[:gcm.NonceSize()], blob[gcm.NonceSize():], aad)
 }
 
 func Wipe(b []byte) { clear(b) }

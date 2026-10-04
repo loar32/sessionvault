@@ -7,13 +7,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/loar32/sessionvault/internal/isolation"
 	"golang.org/x/sys/windows"
 )
 
 func setup(t *testing.T) (string, *windows.SID) {
 	t.Helper()
-	t.Setenv("ProgramData", t.TempDir())
-	if err := os.MkdirAll(filepath.Join(os.Getenv("ProgramData"), "SessionVault"), 0o755); err != nil {
+	isolation.ProgramData = t.TempDir()
+	t.Cleanup(func() { isolation.ProgramData = "" })
+	if err := os.MkdirAll(isolation.BaseDir(), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	u, err := windows.GetCurrentProcessToken().GetTokenUser()

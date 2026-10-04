@@ -25,7 +25,12 @@ const (
 	launchGrace    = 3 * time.Second
 	maxAttempts    = 3
 	workDataName   = "work"
+	stopWait       = 30 * time.Second
 	systemOnlySDDL = "D:P(A;;GA;;;SY)"
+
+	// Процесс основной учётки может слать run сколько угодно: без пауз он засыпал бы пользователя окнами пароля.
+	runGap         = 2 * time.Second
+	promptCooldown = 10 * time.Second
 )
 
 type Service struct {
@@ -50,6 +55,8 @@ type Service struct {
 	keys      map[string][]byte // DEK профилей, пока хранилище разблокировано
 	running   map[string]bool
 	prompting bool
+	lastRun   time.Time
+	promptEnd time.Time // когда последнее окно пароля закончилось отказом или закрытием
 	idle      *time.Timer
 	wg        sync.WaitGroup
 }
@@ -131,7 +138,7 @@ func (s *Service) Stop() {
 		s.mu.Lock()
 		s.lock()
 		s.mu.Unlock()
-	case <-time.After(30 * time.Second):
+	case <-time.After(stopWait):
 		// Ключи не стираем: их ещё использует шифрование, процесс всё равно завершается.
 		s.log.Println("не все данные успели зашифроваться при остановке")
 	}
@@ -185,7 +192,7 @@ func (s *Service) run(c *ipc.Conn, name string) string {
 	}
 
 	s.mu.Lock()
-	if s.running[name] || s.prompting {
+	if !s.admit(name, time.Now()) {
 		s.mu.Unlock()
 		return ipc.Busy
 	}
@@ -208,10 +215,26 @@ func (s *Service) run(c *ipc.Conn, name string) string {
 
 var errBusy = errors.New("занято")
 
+// Вызывается под mu. Окно пароля после отказа или закрытия не появляется снова сразу;
+// при разблокированном хранилище окна нет и пауза не нужна.
+func (s *Service) admit(name string, now time.Time) bool {
+	if s.running[name] || s.prompting {
+		return false
+	}
+	if now.Sub(s.lastRun) < runGap || (s.keys[name] == nil && now.Sub(s.promptEnd) < promptCooldown) {
+		return false
+	}
+	s.lastRun = now
+	return true
+}
+
 func (s *Service) start(p profiles.Profile, v vault.Vault, dek []byte, session uint32) (string, error) {
 	if dek == nil {
 		var err error
 		if dek, err = s.askPassword(p.Name, v, session); err != nil {
+			s.mu.Lock()
+			s.promptEnd = time.Now()
+			s.mu.Unlock()
 			return "", err
 		}
 	}

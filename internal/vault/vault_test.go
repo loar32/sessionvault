@@ -3,12 +3,15 @@ package vault
 import (
 	"archive/tar"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/loar32/sessionvault/internal/crypto"
 )
 
 func newVault(t *testing.T) Vault {
@@ -205,14 +208,116 @@ func TestBackupHoldsPreviousArchive(t *testing.T) {
 	if err := v.Encrypt(dek); err != nil {
 		t.Fatal(err)
 	}
-	bak := Vault{Dir: v.Dir, DataName: v.DataName}
-	if err := os.Rename(v.path(backupFile), v.path(dataFile)); err != nil {
-		t.Fatalf(".bak не создан: %v", err)
+	if err := v.RestoreBackup(dek); err != nil {
+		t.Fatal(err)
 	}
-	if err := bak.Decrypt(dek); err != nil {
+	if err := v.Decrypt(dek); err != nil {
 		t.Fatal(err)
 	}
 	if read(t, filepath.Join(v.dataDir(), "key_datas")) != "секрет" {
 		t.Fatal(".bak должен хранить прежнее состояние")
+	}
+}
+
+func TestRollbackRejected(t *testing.T) {
+	v := newVault(t)
+	dek, _ := v.Create([]byte("pw"))
+	if err := v.Encrypt(dek); err != nil {
+		t.Fatal(err)
+	}
+	old := read(t, v.path(dataFile))
+	if err := v.Decrypt(dek); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(v.dataDir(), "key_datas"), "новое")
+	if err := v.Encrypt(dek); err != nil {
+		t.Fatal(err)
+	}
+	write(t, v.path(dataFile), old)
+	if err := v.Decrypt(dek); !errors.Is(err, ErrRollback) {
+		t.Fatalf("ждали ErrRollback, получили %v", err)
+	}
+}
+
+func TestMetaTamperRejected(t *testing.T) {
+	v := newVault(t)
+	if _, err := v.Create([]byte("pw")); err != nil {
+		t.Fatal(err)
+	}
+	b := read(t, v.path(metaFile))
+	re := regexp.MustCompile(`"Time":\d+`)
+	write(t, v.path(metaFile), re.ReplaceAllString(b, `"Time":2`))
+	if _, err := v.Unlock([]byte("pw")); err == nil {
+		t.Fatal("подмена параметров вывода ключа должна ломать разблокировку")
+	}
+}
+
+// Сбой между записью data.enc и vault.json: номер архива на единицу больше номера в vault.json.
+func TestCrashBetweenWrites(t *testing.T) {
+	v := newVault(t)
+	dek, _ := v.Create([]byte("pw"))
+	if err := v.Encrypt(dek); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Decrypt(dek); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(v.dataDir(), "key_datas"), "новое")
+	meta := read(t, v.path(metaFile))
+	if err := v.Encrypt(dek); err != nil {
+		t.Fatal(err)
+	}
+	write(t, v.path(metaFile), meta)
+	if err := v.Decrypt(dek); err != nil {
+		t.Fatalf("сбой между записями должен приниматься: %v", err)
+	}
+	if read(t, filepath.Join(v.dataDir(), "key_datas")) != "новое" {
+		t.Fatal("новый архив не открылся")
+	}
+	m, _ := v.readMeta()
+	if m.Counter != 2 {
+		t.Fatalf("номер записи не подтянут: %d", m.Counter)
+	}
+}
+
+func TestMigrationFromV1(t *testing.T) {
+	v := newVault(t)
+	salt, _ := crypto.NewSalt()
+	dek, _ := crypto.NewKey()
+	p := crypto.Params{Memory: 8 * 1024, Time: 1, Threads: 1}
+	kek := crypto.DeriveKey([]byte("pw"), salt, p)
+	wrapped, _ := crypto.Seal(kek, dek)
+	b, _ := json.Marshal(meta{Version: 1, Salt: salt, Params: p, WrappedDEK: wrapped})
+	write(t, v.path(metaFile), string(b))
+	tarData, _, err := packDir(v.dataDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob, _ := crypto.Seal(dek, tarData)
+	write(t, v.path(dataFile), string(blob))
+	if err := removeAll(v.dataDir()); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := v.Unlock([]byte("pw"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m, _ := v.readMeta(); m.Version != metaV2 {
+		t.Fatalf("после разблокировки версия %d", m.Version)
+	}
+	if err := v.Decrypt(got); err != nil {
+		t.Fatalf("старый архив не открылся: %v", err)
+	}
+	if err := v.Encrypt(got); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(read(t, v.path(dataFile)), dataMagic) {
+		t.Fatal("после записи архив должен быть версии 2")
+	}
+	// Старый архив после первой записи v2 подсунуть нельзя.
+	write(t, v.path(dataFile), string(blob))
+	if err := v.Decrypt(got); !errors.Is(err, ErrRollback) {
+		t.Fatalf("ждали ErrRollback для старого формата, получили %v", err)
 	}
 }

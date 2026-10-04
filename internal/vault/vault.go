@@ -1,6 +1,8 @@
 package vault
 
 import (
+	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,11 +20,17 @@ const (
 	openFile = "open"
 
 	backupFile = "data.enc.bak"
+
+	// Заголовок data.enc версии 2: метка и номер записи; номер входит в AAD, поэтому его нельзя подменить отдельно от шифротекста.
+	dataMagic  = "SVD2"
+	headerSize = len(dataMagic) + 8
+	metaV2     = 2
 )
 
 var (
 	ErrWrongPassword = errors.New("неверный пароль")
 	ErrEmptyData     = errors.New("рабочая папка пуста: шифрование отменено, прежний архив сохранён")
+	ErrRollback      = errors.New("data.enc старше последней записи: возможен откат на прежнюю копию")
 )
 
 // Vault — одно приложение: Dir\vault.json, Dir\data.enc и открытая папка Dir\<DataName> на время работы.
@@ -36,6 +44,44 @@ type meta struct {
 	Salt       []byte
 	Params     crypto.Params
 	WrappedDEK []byte
+	// Число записей data.enc; с версии 2. Откат data.enc на старую копию даёт номер меньше этого.
+	Counter uint64 `json:",omitempty"`
+}
+
+// Версия, соль и параметры вывода ключа входят в проверку обёрнутого ключа: подмена любого из них не пройдёт.
+func (m meta) aad() []byte {
+	b := append([]byte("sv-meta-v2"), m.Salt...)
+	b = binary.BigEndian.AppendUint32(b, m.Params.Memory)
+	b = binary.BigEndian.AppendUint32(b, m.Params.Time)
+	return append(b, m.Params.Threads)
+}
+
+func (v Vault) readMeta() (meta, error) {
+	var m meta
+	b, err := os.ReadFile(v.path(metaFile))
+	if err != nil {
+		return m, err
+	}
+	if err := json.Unmarshal(b, &m); err != nil {
+		return m, err
+	}
+	if m.Version != 1 && m.Version != metaV2 {
+		return m, fmt.Errorf("версия хранилища %d не поддерживается", m.Version)
+	}
+	// Файл читается до проверки пароля: огромные параметры вывода ключа не должны выбить память.
+	if len(m.Salt) != crypto.SaltSize || m.Params.Time < 1 || m.Params.Time > 20 ||
+		m.Params.Threads < 1 || m.Params.Memory < 8*1024 || m.Params.Memory > 1024*1024 {
+		return m, errors.New("vault.json повреждён: недопустимые параметры")
+	}
+	return m, nil
+}
+
+func (v Vault) writeMeta(m meta) error {
+	b, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	return writeAtomic(v.path(metaFile), b)
 }
 
 func (v Vault) path(name string) string { return filepath.Join(v.Dir, name) }
@@ -66,15 +112,11 @@ func (v Vault) Create(password []byte) ([]byte, error) {
 	p := crypto.DefaultParams()
 	kek := crypto.DeriveKey(password, salt, p)
 	defer crypto.Wipe(kek)
-	wrapped, err := crypto.Seal(kek, dek)
-	if err != nil {
+	m := meta{Version: metaV2, Salt: salt, Params: p}
+	if m.WrappedDEK, err = crypto.SealAAD(kek, dek, m.aad()); err != nil {
 		return nil, err
 	}
-	b, err := json.Marshal(meta{Version: 1, Salt: salt, Params: p, WrappedDEK: wrapped})
-	if err != nil {
-		return nil, err
-	}
-	if err := writeAtomic(v.path(metaFile), b); err != nil {
+	if err := v.writeMeta(m); err != nil {
 		crypto.Wipe(dek)
 		return nil, err
 	}
@@ -82,25 +124,28 @@ func (v Vault) Create(password []byte) ([]byte, error) {
 }
 
 func (v Vault) Unlock(password []byte) ([]byte, error) {
-	b, err := os.ReadFile(v.path(metaFile))
+	m, err := v.readMeta()
 	if err != nil {
 		return nil, err
 	}
-	var m meta
-	if err := json.Unmarshal(b, &m); err != nil {
-		return nil, err
-	}
-	if m.Version != 1 {
-		return nil, fmt.Errorf("версия хранилища %d не поддерживается", m.Version)
-	}
-	// Файл читается до проверки пароля: огромные параметры вывода ключа не должны выбить память.
-	if len(m.Salt) != crypto.SaltSize || m.Params.Time < 1 || m.Params.Time > 20 ||
-		m.Params.Threads < 1 || m.Params.Memory < 8*1024 || m.Params.Memory > 1024*1024 {
-		return nil, errors.New("vault.json повреждён: недопустимые параметры")
-	}
 	kek := crypto.DeriveKey(password, m.Salt, m.Params)
 	defer crypto.Wipe(kek)
-	dek, err := crypto.Open(kek, m.WrappedDEK)
+	if m.Version == 1 {
+		dek, err := crypto.Open(kek, m.WrappedDEK)
+		if err != nil {
+			return nil, ErrWrongPassword
+		}
+		// Хранилище v1 переводится в v2 при первой разблокировке; если записать не вышло, оно остаётся рабочим как v1.
+		m.Version = metaV2
+		if w, err := crypto.SealAAD(kek, dek, m.aad()); err == nil {
+			m.WrappedDEK = w
+			if err := v.writeMeta(m); err != nil {
+				m.Version = 1
+			}
+		}
+		return dek, nil
+	}
+	dek, err := crypto.OpenAAD(kek, m.WrappedDEK, m.aad())
 	if err != nil {
 		return nil, ErrWrongPassword
 	}
@@ -119,7 +164,20 @@ func (v Vault) Encrypt(dek []byte) error {
 	if files == 0 {
 		return ErrEmptyData
 	}
-	blob, err := crypto.Seal(dek, tar)
+	m, err := v.readMeta()
+	if err != nil {
+		return err
+	}
+	var blob []byte
+	if m.Version == 1 {
+		blob, err = crypto.Seal(dek, tar)
+	} else {
+		hdr := binary.BigEndian.AppendUint64([]byte(dataMagic), m.Counter+1)
+		var sealed []byte
+		if sealed, err = crypto.SealAAD(dek, tar, hdr); err == nil {
+			blob = append(hdr, sealed...)
+		}
+	}
 	if err != nil {
 		return err
 	}
@@ -131,6 +189,13 @@ func (v Vault) Encrypt(dek []byte) error {
 	}
 	if err := writeAtomic(v.path(dataFile), blob); err != nil {
 		return err
+	}
+	// Сбой между двумя записями оставляет data.enc с номером на единицу больше: Decrypt такое принимает и подтягивает номер.
+	if m.Version != 1 {
+		m.Counter++
+		if err := v.writeMeta(m); err != nil {
+			return err
+		}
 	}
 	if err := os.Remove(v.path(openFile)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
@@ -144,7 +209,7 @@ func (v Vault) Decrypt(dek []byte) error {
 	if err != nil {
 		return err
 	}
-	tar, err := crypto.Open(dek, blob)
+	tar, err := v.openData(dek, blob)
 	if err != nil {
 		return err
 	}
@@ -156,6 +221,40 @@ func (v Vault) Decrypt(dek []byte) error {
 		return errors.Join(err, removeAll(v.dataDir()))
 	}
 	return os.WriteFile(v.path(openFile), nil, 0o600)
+}
+
+// Проверяет, что архив не старше последней записи, и подтягивает номер после сбоя между записью data.enc и vault.json.
+func (v Vault) openData(dek, blob []byte) ([]byte, error) {
+	m, err := v.readMeta()
+	if err != nil {
+		return nil, err
+	}
+	if !bytes.HasPrefix(blob, []byte(dataMagic)) {
+		// Прежний формат допустим только пока в v2 не было ни одной записи: иначе старый архив подсунули бы в обход счётчика.
+		if m.Version != 1 && m.Counter > 0 {
+			return nil, ErrRollback
+		}
+		return crypto.Open(dek, blob)
+	}
+	if m.Version == 1 || len(blob) < headerSize {
+		return nil, errors.New("data.enc не соответствует версии хранилища")
+	}
+	n := binary.BigEndian.Uint64(blob[len(dataMagic):headerSize])
+	if n < m.Counter {
+		return nil, ErrRollback
+	}
+	tar, err := crypto.OpenAAD(dek, blob[headerSize:], blob[:headerSize])
+	if err != nil {
+		return nil, err
+	}
+	if n > m.Counter {
+		m.Counter = n
+		if err := v.writeMeta(m); err != nil {
+			crypto.Wipe(tar)
+			return nil, err
+		}
+	}
+	return tar, nil
 }
 
 // Сразу после выхода процесса файлы ещё могут быть заняты (антивирус, индексатор).
@@ -206,4 +305,40 @@ func (v Vault) Lock() (release func(), err error) {
 		return nil, errors.New("уже запущено (или не завершено): running.lock занят")
 	}
 	return func() { _ = windows.CloseHandle(h) }, nil
+}
+
+// RestoreBackup возвращает предыдущий архив и опускает номер записи до его номера: это осознанное действие владельца
+// (нужен ключ), в отличие от тихой подмены data.enc. Открытой копии быть не должно.
+func (v Vault) RestoreBackup(dek []byte) error {
+	if v.NeedsRecovery() {
+		return errors.New("есть открытые данные: сначала закройте приложение")
+	}
+	blob, err := os.ReadFile(v.path(backupFile))
+	if err != nil {
+		return err
+	}
+	m, err := v.readMeta()
+	if err != nil {
+		return err
+	}
+	if bytes.HasPrefix(blob, []byte(dataMagic)) && len(blob) >= headerSize {
+		tar, err := crypto.OpenAAD(dek, blob[headerSize:], blob[:headerSize])
+		if err != nil {
+			return err
+		}
+		crypto.Wipe(tar)
+		m.Counter = binary.BigEndian.Uint64(blob[len(dataMagic):headerSize])
+	} else {
+		tar, err := crypto.Open(dek, blob)
+		if err != nil {
+			return err
+		}
+		crypto.Wipe(tar)
+		m.Counter = 0
+	}
+	// Сначала номер, потом файл: сбой между ними оставляет data.enc новее номера, а это допустимо.
+	if err := v.writeMeta(m); err != nil {
+		return err
+	}
+	return retry(func() error { return os.Rename(v.path(backupFile), v.path(dataFile)) })
 }

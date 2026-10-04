@@ -85,6 +85,7 @@ func Uninstall(password []byte) (err error) {
 	}
 	_ = removeAutostart()
 	_ = os.RemoveAll(isolation.BaseDir())
+	_ = isolation.AllowRemoteLogon(isolation.VaultUser)
 	_ = isolation.DeleteUserProfile(isolation.VaultUser)
 	_ = isolation.DeleteUser(isolation.VaultUser)
 	_ = os.RemoveAll(filepath.Join(usersDir(), isolation.VaultUser)) // если штатное удаление профиля не справилось

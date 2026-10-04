@@ -23,21 +23,13 @@ var ErrMainUserAdmin = errors.New("основная учётка состоит 
 const runKey = `SOFTWARE\Microsoft\Windows\CurrentVersion\Run`
 
 func InstallDir() string {
-	pf := os.Getenv("ProgramFiles")
-	if pf == "" {
-		pf = `C:\Program Files`
-	}
-	return filepath.Join(pf, "SessionVault")
+	return filepath.Join(isolation.KnownDir(windows.FOLDERID_ProgramFiles, `C:\Program Files`), "SessionVault")
 }
 
 func installedExe() string { return filepath.Join(InstallDir(), "sessionvault.exe") }
 
 func usersDir() string {
-	sd := os.Getenv("SystemDrive")
-	if sd == "" {
-		sd = "C:"
-	}
-	return sd + `\Users`
+	return isolation.KnownDir(windows.FOLDERID_UserProfiles, `C:\Users`)
 }
 
 // Шаги установки обратимы: при ошибке откатываем уже сделанное, не оставляя полуустановленную систему.
@@ -53,8 +45,8 @@ func (s *steps) rollback() {
 func findTelegram(user string) string {
 	for _, p := range []string{
 		filepath.Join(usersDir(), user, `AppData\Roaming\Telegram Desktop\Telegram.exe`),
-		filepath.Join(os.Getenv("ProgramFiles"), `Telegram Desktop\Telegram.exe`),
-		filepath.Join(os.Getenv("ProgramFiles(x86)"), `Telegram Desktop\Telegram.exe`),
+		filepath.Join(isolation.KnownDir(windows.FOLDERID_ProgramFiles, `C:\Program Files`), `Telegram Desktop\Telegram.exe`),
+		filepath.Join(isolation.KnownDir(windows.FOLDERID_ProgramFilesX86, `C:\Program Files (x86)`), `Telegram Desktop\Telegram.exe`),
 	} {
 		if _, err := os.Stat(p); err == nil {
 			return p
@@ -160,6 +152,9 @@ func Install(mainUser, telegramExe string) (err error) {
 		return errors.New("пароль vault сохранён, но учётки нет: удали vault.pwd и повтори")
 	}
 	if err = isolation.HideFromLogon(isolation.VaultUser); err != nil {
+		return err
+	}
+	if err = isolation.DenyRemoteLogon(isolation.VaultUser); err != nil {
 		return err
 	}
 	if err = isolation.SetupVaultDir(); err != nil {

@@ -109,6 +109,13 @@ $r = Vm {
 } @('C:\sv\standin.exe')
 Check ($r.svc -eq 'Running') "служба запущена ($($r.svc)); $($r.out)"
 Check $r.exe 'бинарник в Program Files'
+$r = Vm {
+    secedit /export /cfg C:\sv\sec.inf /areas USER_RIGHTS | Out-Null
+    $sid = (New-Object Security.Principal.NTAccount('vault')).Translate([Security.Principal.SecurityIdentifier]).Value
+    $t = Get-Content C:\sv\sec.inf
+    @{ net = [bool]($t -match "SeDenyNetworkLogonRight.*(\*$sid|\bvault\b)"); rdp = [bool]($t -match "SeDenyRemoteInteractiveLogonRight.*(\*$sid|\bvault\b)") }
+}
+Check ($r.net -and $r.rdp) 'vault: сетевой и удалённый вход запрещены'
 
 Write-Host '--- 2. tdata переносится в хранилище ---'
 Invoke-Command $a {
@@ -122,6 +129,8 @@ $r = Vm {
     @{ files = (Files) }
 } @($MasterPassword)
 Check ($r.files -eq 'data.enc,vault.json') "в хранилище только шифр (есть: $($r.files))"
+$r = Vm { $m = Get-Content "$v\vault.json" -Raw | ConvertFrom-Json; $h = [IO.File]::ReadAllBytes("$v\data.enc")[0..3]; @{ ver = $m.Version; cnt = $m.Counter; magic = [Text.Encoding]::ASCII.GetString($h) } }
+Check ($r.ver -eq 2 -and $r.cnt -eq 1 -and $r.magic -eq 'SVD2') "хранилище версии 2: счётчик записей $($r.cnt), заголовок $($r.magic)"
 
 Write-Host '--- 3. status до разблокировки ---'
 $r = Vm { AsTester 'st' "`"$exe`" status"; Done 'st' | Out-Null; Out 'st' }

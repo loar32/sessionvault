@@ -65,8 +65,7 @@ func (s *Service) ensureAudit() {
 	}
 	s.log.Println("аудит файловой системы включён")
 	if cfg, err := LoadConfig(); err == nil && !cfg.AuditByUs {
-		cfg.AuditByUs = true
-		if err := SaveConfig(cfg); err != nil {
+		if err := UpdateConfig(func(c *Config) { c.AuditByUs = true }); err != nil {
 			s.log.Println("config.json:", err)
 		}
 	}

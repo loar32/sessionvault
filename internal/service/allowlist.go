@@ -1,11 +1,12 @@
 package service
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/loar32/sessionvault/internal/audit"
+	"github.com/loar32/sessionvault/internal/isolation"
+	"golang.org/x/sys/windows"
 )
 
 // Allow — процесс, которому законно читать приманку (антивирус, поиск). Шаблон пути: `*` заменяет один каталог целиком.
@@ -16,9 +17,9 @@ type Allow struct {
 }
 
 func defaultAllow() []Allow {
-	sys := os.Getenv("SystemRoot")
-	pd := os.Getenv("ProgramData")
-	pf := os.Getenv("ProgramFiles")
+	sys := isolation.KnownDir(windows.FOLDERID_Windows, `C:\Windows`)
+	pd := isolation.KnownDir(windows.FOLDERID_ProgramData, `C:\ProgramData`)
+	pf := isolation.KnownDir(windows.FOLDERID_ProgramFiles, `C:\Program Files`)
 	return []Allow{
 		{Path: filepath.Join(sys, `System32\SearchIndexer.exe`)},
 		{Path: filepath.Join(pd, `Microsoft\Windows Defender\Platform\*\MsMpEng.exe`)},
@@ -29,13 +30,11 @@ func defaultAllow() []Allow {
 
 // Каталоги, где нет записи у обычной учётки: exe оттуда нельзя подменить без прав администратора.
 func protectedRoots() []string {
-	var r []string
-	for _, e := range []string{"SystemRoot", "ProgramFiles", "ProgramFiles(x86)"} {
-		if v := os.Getenv(e); v != "" {
-			r = append(r, v)
-		}
+	return []string{
+		isolation.KnownDir(windows.FOLDERID_Windows, `C:\Windows`),
+		isolation.KnownDir(windows.FOLDERID_ProgramFiles, `C:\Program Files`),
+		isolation.KnownDir(windows.FOLDERID_ProgramFilesX86, `C:\Program Files (x86)`),
 	}
-	return r
 }
 
 type allowlist struct {

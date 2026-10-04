@@ -105,18 +105,25 @@ func LaunchAsVault(user, password, cmdline, workDir string) (pid uint32, process
 	if r == 0 {
 		return 0, 0, nil, e
 	}
-	if err = grantDesktop(tok); err != nil {
+	sid, err := logonSID(tok)
+	if err != nil {
+		_ = tok.Close()
+		return
+	}
+	if err = setDesktopAccess(sid, windows.GRANT_ACCESS); err != nil {
 		_ = tok.Close()
 		return
 	}
 	// Без загруженного профиля у приложения нет HKCU.
 	pi := profileInfo{Size: uint32(unsafe.Sizeof(profileInfo{})), Flags: piNoUI, UserName: u}
 	if r, _, e := procLoadUserProfile.Call(uintptr(tok), uintptr(unsafe.Pointer(&pi))); r == 0 {
+		_ = setDesktopAccess(sid, windows.REVOKE_ACCESS)
 		_ = tok.Close()
 		return 0, 0, nil, e
 	}
 	cleanup = func() {
 		_, _, _ = procUnloadUserProfile.Call(uintptr(tok), uintptr(pi.Profile))
+		_ = setDesktopAccess(sid, windows.REVOKE_ACCESS)
 		_ = tok.Close()
 	}
 	if pid, process, _, err = createAsUser(tok, cmdline, workDir, 0); err != nil {
@@ -126,16 +133,19 @@ func LaunchAsVault(user, password, cmdline, workDir string) (pid uint32, process
 	return
 }
 
-// Рабочий стол пользователя закрыт для чужих учёток: без ACE для logon-SID процесс vault не стартует (0xC0000142).
-func grantDesktop(tok windows.Token) error {
+func logonSID(tok windows.Token) (*windows.SID, error) {
 	var n uint32
 	_ = windows.GetTokenInformation(tok, windows.TokenLogonSid, nil, 0, &n)
 	buf := make([]byte, n)
 	if err := windows.GetTokenInformation(tok, windows.TokenLogonSid, &buf[0], n, &n); err != nil {
-		return err
+		return nil, err
 	}
-	sid := (*windows.Tokengroups)(unsafe.Pointer(&buf[0])).Groups[0].Sid
+	return (*windows.Tokengroups)(unsafe.Pointer(&buf[0])).Groups[0].Sid.Copy()
+}
 
+// Рабочий стол пользователя закрыт для чужих учёток: без ACE для logon-SID процесс vault не стартует (0xC0000142).
+// После выхода приложения ACE снимается: logon-SID у каждого входа свой, и старые копились бы до конца сеанса пользователя.
+func setDesktopAccess(sid *windows.SID, mode windows.ACCESS_MODE) error {
 	name, _ := windows.UTF16PtrFromString("WinSta0")
 	const access = windows.READ_CONTROL | windows.WRITE_DAC
 	h, _, e := procOpenWindowStation.Call(uintptr(unsafe.Pointer(name)), 0, access)
@@ -143,7 +153,7 @@ func grantDesktop(tok windows.Token) error {
 		return e
 	}
 	defer func() { _, _, _ = procCloseWindowStn.Call(h) }()
-	if err := allowObject(windows.Handle(h), sid); err != nil {
+	if err := editObjectACL(windows.Handle(h), sid, mode); err != nil {
 		return err
 	}
 	dname, _ := windows.UTF16PtrFromString("Default")
@@ -152,10 +162,10 @@ func grantDesktop(tok windows.Token) error {
 		return e
 	}
 	defer func() { _, _, _ = procCloseDesktop.Call(d) }()
-	return allowObject(windows.Handle(d), sid)
+	return editObjectACL(windows.Handle(d), sid, mode)
 }
 
-func allowObject(h windows.Handle, sid *windows.SID) error {
+func editObjectACL(h windows.Handle, sid *windows.SID, mode windows.ACCESS_MODE) error {
 	sd, err := windows.GetSecurityInfo(h, windows.SE_WINDOW_OBJECT, windows.DACL_SECURITY_INFORMATION)
 	if err != nil {
 		return err
@@ -166,7 +176,7 @@ func allowObject(h windows.Handle, sid *windows.SID) error {
 	}
 	acl, err := windows.ACLFromEntries([]windows.EXPLICIT_ACCESS{{
 		AccessPermissions: windows.GENERIC_ALL,
-		AccessMode:        windows.GRANT_ACCESS,
+		AccessMode:        mode,
 		Inheritance:       windows.NO_INHERITANCE,
 		Trustee: windows.TRUSTEE{
 			TrusteeForm:  windows.TRUSTEE_IS_SID,
