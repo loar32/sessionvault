@@ -13,3 +13,8 @@ PROMO.md
 .env
 *.key
 *.pem
+
+# Agent files: local only
+CLAUDE.md
+CLAUDE.local.md
+.claude
