@@ -47,19 +47,20 @@ function TypeInVm($text) {
     $pat = if ($text -eq $MasterPassword) { 'разблокировано' } else { 'неверный пароль|разблокировано' }
     $before = LogCount $pat
     Start-Sleep 5   # процесс помощника появляется раньше окна: ввод в этот промежуток теряется
-    foreach ($step in 'type', 'enter', 'retype', 'enter') {
-        # Окно пароля само становится активным; клик нужен только при повторе (в чекпойнте hello клик, наоборот, сбивает фокус).
-        if ($step -eq 'retype') { ClickPrompt }
+    # Первая клавиша в только что созданное окно может потеряться: приносим в жертву безвредную (Home), пароль вводится следом.
+    Invoke-CimMethod $kb -MethodName PressKey -Arguments @{ keyCode = 36 } | Out-Null
+    Invoke-CimMethod $kb -MethodName ReleaseKey -Arguments @{ keyCode = 36 } | Out-Null
+    Start-Sleep -Milliseconds 700
+    foreach ($step in 'type', 'retype', 'retype') {
+        # Повтор: поле очищается и пароль вводится заново (клик не нужен: окно само активно, а в чекпойнте hello клик сбивает фокус).
         if ($step -eq 'retype') {
             foreach ($i in 1..30) {
                 Invoke-CimMethod $kb -MethodName PressKey -Arguments @{ keyCode = 8 } | Out-Null
                 Invoke-CimMethod $kb -MethodName ReleaseKey -Arguments @{ keyCode = 8 } | Out-Null
             }
         }
-        if ($step -ne 'enter') {
-            Invoke-CimMethod $kb -MethodName TypeText -Arguments @{ asciiText = $text } | Out-Null
-            Start-Sleep -Milliseconds 1500
-        }
+        Invoke-CimMethod $kb -MethodName TypeText -Arguments @{ asciiText = $text } | Out-Null
+        Start-Sleep -Milliseconds 1500
         PressEnter
         for ($i = 0; $i -lt 8; $i++) {
             Start-Sleep 1
@@ -68,7 +69,6 @@ function TypeInVm($text) {
         Write-Host "  (ввод не дошёл до окна, шаг '$step': повтор)"
     }
 }
-
 Invoke-Command $a { New-Item -ItemType Directory -Force C:\sv | Out-Null }
 foreach ($f in 'sessionvault', 'access-check', 'standin') {
     Copy-Item "$dist\$f.exe" -Destination C:\sv\ -ToSession $a
