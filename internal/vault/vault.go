@@ -37,6 +37,7 @@ var (
 type Vault struct {
 	Dir      string
 	DataName string
+	Exclude  []string // пути внутри открытой папки, которые не шифруются (кэши)
 }
 
 type meta struct {
@@ -155,7 +156,7 @@ func (v Vault) Unlock(password []byte) ([]byte, error) {
 // Открытая папка → data.enc. Порядок важен при сбое: пока data.enc не заменён, маркер и открытая копия целы;
 // после замены data.enc полный, а недоудалённая папка без маркера при следующем Decrypt затирается.
 func (v Vault) Encrypt(dek []byte) error {
-	tar, files, err := packDir(v.dataDir())
+	tar, files, err := packDir(v.dataDir(), v.Exclude)
 	if err != nil {
 		return err
 	}

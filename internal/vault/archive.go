@@ -9,15 +9,33 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
-func packDir(root string) ([]byte, int, error) {
+// Размер архива ограничен: он собирается в памяти целиком.
+var maxArchive = 1 << 30
+
+var ErrTooLarge = errors.New("данные приложения больше 1 ГиБ: шифрование отменено")
+
+func excluded(rel string, exclude []string) bool {
+	for _, x := range exclude {
+		if strings.EqualFold(rel, filepath.Clean(x)) {
+			return true
+		}
+	}
+	return false
+}
+
+// exclude — пути относительно root (кэши): в архив не попадают, вместе с открытой папкой удаляются.
+func packDir(root string, exclude []string) ([]byte, int, error) {
 	var buf bytes.Buffer
 	var tw *tar.Writer
 	var files int
+	var tooBig bool
 	err := retry(func() error {
 		buf.Reset()
 		files = 0
+		tooBig = false
 		tw = tar.NewWriter(&buf)
 		return filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 			if err != nil {
@@ -26,6 +44,16 @@ func packDir(root string) ([]byte, int, error) {
 			rel, err := filepath.Rel(root, p)
 			if err != nil || rel == "." {
 				return err
+			}
+			if excluded(rel, exclude) {
+				if d.IsDir() {
+					return fs.SkipDir
+				}
+				return nil
+			}
+			if buf.Len() > maxArchive {
+				tooBig = true
+				return fs.SkipAll
 			}
 			info, err := d.Info()
 			if err != nil {
@@ -54,6 +82,9 @@ func packDir(root string) ([]byte, int, error) {
 	})
 	if err != nil {
 		return nil, 0, err
+	}
+	if tooBig {
+		return nil, 0, ErrTooLarge
 	}
 	if err := tw.Close(); err != nil {
 		return nil, 0, err

@@ -289,7 +289,7 @@ func TestMigrationFromV1(t *testing.T) {
 	wrapped, _ := crypto.Seal(kek, dek)
 	b, _ := json.Marshal(meta{Version: 1, Salt: salt, Params: p, WrappedDEK: wrapped})
 	write(t, v.path(metaFile), string(b))
-	tarData, _, err := packDir(v.dataDir())
+	tarData, _, err := packDir(v.dataDir(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -319,5 +319,47 @@ func TestMigrationFromV1(t *testing.T) {
 	write(t, v.path(dataFile), string(blob))
 	if err := v.Decrypt(got); !errors.Is(err, ErrRollback) {
 		t.Fatalf("ждали ErrRollback для старого формата, получили %v", err)
+	}
+}
+
+func TestExcludeSkipsCaches(t *testing.T) {
+	v := newVault(t)
+	v.Exclude = []string{`cache`, `emoji\skip.bin`}
+	write(t, filepath.Join(v.dataDir(), "cache", "blob"), "кэш")
+	write(t, filepath.Join(v.dataDir(), "emoji", "skip.bin"), "пропуск")
+	dek, _ := v.Create([]byte("pw"))
+	if err := v.Encrypt(dek); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(v.dataDir()); err == nil {
+		t.Fatal("открытая папка должна быть удалена целиком, вместе с кэшем")
+	}
+	if err := v.Decrypt(dek); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(v.dataDir(), "cache")); err == nil {
+		t.Fatal("кэш попал в архив")
+	}
+	if _, err := os.Stat(filepath.Join(v.dataDir(), "emoji", "skip.bin")); err == nil {
+		t.Fatal("исключённый файл попал в архив")
+	}
+	if read(t, filepath.Join(v.dataDir(), "emoji", "cache")) != "кэш" {
+		t.Fatal("соседний файл потерян")
+	}
+}
+
+func TestArchiveSizeLimit(t *testing.T) {
+	old := maxArchive
+	maxArchive = 10
+	defer func() { maxArchive = old }()
+	v := newVault(t)
+	write(t, filepath.Join(v.dataDir(), "big"), strings.Repeat("x", 100))
+	write(t, filepath.Join(v.dataDir(), "z-big"), strings.Repeat("x", 100))
+	dek, _ := v.Create([]byte("pw"))
+	if err := v.Encrypt(dek); !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("ждали ErrTooLarge, получили %v", err)
+	}
+	if _, err := os.Stat(v.dataDir()); err != nil {
+		t.Fatal("при отказе открытая папка должна остаться")
 	}
 }
