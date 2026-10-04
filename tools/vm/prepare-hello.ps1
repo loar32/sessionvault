@@ -72,6 +72,21 @@ $out = Invoke-Command $a { Get-Content C:\sv\sup.out -Raw -ErrorAction SilentlyC
 Write-Host $out
 if ($out -notmatch 'supported: true') { throw 'Windows Hello не настроился: см. снимок экрана ВМ (tools/vm/screenshot.ps1)' }
 Invoke-Command $a { Get-Process hello-spike, CredentialUIBroker -ErrorAction SilentlyContinue | Stop-Process -Force }
+# После работы в «Параметрах» оболочка остаётся в состоянии, где новые окна (в том числе окно пароля службы) не получают
+# фокус клавиатуры. Перезагрузка гостя возвращает чистую оболочку; PIN сохраняется.
+Invoke-Command $a { Restart-Computer -Force } -ErrorAction SilentlyContinue
+Remove-PSSession $a -ErrorAction SilentlyContinue
+Start-Sleep 30
+while ((Get-VM $VmName).Heartbeat -notmatch 'Ok') { Start-Sleep 3 }
+Start-Sleep 20
+$a = New-PSSession -VMName $VmName -Credential $admin
+$wait = 0
+while (-not (Invoke-Command $a { (Get-Process explorer -IncludeUserName -ErrorAction SilentlyContinue).UserName -like '*tester' })) {
+    Start-Sleep 3
+    if (($wait += 3) -gt 180) { throw 'tester не вошёл после перезагрузки' }
+}
+Start-Sleep 60
+Invoke-Command $a { Get-Process msedge, SystemSettings -ErrorAction SilentlyContinue | Stop-Process -Force }
 Remove-PSSession $a
 Get-VMSnapshot $VmName -Name hello -ErrorAction SilentlyContinue | Remove-VMSnapshot
 Checkpoint-VM $VmName -SnapshotName hello
