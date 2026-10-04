@@ -21,7 +21,8 @@ import (
 )
 
 const (
-	trapTick     = 30 * time.Second
+	trapTick     = 5 * time.Minute // приманка и так обновляется раз в decoyRefresh; раньше срока службу будит команда sync
+	trapMinGap   = 5 * time.Second
 	decoyRefresh = 6 * time.Hour
 	alarmLatch   = 10 * time.Minute
 	alarmDedup   = 30 * time.Second
@@ -37,6 +38,7 @@ func (s *Service) StartTraps() {
 	}
 	s.allow = newAllowlist(s.cfg.DecoyAllow, s.log.Printf)
 	s.ensureAudit()
+	s.watchSync()
 	stop, err := audit.Subscribe(s.onRead)
 	if err != nil {
 		s.log.Println("подписка на журнал аудита:", err)
@@ -48,7 +50,12 @@ func (s *Service) StartTraps() {
 }
 
 func (s *Service) stopTraps() {
-	s.quitOnce.Do(func() { close(s.quit) })
+	s.quitOnce.Do(func() {
+		close(s.quit)
+		if s.syncEvent != 0 {
+			_ = windows.SetEvent(s.syncEvent)
+		}
+	})
 	if s.stopAudit != nil {
 		s.stopAudit()
 	}
@@ -82,6 +89,13 @@ func (s *Service) trapLoop() {
 			return
 		case <-t.C:
 			s.ensureAudit()
+		case <-s.nudge:
+			s.ensureAudit()
+			select {
+			case <-s.quit:
+				return
+			case <-time.After(trapMinGap):
+			}
 		}
 	}
 }

@@ -704,7 +704,9 @@ $r = Vm {
     Set-Content 'C:\sv\jt\file.txt' 'x'
     cmd /c "rmdir /s /q `"$edgeDir`"" | Out-Null
     cmd /c "mklink /J `"$edgeDir`" C:\sv\jt" | Out-Null
-    Start-Sleep 75
+    # Проверка раз в 5 минут: просим службу проверить сейчас тем же событием, что и protect.
+    $ev = [Threading.EventWaitHandle]::OpenExisting('Global\SessionVaultSync'); [void]$ev.Set(); $ev.Dispose()
+    Start-Sleep 15
     $acl = Get-Acl 'C:\sv\jt\User Data' -Audit
     $log = Get-Content C:\ProgramData\SessionVault\service.log -Tail 30 -Encoding UTF8 | Where-Object { $_ -match 'ссылка или junction' }
     @{ audit = @($acl.Audit).Count; logged = @($log).Count }

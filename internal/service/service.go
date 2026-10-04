@@ -46,6 +46,8 @@ type Service struct {
 	allow     allowlist
 	stopAudit func()
 	quit      chan struct{}
+	nudge     chan struct{} // просьба проверить приманки и аудит раньше срока (событие syncEventName)
+	syncEvent windows.Handle
 	trapMu    sync.Mutex
 	watch     map[string]bool // папки приманок в формате устройства
 	events    chan audit.Read
@@ -72,7 +74,7 @@ func New(cfg Config, exe string, l *log.Logger) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Service{cfg: cfg, idleAfter: idleDuration(cfg.IdleMinutes), exe: exe, log: l, job: job, keys: map[string][]byte{}, running: map[string]bool{}, quit: make(chan struct{}), events: make(chan audit.Read, eventQueue), warned: map[string]bool{}}, nil
+	return &Service{cfg: cfg, idleAfter: idleDuration(cfg.IdleMinutes), exe: exe, log: l, job: job, keys: map[string][]byte{}, running: map[string]bool{}, quit: make(chan struct{}), nudge: make(chan struct{}, 1), events: make(chan audit.Read, eventQueue), warned: map[string]bool{}}, nil
 }
 
 func killOnCloseJob() (windows.Handle, error) {
