@@ -9,6 +9,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/loar32/sessionvault/internal/hello"
 	"github.com/loar32/sessionvault/internal/ipc"
 	"github.com/loar32/sessionvault/internal/profiles"
 	"golang.org/x/sys/windows"
@@ -285,6 +286,11 @@ func runApp(profile string) {
 
 // Для каждого защищённого приложения служба спрашивает мастер-пароль, затем Windows Hello создаёт ключ и подтверждает вход.
 func enableHello() {
+	// Проверка без жеста и до вопроса про мастер-пароль: без настроенного Hello пароль вводить незачем.
+	if ok, _ := hello.Supported(); !ok {
+		_, _, _ = pPostMessage.Call(hwnd, wmBalloon, 6, 0)
+		return
+	}
 	code := uintptr(4)
 	for _, name := range protectedApps() {
 		resp, err := ipc.Call(ipc.CommandPipe, "hello "+name, 4*time.Minute)
@@ -366,7 +372,8 @@ func wndProc(h, message, wparam, lparam uintptr) uintptr {
 		return 0
 	case wmBalloon:
 		texts := map[uintptr]string{1: runMessages[ipc.Failed], 2: "Служба SessionVault недоступна", 3: runMessages[ipc.Busy],
-			4: "Вход через Windows Hello включён", 5: "Не удалось включить Windows Hello"}
+			4: "Вход через Windows Hello включён", 5: "Не удалось включить Windows Hello",
+			6: "Windows Hello не настроен: добавьте PIN, лицо или отпечаток в Параметрах Windows"}
 		notify(nimModify, texts[wparam])
 		return 0
 	case wmCommand:

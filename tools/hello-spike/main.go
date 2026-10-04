@@ -40,7 +40,7 @@ func run(args []string) error {
 	ok, err := hello.Supported()
 	fmt.Println("supported:", ok, err)
 	if !ok {
-		return errors.New("Hello не настроен")
+		return errors.New("вход Windows Hello не настроен")
 	}
 	if len(args) > 0 && args[0] == "create" {
 		fmt.Println("create:", hello.Create("sv-spike"))

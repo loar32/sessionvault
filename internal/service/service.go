@@ -481,6 +481,11 @@ func (s *Service) keep(name string, dek []byte) ([]byte, error) {
 		return nil, err
 	}
 	s.mu.Lock()
+	if old := s.keys[name]; old != nil {
+		// Повторный ввод (например, при включении Hello): прежний ключ не должен остаться в памяти.
+		crypto.Wipe(old)
+		crypto.Unlock(old)
+	}
 	s.keys[name] = dek
 	s.mu.Unlock()
 	return dek, nil

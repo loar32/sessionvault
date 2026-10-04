@@ -47,6 +47,10 @@ var (
 
 const dialogClass = "Credential Dialog Xaml Host"
 
+// Сколько ждать жеста пользователя. Вызывающий задаёт меньше, чем ждёт сам: по таймауту операция отменяется
+// и окно Hello закрывается, а убитый процесс оставил бы окно висеть на экране.
+var Timeout = 2 * time.Minute
+
 // com — указатель на COM-объект; методы вызываются по номеру в таблице (0-2 IUnknown, 3-5 IInspectable).
 type com struct{ p unsafe.Pointer }
 
@@ -200,7 +204,7 @@ func Supported() (bool, error) {
 }
 
 func retrievalStatus(op com) (cred com, status int32, err error) {
-	if err = await(op, 2*time.Minute); err != nil {
+	if err = await(op, Timeout); err != nil {
 		return com{}, 0, err
 	}
 	var res unsafe.Pointer
@@ -306,7 +310,7 @@ func Secret(name string, challenge []byte) ([]byte, error) {
 		}
 		so := com{sop}
 		defer so.release()
-		if err := await(so, 2*time.Minute); err != nil {
+		if err := await(so, Timeout); err != nil {
 			return nil, err
 		}
 		var res unsafe.Pointer
