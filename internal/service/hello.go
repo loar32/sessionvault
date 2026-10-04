@@ -50,14 +50,26 @@ func (s *Service) helloSecret(session uint32, mode, keyName string, challenge []
 		_ = windows.TerminateProcess(proc, 0)
 		_ = windows.CloseHandle(proc)
 	}()
-	c, err := l.Accept(helloStartWait)
-	if err != nil {
-		return nil, err
+	// Pipe открыт пользователю, поэтому подключиться раньше помощника может любой его процесс. Чужого отбрасываем и ждём дальше,
+	// иначе такой процесс мог бы каждый раз срывать вход через Hello.
+	var c *ipc.Conn
+	deadline := time.Now().Add(helloStartWait)
+	for c == nil {
+		left := time.Until(deadline)
+		if left <= 0 {
+			return nil, errors.New("помощник Hello не подключился")
+		}
+		conn, err := l.Accept(left)
+		if err != nil {
+			return nil, err
+		}
+		if cp, e := conn.ClientPID(); e == nil && cp == pid {
+			c = conn
+		} else {
+			conn.Close()
+		}
 	}
 	defer c.Close()
-	if cp, err := c.ClientPID(); err != nil || cp != pid {
-		return nil, errors.New("к pipe Hello подключился чужой процесс")
-	}
 	if err := c.WriteLine(keyName + " " + hex.EncodeToString(challenge)); err != nil {
 		return nil, err
 	}
