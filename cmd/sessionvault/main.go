@@ -33,6 +33,7 @@ sessionvault import-tdata [путь-к-tdata]
 sessionvault uninstall
 sessionvault restore-backup <профиль>
 sessionvault harden [-off]
+sessionvault hello disable [профиль]
 sessionvault run <профиль>
 sessionvault status
 sessionvault alerts
@@ -64,7 +65,7 @@ func main() {
 		pause = true
 	}
 	switch os.Args[1] {
-	case "service", "prompt", "tray", "launch", "alert":
+	case "service", "prompt", "tray", "launch", "alert", "hello-unlock", "hello-enroll":
 	default:
 		attachConsole()
 	}
@@ -82,6 +83,10 @@ func main() {
 		err = restoreBackup(args)
 	case "harden":
 		err = harden(args)
+	case "hello":
+		err = helloCmd(args)
+	case "hello-unlock", "hello-enroll":
+		err = helloHelper(os.Args[1], args)
 	case "run":
 		err = run(args)
 	case "status":

@@ -172,6 +172,8 @@ func (s *Service) handle(c *ipc.Conn) {
 		_ = c.WriteLine(s.list())
 	case "run":
 		_ = c.WriteLine(s.run(c, req.Profile))
+	case "hello":
+		_ = c.WriteLine(s.enableHello(c, req.Profile))
 	}
 }
 
@@ -278,7 +280,7 @@ func (s *Service) admit(name string, now time.Time) bool {
 func (s *Service) start(p profiles.Profile, v vault.Vault, dek []byte, session uint32) (string, error) {
 	if dek == nil {
 		var err error
-		if dek, err = s.askPassword(p.Name, v, session); err != nil {
+		if dek, err = s.askPassword(p.Name, v, session, true); err != nil {
 			s.mu.Lock()
 			if s.promptEnd == nil {
 				s.promptEnd = map[string]time.Time{}
@@ -404,7 +406,7 @@ func (s *Service) lock() {
 }
 
 // Окно пароля запускается от SYSTEM в сессии пользователя и общается с нами по pipe, закрытому для обычных учёток.
-func (s *Service) askPassword(name string, v vault.Vault, session uint32) ([]byte, error) {
+func (s *Service) askPassword(name string, v vault.Vault, session uint32, allowHello bool) ([]byte, error) {
 	s.mu.Lock()
 	if s.prompting {
 		s.mu.Unlock()
@@ -417,6 +419,12 @@ func (s *Service) askPassword(name string, v vault.Vault, session uint32) ([]byt
 		s.prompting = false
 		s.mu.Unlock()
 	}()
+
+	if allowHello {
+		if dek, ok := s.tryHello(name, v, session); ok {
+			return s.keep(name, dek)
+		}
+	}
 
 	tail, err := crypto.NewSalt()
 	if err != nil {

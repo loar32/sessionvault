@@ -67,6 +67,7 @@ const (
 	tpmBottomAlgn = 0x20
 	idRun         = 1001 // и далее по одному на приложение; меньше idExit не бывает: приложений не больше maxMenuApps
 	maxMenuApps   = 16
+	idHello       = 1050
 	idExit        = 1100
 	pollEvery     = 2 * time.Second
 	iconSize      = 32
@@ -282,6 +283,25 @@ func runApp(profile string) {
 	}
 }
 
+// Для каждого защищённого приложения служба спрашивает мастер-пароль, затем Windows Hello создаёт ключ и подтверждает вход.
+func enableHello() {
+	code := uintptr(4)
+	for _, name := range protectedApps() {
+		resp, err := ipc.Call(ipc.CommandPipe, "hello "+name, 4*time.Minute)
+		if err != nil {
+			code = 2
+			break
+		}
+		if resp != ipc.Ok {
+			code = 5
+			if resp == ipc.Busy {
+				code = 3
+			}
+		}
+	}
+	_, _, _ = pPostMessage.Call(hwnd, wmBalloon, code, 0)
+}
+
 var titles = map[string]string{"telegram": "Telegram", "chrome": "Google Chrome", "edge": "Microsoft Edge", "brave": "Brave"}
 
 func appTitle(name string) string {
@@ -319,6 +339,9 @@ func showMenu() {
 		_, _, _ = pAppendMenu.Call(menu, mfString, uintptr(idRun+i), uintptr(unsafe.Pointer(wstr("Запустить "+appTitle(name)))))
 	}
 	_, _, _ = pAppendMenu.Call(menu, mfSeparator, 0, 0)
+	if len(menuApps) > 0 {
+		_, _, _ = pAppendMenu.Call(menu, mfString, idHello, uintptr(unsafe.Pointer(wstr("Включить вход через Windows Hello"))))
+	}
 	_, _, _ = pAppendMenu.Call(menu, mfString, idExit, uintptr(unsafe.Pointer(wstr("Выход"))))
 	var p point
 	_, _, _ = pGetCursorPos.Call(uintptr(unsafe.Pointer(&p)))
@@ -342,7 +365,8 @@ func wndProc(h, message, wparam, lparam uintptr) uintptr {
 		}
 		return 0
 	case wmBalloon:
-		texts := map[uintptr]string{1: runMessages[ipc.Failed], 2: "Служба SessionVault недоступна", 3: runMessages[ipc.Busy]}
+		texts := map[uintptr]string{1: runMessages[ipc.Failed], 2: "Служба SessionVault недоступна", 3: runMessages[ipc.Busy],
+			4: "Вход через Windows Hello включён", 5: "Не удалось включить Windows Hello"}
 		notify(nimModify, texts[wparam])
 		return 0
 	case wmCommand:
@@ -357,6 +381,8 @@ func wndProc(h, message, wparam, lparam uintptr) uintptr {
 			if i := id - idRun; i < len(apps) {
 				go runApp(apps[i])
 			}
+		case id == idHello:
+			go enableHello()
 		case id == idExit:
 			_, _, _ = pDestroyWindow.Call(h)
 		}

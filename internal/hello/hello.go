@@ -404,3 +404,34 @@ func readBuffer(buf com) ([]byte, error) {
 	copy(out, unsafe.Slice((*byte)(raw), n))
 	return out, nil
 }
+
+// Exists — ключ Hello с этим именем уже создан (жеста не требуется).
+func Exists(name string) (bool, error) {
+	return withRuntime(func() (bool, error) {
+		st, err := statics()
+		if err != nil {
+			return false, err
+		}
+		defer st.release()
+		h, err := newHString(name)
+		if err != nil {
+			return false, err
+		}
+		defer h.free()
+		var op unsafe.Pointer
+		if _, err := st.call(9, uintptr(h), uintptr(unsafe.Pointer(&op))); err != nil {
+			return false, err
+		}
+		o := com{op}
+		defer o.release()
+		cred, status, err := retrievalStatus(o)
+		if err != nil {
+			return false, err
+		}
+		cred.release()
+		if status == statusNotFound {
+			return false, nil
+		}
+		return true, statusError(status)
+	})
+}

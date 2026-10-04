@@ -34,3 +34,15 @@ func TestParseRejects(t *testing.T) {
 		}
 	}
 }
+
+func TestParseHello(t *testing.T) {
+	r, err := Parse("hello telegram")
+	if err != nil || r.Cmd != "hello" || r.Profile != "telegram" {
+		t.Fatalf("hello telegram: %+v %v", r, err)
+	}
+	for _, s := range []string{"hello", "hello ", "hello ../x", "hello a b", "hello Telegram"} {
+		if _, err := Parse(s); err == nil {
+			t.Errorf("%q принят", s)
+		}
+	}
+}

@@ -2,7 +2,8 @@
     [string]$VmName = 'sv-test',
     [string]$Checkpoint = 'clean',
     [string]$AdminPassword = 'Sv-Admin-1!',
-    [string]$MasterPassword = 'Master-Pass-1'
+    [string]$MasterPassword = 'Master-Pass-1',
+    [string]$HelloPin = '135790'   # PIN Windows Hello у tester в чекпойнте hello (tools/vm/prepare-hello.ps1)
 )
 # Автотест службы. В интерактивной сессии работает обычный tester, админ-действия идут через PowerShell Direct (svadmin).
 # Пароль в окно службы вводится клавиатурой Hyper-V с хоста: в самой программе тестовых лазеек нет.
@@ -90,6 +91,7 @@ function WaitFor($sb, $sec = 60) {
     return $false
 }
 function Done($name, $sec = 60) { WaitFor { (Out $name) -match 'EXIT=' } $sec }
+function HelloUp() { [bool](Get-CimInstance Win32_Process -Filter "Name='sessionvault.exe'" | Where-Object { $_.CommandLine -like '* hello-*' }) }
 function PromptUp() { [bool](Get-CimInstance Win32_Process -Filter "Name='sessionvault.exe'" | Where-Object { $_.CommandLine -like '* prompt *' }) }
 function Files() { (Get-ChildItem $v -Recurse -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -notin 'running.lock', 'data.enc.bak' } | ForEach-Object { $_.FullName.Substring($v.Length + 1) }) -join ',' }
 function Standin() { Get-Process standin -IncludeUserName -ErrorAction SilentlyContinue | Select-Object -First 1 }
@@ -253,6 +255,60 @@ Check ($r -ne 'connected') "svadmin (не основная учётка) не м
 Write-Host '--- 11. защита файлов при закрытом приложении ---'
 $r = Vm { AsTester 'ac2' 'C:\sv\access-check.exe -pipe'; Done 'ac2' 120 | Out-Null; Out 'ac2' }
 Check ($r -match 'EXIT=0') 'access-check (+ пробы pipe) из tester: утечек нет'
+
+Write-Host '--- 11b. вход через Windows Hello ---'
+# Нужен чекпойнт hello (PIN у tester). Окна Hello показывает помощник под пользователем; PIN вводится клавиатурой ВМ.
+function HelloPin($name) {
+    for ($i = 0; $i -lt 4; $i++) {
+        Start-Sleep 7
+        Invoke-CimMethod $kb -MethodName TypeText -Arguments @{ asciiText = $HelloPin } | Out-Null
+        Start-Sleep -Milliseconds 800
+        PressEnter
+        Start-Sleep 4
+        if (Vm { param($n) (Out $n) -match 'EXIT=' } @($name)) { return }
+    }
+}
+Copy-Item "$PSScriptRoot\ipc-call.ps1" -Destination C:\sv\ -ToSession $a
+Vm { Restart-Service SessionVault; Start-Sleep 3; AsTester 'he' 'powershell -NoProfile -ExecutionPolicy Bypass -File C:\sv\ipc-call.ps1 "hello telegram"' }
+Check (WaitPrompt) 'hello: служба просит мастер-пароль, чтобы включить Hello'
+Start-Sleep 3
+TypeInVm $MasterPassword
+Check (Vm { WaitFor { HelloUp } 40 }) 'hello: помощник под токеном пользователя показал окно Windows Hello'
+HelloPin 'he'
+$r = Vm {
+    Done 'he' 120 | Out-Null
+    @{ out = ((Out 'he') -replace '\s+', ' '); hello = ((Get-Content "$v\vault.json" -Raw | ConvertFrom-Json).Hello.Name); user = (Get-CimInstance Win32_Process -Filter "Name='sessionvault.exe'" | Where-Object { $_.CommandLine -like '* hello-*' } | Select-Object -First 1) }
+}
+Check ($r.out -match 'ok' -and $r.hello -eq 'SessionVault') "hello: слот записан в vault.json ($($r.out))"
+
+Vm { Restart-Service SessionVault; Start-Sleep 3; AsTester 'rh' "`"$exe`" run telegram" }
+Check (Vm { WaitFor { HelloUp } 40 }) 'run после блокировки открывает окно Windows Hello'
+Check (-not (Vm { PromptUp })) 'окно мастер-пароля при этом не показано'
+HelloPin 'rh'
+$r = Vm {
+    Done 'rh' 90 | Out-Null
+    Start-Sleep 3
+    @{ out = ((Out 'rh') -replace '\s+', ' '); user = (Standin).UserName; log = [bool](Get-Content C:\ProgramData\SessionVault\service.log -Tail 40 -Encoding UTF8 | Select-String 'через Windows Hello') }
+}
+Check ($r.out -match 'ok' -and $r.user -like '*\vault') "Hello открыл хранилище без пароля, приложение от vault ($($r.out))"
+Check $r.log 'служба записала в журнал разблокировку через Windows Hello'
+Vm { Stop-Process -Name standin -Force; WaitFor { (Files) -eq 'data.enc,vault.json' } 60 | Out-Null } | Out-Null
+
+Vm { Restart-Service SessionVault; Start-Sleep 3; AsTester 'rc' "`"$exe`" run telegram" }
+Check (Vm { WaitFor { HelloUp } 40 }) 'отмена Hello: окно Hello показано'
+Start-Sleep 8
+Invoke-CimMethod $kb -MethodName PressKey -Arguments @{ keyCode = 27 } | Out-Null
+Invoke-CimMethod $kb -MethodName ReleaseKey -Arguments @{ keyCode = 27 } | Out-Null
+Check (WaitPrompt) 'после отмены Hello открывается окно мастер-пароля'
+Start-Sleep 3
+TypeInVm $MasterPassword
+$r = Vm { Done 'rc' 90 | Out-Null; Start-Sleep 3; @{ out = ((Out 'rc') -replace '\s+', ' '); user = (Standin).UserName } }
+Check ($r.out -match 'ok' -and $r.user -like '*\vault') 'пароль как запасной способ работает'
+Vm { Stop-Process -Name standin -Force; WaitFor { (Files) -eq 'data.enc,vault.json' } 60 | Out-Null } | Out-Null
+
+$r = Vm { param($e) $o = & $e hello disable 2>&1 | Out-String; @{ out = ($o -replace '\s+', ' '); hello = ((Get-Content "$v\vault.json" -Raw | ConvertFrom-Json).Hello) } } @($exe)
+Check ($null -eq $r.hello) "hello disable убрал слот ($($r.out))"
+Vm { Restart-Service SessionVault; Start-Sleep 3 }
 
 Write-Host '--- 12. трей ---'
 $r = Vm {

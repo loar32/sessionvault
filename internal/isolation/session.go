@@ -216,3 +216,42 @@ func ConsoleUser() (string, error) {
 	defer func() { _, _, _ = procWTSFree.Call(uintptr(unsafe.Pointer(buf))) }()
 	return windows.UTF16PtrToString(buf), nil
 }
+
+// sessionUserToken — первичный токен пользователя, вошедшего в сессию. Запрашивать его может только SYSTEM.
+func sessionUserToken(session uint32) (windows.Token, error) {
+	var imp windows.Token
+	if err := windows.WTSQueryUserToken(session, &imp); err != nil {
+		return 0, err
+	}
+	defer func() { _ = imp.Close() }()
+	var tok windows.Token
+	if err := windows.DuplicateTokenEx(imp, windows.MAXIMUM_ALLOWED, nil, windows.SecurityIdentification, windows.TokenPrimary, &tok); err != nil {
+		return 0, err
+	}
+	return tok, nil
+}
+
+// SessionUserSID — SID пользователя сессии (строкой для SDDL).
+func SessionUserSID(session uint32) (string, error) {
+	tok, err := sessionUserToken(session)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = tok.Close() }()
+	u, err := tok.GetTokenUser()
+	if err != nil {
+		return "", err
+	}
+	return u.User.Sid.String(), nil
+}
+
+// StartAsSessionUser запускает процесс от имени пользователя сессии: ключ Windows Hello принадлежит ему, а не SYSTEM.
+func StartAsSessionUser(session uint32, cmdline string) (pid uint32, process windows.Handle, err error) {
+	tok, err := sessionUserToken(session)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer func() { _ = tok.Close() }()
+	pid, process, _, err = createAsUser(tok, cmdline, "", 0)
+	return
+}
