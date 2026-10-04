@@ -19,6 +19,8 @@ type Config struct {
 	// Аудит файловой системы включила служба (а не он уже был): при удалении возвращаем как было.
 	AuditByUs  bool    `json:"audit_by_us,omitempty"`
 	DecoyAllow []Allow `json:"decoy_allow,omitempty"`
+	// Профиль браузера для ссылок (sessionvault open); по умолчанию первый из chrome, edge, brave.
+	LinkProfile string `json:"link_profile,omitempty"`
 	// Прежние значения системных мер (hardening): при удалении они возвращаются.
 	Hardening map[string]int64 `json:"hardening,omitempty"`
 }

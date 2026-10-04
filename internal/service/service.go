@@ -59,6 +59,7 @@ type Service struct {
 	prompting   bool
 	lastFailLog time.Time            // когда последний раз писали об ошибке запуска
 	lastRun     map[string]time.Time // по профилям: запуск одного приложения не задерживает другое
+	lastOpen    time.Time
 	promptEnd   map[string]time.Time // когда последнее окно пароля профиля закончилось отказом или закрытием
 	idle        *time.Timer
 	lockPending bool // блокировка запрошена событием Windows, но приложение ещё запущено
@@ -171,7 +172,9 @@ func (s *Service) handle(c *ipc.Conn) {
 	case "list":
 		_ = c.WriteLine(s.list())
 	case "run":
-		_ = c.WriteLine(s.run(c, req.Profile))
+		_ = c.WriteLine(s.run(c, req.Profile, ""))
+	case "open":
+		_ = c.WriteLine(s.open(c))
 	case "hello":
 		_ = c.WriteLine(s.enableHello(c, req.Profile))
 	}
@@ -208,7 +211,7 @@ func (s *Service) state() string {
 	return ipc.Unlocked
 }
 
-func (s *Service) run(c *ipc.Conn, name string) string {
+func (s *Service) run(c *ipc.Conn, name, link string) string {
 	p, err := profiles.Load(isolation.ProfilesDir(), name)
 	if err != nil {
 		s.logRunFailure("run %s: %v", name, err)
@@ -234,7 +237,7 @@ func (s *Service) run(c *ipc.Conn, name string) string {
 	dek := s.keys[name]
 	s.mu.Unlock()
 
-	resp, err := s.start(p, v, dek, session)
+	resp, err := s.start(p, v, dek, session, link)
 	if err != nil {
 		s.log.Printf("run %s: %v", name, err)
 		s.finish(name)
@@ -277,7 +280,7 @@ func (s *Service) admit(name string, now time.Time) bool {
 	return true
 }
 
-func (s *Service) start(p profiles.Profile, v vault.Vault, dek []byte, session uint32) (string, error) {
+func (s *Service) start(p profiles.Profile, v vault.Vault, dek []byte, session uint32, link string) (string, error) {
 	if dek == nil {
 		var err error
 		if dek, err = s.askPassword(p.Name, v, session, true); err != nil {
@@ -310,7 +313,7 @@ func (s *Service) start(p profiles.Profile, v vault.Vault, dek []byte, session u
 		return "", errors.Join(err, v.Encrypt(dek))
 	}
 
-	_, proc, thread, err := isolation.StartInSession(session, fmt.Sprintf(`"%s" launch %s`, s.exe, p.Name), true)
+	_, proc, thread, err := isolation.StartInSession(session, launchLine(s.exe, p.Name, link), true)
 	if err != nil {
 		unlock()
 		return "", errors.Join(err, v.Encrypt(dek))

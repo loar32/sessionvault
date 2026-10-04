@@ -46,3 +46,31 @@ func TestParseHello(t *testing.T) {
 		}
 	}
 }
+
+func TestParseOpen(t *testing.T) {
+	r, err := Parse("open")
+	if err != nil || r.Cmd != "open" {
+		t.Fatalf("open: %+v %v", r, err)
+	}
+	for _, s := range []string{"open ", "open https://a.b", "open telegram", "OPEN"} {
+		if _, err := Parse(s); err == nil {
+			t.Errorf("%q принят", s)
+		}
+	}
+}
+
+func TestValidURL(t *testing.T) {
+	for _, s := range []string{"https://example.com", "http://a.b/c?d=1&e=%20f#g", "https://user@host:8080/p"} {
+		if err := ValidURL(s); err != nil {
+			t.Errorf("%q отклонён: %v", s, err)
+		}
+	}
+	bad := []string{"", "example.com", "--remote-debugging-port=1", "-x https://a.b", "file:///C:/x", "javascript:alert(1)",
+		"chrome://settings", "https://", "https:///x", "https://a.b/ c", `https://a.b/"--x`, `https://a.b/\x`, "https://a.b/\n",
+		"https://a.b/^x", "https://a.b/привет", "ftp://a.b", "HTTPS://A.B/x ", "https://a.b/" + strings.Repeat("a", MaxURL)}
+	for _, s := range bad {
+		if err := ValidURL(s); err == nil {
+			t.Errorf("%q принят", s)
+		}
+	}
+}
