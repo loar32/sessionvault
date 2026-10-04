@@ -122,6 +122,7 @@ function HelloBlock() {
     # Слот Hello создаётся офлайн, без окон пароля: секрет получает hello-spike в сеансе tester (жест — PIN),
     # мастер-пароль идёт на stdin. Включение через окно пароля и команду hello проверяется вручную.
     $challenge = '0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20'
+    Copy-Item "$PSScriptRoot\ipc-call.ps1" -Destination C:\sv\ -ToSession $a
     Copy-Item "$dist\hello-spike.exe" -Destination C:\sv\ -ToSession $a
     Vm { param($c) AsTester 'hs' "C:\sv\hello-spike.exe secret $c" } @($challenge)
     HelloPin 'hs'
