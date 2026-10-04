@@ -291,6 +291,10 @@ func (s *Service) killApps() {
 }
 
 func fileHash(path string) string {
+	// Путь процесса приходит из журнала: exe с сетевой шары заставил бы SYSTEM обратиться к чужому серверу.
+	if !localFixed(path) {
+		return "не считался (не локальный диск)"
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return "недоступен"
@@ -308,6 +312,7 @@ func appendAlert(i alert.Info) error {
 	if err != nil {
 		return err
 	}
+	rotateLog(AlertsPath())
 	f, err := os.OpenFile(AlertsPath(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
@@ -315,4 +320,12 @@ func appendAlert(i alert.Info) error {
 	defer func() { _ = f.Close() }()
 	_, err = f.Write(append(b, '\n'))
 	return err
+}
+
+func localFixed(path string) bool {
+	if len(path) < 3 || path[1] != ':' || path[2] != '\\' {
+		return false
+	}
+	root, err := windows.UTF16PtrFromString(path[:3])
+	return err == nil && windows.GetDriveType(root) == windows.DRIVE_FIXED
 }

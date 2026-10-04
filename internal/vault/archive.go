@@ -62,8 +62,10 @@ func packDir(root string, exclude []string) ([]byte, int, error) {
 			if err != nil {
 				return err
 			}
+			// Ссылка или junction в данных (приложение под vault могло оставить): в архив не берём. Ошибка здесь
+			// оставляла бы данные расшифрованными после каждого выхода приложения.
 			if !info.Mode().IsRegular() && !info.IsDir() {
-				return fmt.Errorf("неподдерживаемый тип файла: %s", p)
+				return nil
 			}
 			h, err := tar.FileInfoHeader(info, "")
 			if err != nil {

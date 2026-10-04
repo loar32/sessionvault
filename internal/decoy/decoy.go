@@ -114,13 +114,30 @@ func Ensure(profile, kind, path string, user *windows.SID, refresh time.Duration
 	if err := NoReparse(path); err != nil {
 		return false, err
 	}
-	names, sigs, err := generate(path, layouts[kind])
+	// Папка приманки лежит в профиле пользователя и ему подконтрольна, а службе приходится менять в ней владельца и права.
+	// Пока SYSTEM работает в такой папке, пользователь мог бы подменить подпапку ссылкой (junction) и заставить службу
+	// менять владельца у системных файлов. Поэтому приманка собирается в закрытой папке службы и переносится целиком.
+	stage := stagePath(profile)
+	_ = os.RemoveAll(stage)
+	names, sigs, err := generate(stage, layouts[kind])
 	if err != nil {
-		_ = os.RemoveAll(path)
+		_ = os.RemoveAll(stage)
 		return false, err
 	}
-	if err := isolation.GiveToUser(path, user); err != nil {
-		_ = os.RemoveAll(path)
+	if err := grantUser(stage, user); err != nil {
+		_ = os.RemoveAll(stage)
+		return false, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		_ = os.RemoveAll(stage)
+		return false, err
+	}
+	if err := NoReparse(path); err != nil {
+		_ = os.RemoveAll(stage)
+		return false, err
+	}
+	if err := os.Rename(stage, path); err != nil {
+		_ = os.RemoveAll(stage)
 		return false, err
 	}
 	st[profile] = entry{Path: path, Names: names, Updated: time.Now(), Sigs: sigs}
@@ -254,4 +271,28 @@ func between(min, max int) (int, error) {
 		return 0, err
 	}
 	return min + int(n.Int64()), nil
+}
+
+func stagePath(profile string) string {
+	return filepath.Join(isolation.BaseDir(), "decoy-stage", profile)
+}
+
+// Явные права вместо наследования: у собранной в закрытой папке приманки родитель другой, а после переноса права остаются как есть.
+func grantUser(root string, user *windows.SID) error {
+	sd, err := windows.SecurityDescriptorFromString("D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;" + user.String() + ")")
+	if err != nil {
+		return err
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil {
+		return err
+	}
+	return filepath.WalkDir(root, func(p string, _ fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		return windows.SetNamedSecurityInfo(p, windows.SE_FILE_OBJECT,
+			windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
+			user, nil, dacl, nil)
+	})
 }

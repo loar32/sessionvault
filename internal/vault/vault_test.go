@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -433,5 +434,30 @@ func TestHelloSlotTamperRejected(t *testing.T) {
 	}
 	if _, err := v.UnlockHello(secret); err == nil {
 		t.Fatal("подмена challenge не замечена")
+	}
+}
+
+func TestPackSkipsJunction(t *testing.T) {
+	v := newVault(t)
+	outside := filepath.Join(t.TempDir(), "outside")
+	write(t, filepath.Join(outside, "secret.txt"), "чужое")
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", filepath.Join(v.dataDir(), "link"), outside).CombinedOutput(); err != nil {
+		t.Skip("junction не создан:", string(out))
+	}
+	dek, _ := v.Create([]byte("pw"))
+	if err := v.Encrypt(dek); err != nil {
+		t.Fatalf("junction в данных сорвал шифрование: %v", err)
+	}
+	if _, err := os.Stat(v.dataDir()); err == nil {
+		t.Fatal("открытая папка не удалена")
+	}
+	if read(t, filepath.Join(outside, "secret.txt")) != "чужое" {
+		t.Fatal("удаление открытой папки задело файл за ссылкой")
+	}
+	if err := v.Decrypt(dek); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(v.dataDir(), "link")); err == nil {
+		t.Fatal("ссылка попала в архив")
 	}
 }
