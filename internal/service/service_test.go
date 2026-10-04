@@ -132,3 +132,40 @@ func TestRunFailureLogThrottled(t *testing.T) {
 		t.Fatalf("записей в журнале %d, ждали 1", n)
 	}
 }
+
+func TestLockRequestedLocksWhenIdle(t *testing.T) {
+	s := testService(time.Hour)
+	s.lockRequested()
+	if keysCount(s) != 0 {
+		t.Fatal("ключи не стёрты при блокировке сеанса")
+	}
+}
+
+// Пока приложение запущено, ключ нужен для шифрования: блокировка откладывается до его выхода.
+func TestLockRequestedWaitsForApp(t *testing.T) {
+	s := testService(time.Hour)
+	s.mu.Lock()
+	s.running["telegram"] = true
+	s.mu.Unlock()
+	s.lockRequested()
+	if keysCount(s) != 1 {
+		t.Fatal("ключи стёрты при работающем приложении")
+	}
+	s.finish("telegram")
+	if keysCount(s) != 0 {
+		t.Fatal("после выхода приложения блокировка не сработала")
+	}
+}
+
+func TestNegativeIdleDisablesTimer(t *testing.T) {
+	if idleDuration(-1) != 0 || idleDuration(240) != 4*time.Hour {
+		t.Fatal("idleDuration")
+	}
+	s := testService(0)
+	s.mu.Lock()
+	s.resetIdle()
+	s.mu.Unlock()
+	if s.idle != nil {
+		t.Fatal("таймер запущен при выключенной блокировке по бездействию")
+	}
+}

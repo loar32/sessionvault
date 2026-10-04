@@ -23,9 +23,25 @@ func defaultAllow() []Allow {
 	pf := isolation.KnownDir(windows.FOLDERID_ProgramFiles, `C:\Program Files`)
 	a := []Allow{
 		{Path: filepath.Join(sys, `System32\SearchIndexer.exe`)},
+		{Path: filepath.Join(sys, `System32\SearchProtocolHost.exe`)},
+		{Path: filepath.Join(sys, `System32\SearchFilterHost.exe`)},
+		{Path: filepath.Join(sys, `explorer.exe`)},
+		{Path: filepath.Join(pd, `Microsoft\Windows Defender\Platform\*\NisSrv.exe`)},
+		{Path: filepath.Join(pd, `Microsoft\Windows Defender\Platform\*\MpCmdRun.exe`)},
 		{Path: filepath.Join(pd, `Microsoft\Windows Defender\Platform\*\MsMpEng.exe`)},
 		{Path: filepath.Join(pd, `Microsoft\Windows Defender\Platform\*\MpCopyAccelerator.exe`)},
 		{Path: filepath.Join(pf, `Windows Defender\MsMpEng.exe`)},
+	}
+	// Сторонние антивирусы читают всё подряд. Издатель обязателен: подпись проверяется, чужой exe с тем же именем не пройдёт.
+	pf86 := isolation.KnownDir(windows.FOLDERID_ProgramFilesX86, `C:\Program Files (x86)`)
+	for _, root := range []string{pf, pf86} {
+		a = append(a,
+			Allow{Path: filepath.Join(root, `Kaspersky Lab\*\avp.exe`), Publisher: "AO Kaspersky Lab"},
+			Allow{Path: filepath.Join(root, `ESET\*\ekrn.exe`), Publisher: "ESET, spol. s r.o."},
+			Allow{Path: filepath.Join(root, `Avast Software\Avast\AvastSvc.exe`), Publisher: "AVAST Software s.r.o."},
+			Allow{Path: filepath.Join(root, `Malwarebytes\Anti-Malware\MBAMService.exe`), Publisher: "Malwarebytes Inc"},
+			Allow{Path: filepath.Join(root, `Norton Security\Engine\*\ccSvcHst.exe`), Publisher: "NortonLifeLock Inc."},
+		)
 	}
 	// Обычный браузер, запущенный из основной учётки (ссылка, автозапуск), читает свой прежний профиль:
 	// это не кража, и тревога убила бы защищённые приложения. Подпись проверяется, подмена exe не пройдёт.

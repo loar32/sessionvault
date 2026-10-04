@@ -19,9 +19,20 @@ type Config struct {
 	// Аудит файловой системы включила служба (а не он уже был): при удалении возвращаем как было.
 	AuditByUs  bool    `json:"audit_by_us,omitempty"`
 	DecoyAllow []Allow `json:"decoy_allow,omitempty"`
+	// Прежние значения системных мер (hardening): при удалении они возвращаются.
+	Hardening map[string]int64 `json:"hardening,omitempty"`
 }
 
-const defaultIdleMinutes = 15
+// Блокировка по бездействию — страховка на случай, если событие Windows (блокировка сеанса, сон) не пришло.
+// Отрицательное значение в config.json выключает таймер.
+const defaultIdleMinutes = 240
+
+func idleDuration(minutes int) time.Duration {
+	if minutes < 0 {
+		return 0
+	}
+	return time.Duration(minutes) * time.Minute
+}
 
 func LoadConfig() (Config, error) {
 	var c Config
@@ -33,7 +44,7 @@ func LoadConfig() (Config, error) {
 	if err := json.Unmarshal(b, &c); err != nil {
 		return c, err
 	}
-	if c.IdleMinutes <= 0 {
+	if c.IdleMinutes == 0 {
 		c.IdleMinutes = defaultIdleMinutes
 	}
 	return c, nil

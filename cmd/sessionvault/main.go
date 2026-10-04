@@ -32,6 +32,7 @@ sessionvault protect [-yes] [-password-stdin] <telegram|chrome|edge|brave>
 sessionvault import-tdata [путь-к-tdata]
 sessionvault uninstall
 sessionvault restore-backup <профиль>
+sessionvault harden [-off]
 sessionvault run <профиль>
 sessionvault status
 sessionvault alerts
@@ -79,6 +80,8 @@ func main() {
 		err = uninstall(args)
 	case "restore-backup":
 		err = restoreBackup(args)
+	case "harden":
+		err = harden(args)
 	case "run":
 		err = run(args)
 	case "status":
@@ -366,6 +369,24 @@ func alertWindow(args []string) error {
 		return errors.New("нет данных тревоги")
 	}
 	return alert.Run(args[0])
+}
+
+func harden(args []string) error {
+	fs := flag.NewFlagSet("harden", flag.ContinueOnError)
+	off := fs.Bool("off", false, "вернуть прежние значения")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := service.Harden(*off); err != nil {
+		return err
+	}
+	if *off {
+		fmt.Println("прежние значения возвращены; перезагрузите компьютер")
+	} else {
+		fmt.Println("шифрование файла подкачки, отключение гибернации и дампов памяти включены; перезагрузите компьютер.")
+		fmt.Println("Гибернация отключена, поэтому быстрый запуск Windows тоже не работает. Вернуть: sessionvault harden -off")
+	}
+	return nil
 }
 
 // Журнал тревог читают администраторы: у обычных учёток доступа к файлу нет.

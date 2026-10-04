@@ -9,17 +9,31 @@ import (
 
 const Name = "SessionVault"
 
+const (
+	wtsSessionLogoff = 6 // WTS_SESSION_LOGOFF
+	wtsSessionLock   = 7 // WTS_SESSION_LOCK
+	pbtApmSuspend    = 4 // PBT_APMSUSPEND
+)
+
 type handler struct{ s *Service }
 
 func (h handler) Execute(_ []string, r <-chan svc.ChangeRequest, st chan<- svc.Status) (bool, uint32) {
 	st <- svc.Status{State: svc.StartPending}
 	go h.s.Serve()
 	go h.s.StartTraps()
-	st <- svc.Status{State: svc.Running, Accepts: svc.AcceptStop | svc.AcceptShutdown | svc.AcceptPreShutdown}
+	st <- svc.Status{State: svc.Running, Accepts: svc.AcceptStop | svc.AcceptShutdown | svc.AcceptPreShutdown | svc.AcceptSessionChange | svc.AcceptPowerEvent}
 	for c := range r {
 		switch c.Cmd {
 		case svc.Interrogate:
 			st <- c.CurrentStatus
+		case svc.SessionChange:
+			if c.EventType == wtsSessionLogoff || c.EventType == wtsSessionLock {
+				h.s.lockRequested()
+			}
+		case svc.PowerEvent:
+			if c.EventType == pbtApmSuspend {
+				h.s.lockRequested()
+			}
 		case svc.Stop, svc.Shutdown, svc.PreShutdown:
 			// Шифрование открытых данных при остановке может занять до stopWait: без WaitHint система выключилась бы раньше.
 			st <- svc.Status{State: svc.StopPending, WaitHint: uint32((stopWait + 5*time.Second).Milliseconds())}

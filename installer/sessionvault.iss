@@ -4,7 +4,7 @@
 [Setup]
 AppId={{B6F1E3E2-9A7C-4D55-8B7E-5C2E7F3A9D10}
 AppName=SessionVault
-AppVersion=0.5.1
+AppVersion=0.6
 AppPublisher=SessionVault
 DefaultDirName={autopf}\SessionVault
 DisableProgramGroupPage=yes
@@ -20,6 +20,9 @@ UninstallDisplayIcon={app}\sessionvault.exe
 
 [Languages]
 Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
+
+[Tasks]
+Name: "harden"; Description: "Тихие меры защиты: шифровать файл подкачки, отключить гибернацию и дампы памяти (нужна перезагрузка)"
 
 [Files]
 Source: "..\dist\sessionvault.exe"; DestDir: "{app}"; Flags: ignoreversion
@@ -40,7 +43,11 @@ begin
   if CurStep <> ssPostInstall then
     Exit;
   if RunSV('install', SW_HIDE, Code) and (Code = 0) then
+  begin
+    if WizardIsTaskSelected('harden') and not (RunSV('harden', SW_HIDE, Code) and (Code = 0)) then
+      MsgBox('Не удалось включить тихие меры защиты. SessionVault установлен; повторить можно командой "sessionvault harden" от администратора.', mbInformation, MB_OK);
     Exit;
+  end;
   if Code = 3 then
     MsgBox('Учётная запись, в которой вы работаете, входит в группу администраторов. ' +
       'Администратор обходит права доступа к файлам, поэтому SessionVault не сможет её защитить. ' +

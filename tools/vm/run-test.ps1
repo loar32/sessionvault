@@ -574,6 +574,29 @@ $r = Vm {
 Check ($r.audit -eq 0) "аудит не поставлен на папку, на которую указывает подменённый путь (записей аудита: $($r.audit))"
 Check ($r.logged -ge 1) 'служба записала в журнал, что на пути приманки ссылка'
 
+Write-Host '--- 15b. тихие меры ОС и блокировка по событию ---'
+$r = Vm {
+    $keys = @(
+        @('HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem', 'NtfsEncryptPagingFile'),
+        @('HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl', 'CrashDumpEnabled'),
+        @('HKLM:\SYSTEM\CurrentControlSet\Control\Power', 'HibernateEnabled'))
+    $before = $keys | ForEach-Object { "$((Get-ItemProperty $_[0] -Name $_[1] -ErrorAction SilentlyContinue).($_[1]))" }
+    $out = & C:\sv\sessionvault.exe harden 2>&1 | Out-String
+    $code = $LASTEXITCODE
+    $after = $keys | ForEach-Object { "$((Get-ItemProperty $_[0] -Name $_[1] -ErrorAction SilentlyContinue).($_[1]))" }
+    @{ code = $code; out = ($out -replace '\s+', ' '); before = ($before -join ','); after = ($after -join ',') }
+}
+$global:hardenBefore = $r.before
+Check ($r.code -eq 0 -and $r.after -match '^1,0,[0]?$') "harden включил шифрование подкачки, выключил дампы и гибернацию (было $($r.before), стало $($r.after): $($r.out))"
+
+$r = Vm {
+    $n = @(Get-Content C:\ProgramData\SessionVault\service.log -Encoding UTF8 -ErrorAction SilentlyContinue | Select-String 'заблокировано \(блокировка сеанса').Count
+    AsTester 'lk' 'rundll32.exe user32.dll,LockWorkStation'
+    $ok = WaitFor { @(Get-Content C:\ProgramData\SessionVault\service.log -Encoding UTF8 | Select-String 'заблокировано \(блокировка сеанса|заблокировано после выхода').Count -gt $n } 30
+    @{ ok = $ok }
+}
+Check $r.ok 'блокировка сеанса Windows заблокировала хранилище'
+
 Write-Host '--- 16. удаление программы возвращает данные браузеров ---'
 # Путь приманки Edge подменён ссылкой (блок 15): удаление должно отказаться и ничего не увести в чужую папку.
 $r = Vm {
@@ -606,6 +629,15 @@ $r = Vm {
 Check ($r.code -eq 0 -and -not $r.svc -and -not $r.base) "удаление после устранения ссылки прошло: служба и каталог данных убраны ($($r.out))"
 Check ($r.markers.edge -eq 'browser-session-marker' -and $r.markers.chrome -eq 'browser-session-marker' -and $r.markers.brave -eq 'browser-session-marker') 'профили Edge, Chrome и Brave возвращены на прежние места с данными'
 Check ($r.owner -like '*\tester') "владелец вернувшихся данных — основная учётка ($($r.owner))"
+
+$r = Vm {
+    $keys = @(
+        @('HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem', 'NtfsEncryptPagingFile'),
+        @('HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl', 'CrashDumpEnabled'),
+        @('HKLM:\SYSTEM\CurrentControlSet\Control\Power', 'HibernateEnabled'))
+    ($keys | ForEach-Object { "$((Get-ItemProperty $_[0] -Name $_[1] -ErrorAction SilentlyContinue).($_[1]))" }) -join ','
+}
+Check ($r -eq $hardenBefore) "удаление вернуло системные меры (было $hardenBefore, стало $r)"
 
 if ($fails.Count -eq 0) { Write-Host 'ТЕСТ ПРОЙДЕН'; exit 0 }
 Write-Host "ТЕСТ ПРОВАЛЕН ($($fails.Count))"; exit 1

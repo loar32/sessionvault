@@ -61,6 +61,7 @@ type Service struct {
 	lastRun     map[string]time.Time // по профилям: запуск одного приложения не задерживает другое
 	promptEnd   map[string]time.Time // когда последнее окно пароля профиля закончилось отказом или закрытием
 	idle        *time.Timer
+	lockPending bool // блокировка запрошена событием Windows, но приложение ещё запущено
 	wg          sync.WaitGroup
 }
 
@@ -69,7 +70,7 @@ func New(cfg Config, exe string, l *log.Logger) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Service{cfg: cfg, idleAfter: time.Duration(cfg.IdleMinutes) * time.Minute, exe: exe, log: l, job: job, keys: map[string][]byte{}, running: map[string]bool{}, quit: make(chan struct{}), events: make(chan audit.Read, eventQueue), warned: map[string]bool{}}, nil
+	return &Service{cfg: cfg, idleAfter: idleDuration(cfg.IdleMinutes), exe: exe, log: l, job: job, keys: map[string][]byte{}, running: map[string]bool{}, quit: make(chan struct{}), events: make(chan audit.Read, eventQueue), warned: map[string]bool{}}, nil
 }
 
 func killOnCloseJob() (windows.Handle, error) {
@@ -349,13 +350,31 @@ func (s *Service) finish(name string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.running, name)
+	if s.lockPending && len(s.running) == 0 {
+		s.lock()
+		s.log.Println("хранилище заблокировано после выхода приложений (блокировка сеанса, сон или выход)")
+		return
+	}
 	s.resetIdle()
+}
+
+// Блокировка сеанса, выход из системы или сон: ключи стираются сразу, а если приложение запущено,
+// то после его выхода (ключ нужен для шифрования).
+func (s *Service) lockRequested() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.running) > 0 {
+		s.lockPending = true
+		return
+	}
+	s.lock()
+	s.log.Println("хранилище заблокировано (блокировка сеанса, сон или выход)")
 }
 
 // Ключ нужен при выходе приложения для шифрования, поэтому блокировка — только когда ничего не запущено.
 func (s *Service) resetIdle() {
 	s.stopIdle()
-	if len(s.running) > 0 || len(s.keys) == 0 {
+	if len(s.running) > 0 || len(s.keys) == 0 || s.idleAfter <= 0 {
 		return
 	}
 	s.idle = time.AfterFunc(s.idleAfter, func() {
@@ -376,6 +395,7 @@ func (s *Service) stopIdle() {
 }
 
 func (s *Service) lock() {
+	s.lockPending = false
 	for name, k := range s.keys {
 		crypto.Wipe(k)
 		crypto.Unlock(k)

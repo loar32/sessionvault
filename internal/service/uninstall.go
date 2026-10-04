@@ -10,6 +10,7 @@ import (
 	"github.com/loar32/sessionvault/internal/audit"
 	"github.com/loar32/sessionvault/internal/crypto"
 	"github.com/loar32/sessionvault/internal/decoy"
+	"github.com/loar32/sessionvault/internal/hardening"
 	"github.com/loar32/sessionvault/internal/isolation"
 	"github.com/loar32/sessionvault/internal/profiles"
 	"github.com/loar32/sessionvault/internal/vault"
@@ -79,6 +80,7 @@ func Uninstall(password []byte) (err error) {
 	if cfg.AuditByUs {
 		_ = audit.DisableFileSystem()
 	}
+	_ = hardening.Revert(cfg.Hardening)
 	if s, e := m.OpenService(Name); e == nil {
 		_ = s.Delete()
 		_ = s.Close()

@@ -69,3 +69,17 @@ func TestPublisherChecked(t *testing.T) {
 		t.Error("другой путь с верной подписью разрешён")
 	}
 }
+
+func TestThirdPartyAVNeedsPublisher(t *testing.T) {
+	const avp = `C:\Program Files\Kaspersky Lab\Kaspersky 21\avp.exe`
+	if testList(noSigner).allowed(avp, 100) {
+		t.Error("антивирус без подписи разрешён")
+	}
+	ok := testList(func(string) (string, error) { return "AO Kaspersky Lab", nil })
+	if !ok.allowed(avp, 100) {
+		t.Error("подписанный антивирус не разрешён")
+	}
+	if !testList(noSigner).allowed(`C:\Windows\explorer.exe`, 100) {
+		t.Error("проводник не разрешён")
+	}
+}
