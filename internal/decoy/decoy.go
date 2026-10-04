@@ -24,6 +24,14 @@ type entry struct {
 	Path    string    `json:"path"`
 	Names   []string  `json:"names"`
 	Updated time.Time `json:"updated"`
+	// Размер и время изменения созданных файлов: приложение, записавшее поверх приманки настоящую сессию, не должно быть удалено.
+	// В записях прежних версий поля нет, тогда сверяются только имена.
+	Sigs map[string]sig `json:"sigs,omitempty"`
+}
+
+type sig struct {
+	Size int64 `json:"size"`
+	Mod  int64 `json:"mod"`
 }
 
 type file struct {
@@ -93,7 +101,7 @@ func Ensure(profile, kind, path string, user *windows.SID, refresh time.Duration
 	e, known := st[profile]
 	if _, err := os.Stat(path); err == nil {
 		// Узнаём свою папку по записи о ней: всё, что на диске, обязано быть из нашего списка.
-		if !known || e.Path != path || !ours(path, e.Names) {
+		if !known || e.Path != path || !ours(path, e) {
 			return false, ErrForeign
 		}
 		if time.Since(e.Updated) < refresh {
@@ -106,7 +114,7 @@ func Ensure(profile, kind, path string, user *windows.SID, refresh time.Duration
 	if err := NoReparse(path); err != nil {
 		return false, err
 	}
-	names, err := generate(path, layouts[kind])
+	names, sigs, err := generate(path, layouts[kind])
 	if err != nil {
 		_ = os.RemoveAll(path)
 		return false, err
@@ -115,7 +123,7 @@ func Ensure(profile, kind, path string, user *windows.SID, refresh time.Duration
 		_ = os.RemoveAll(path)
 		return false, err
 	}
-	st[profile] = entry{Path: path, Names: names, Updated: time.Now()}
+	st[profile] = entry{Path: path, Names: names, Updated: time.Now(), Sigs: sigs}
 	return true, save(st)
 }
 
@@ -152,7 +160,7 @@ func Remove(profile, path string) error {
 	}
 	e, known := st[profile]
 	if _, err := os.Stat(path); err == nil {
-		if !known || e.Path != path || !ours(path, e.Names) {
+		if !known || e.Path != path || !ours(path, e) {
 			return ErrForeign
 		}
 		if err := os.RemoveAll(path); err != nil {
@@ -163,17 +171,24 @@ func Remove(profile, path string) error {
 	return save(st)
 }
 
-func ours(root string, names []string) bool {
+func ours(root string, e entry) bool {
 	ok := true
-	_ = filepath.WalkDir(root, func(p string, _ fs.DirEntry, err error) error {
+	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			ok = false
 			return err
 		}
 		rel, _ := filepath.Rel(root, p)
-		if rel != "." && !slices.Contains(names, rel) {
+		if rel != "." && !slices.Contains(e.Names, rel) {
 			ok = false
 			return fs.SkipAll
+		}
+		if want, has := e.Sigs[rel]; has {
+			fi, err := d.Info()
+			if err != nil || fi.Size() != want.Size || fi.ModTime().UnixNano() != want.Mod {
+				ok = false
+				return fs.SkipAll
+			}
 		}
 		return nil
 	})
@@ -181,38 +196,44 @@ func ours(root string, names []string) bool {
 }
 
 // В списке и сами файлы, и их папки: иначе обход сочтёт папку чужой.
-func generate(root string, layout []file) ([]string, error) {
+func generate(root string, layout []file) ([]string, map[string]sig, error) {
 	var names []string
+	sigs := map[string]sig{}
 	for _, f := range layout {
 		p := filepath.Join(root, f.name)
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		size, err := between(f.min, f.max)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if f.sqlite {
 			size -= size % 4096
 		}
 		buf := make([]byte, size)
 		if _, err := rand.Read(buf); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if f.sqlite {
 			copy(buf, sqliteHeader)
 		}
 		if err := os.WriteFile(p, buf, 0o644); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		age, err := between(1, 72)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		t := time.Now().Add(-time.Duration(age) * time.Hour)
 		if err := os.Chtimes(p, t, t); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
+		fi, err := os.Stat(p)
+		if err != nil {
+			return nil, nil, err
+		}
+		sigs[f.name] = sig{Size: fi.Size(), Mod: fi.ModTime().UnixNano()}
 		names = append(names, f.name)
 		// Все папки на пути к файлу: иначе обход сочтёт промежуточную папку чужой.
 		for d := filepath.Dir(f.name); d != "."; d = filepath.Dir(d) {
@@ -221,7 +242,7 @@ func generate(root string, layout []file) ([]string, error) {
 			}
 		}
 	}
-	return names, nil
+	return names, sigs, nil
 }
 
 func between(min, max int) (int, error) {

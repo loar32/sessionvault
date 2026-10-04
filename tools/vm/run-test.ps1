@@ -736,13 +736,28 @@ $r = Vm {
 $global:hardenBefore = $r.before
 Check ($r.code -eq 0 -and $r.after -match '^1,0,[0]?$') "harden включил шифрование подкачки, выключил дампы и гибернацию (было $($r.before), стало $($r.after): $($r.out))"
 
+# Блокировка сеанса при запущенном приложении: ключ нужен для шифрования при выходе, поэтому хранилище
+# блокируется не сразу, а после закрытия приложения. Сессия после Win+L остаётся заблокированной: это последний интерактивный шаг.
+Start-Sleep 12
+Vm { AsTester 'runL' "`"$exe`" run telegram" }
+Check (WaitPrompt) 'окно пароля перед проверкой блокировки при запущенном приложении'
+Start-Sleep 3
+TypeInVm $MasterPassword
 $r = Vm {
-    $n = @(Get-Content C:\ProgramData\SessionVault\service.log -Encoding UTF8 -ErrorAction SilentlyContinue | Select-String 'заблокировано \(блокировка сеанса').Count
+    Done 'runL' 90 | Out-Null
+    $up = WaitFor { [bool](Get-Process standin -ErrorAction SilentlyContinue) } 30
+    $logF = 'C:\ProgramData\SessionVault\service.log'
+    $n = @(Get-Content $logF -Encoding UTF8 | Select-String 'заблокировано').Count
     AsTester 'lk' 'rundll32.exe user32.dll,LockWorkStation'
-    $ok = WaitFor { @(Get-Content C:\ProgramData\SessionVault\service.log -Encoding UTF8 | Select-String 'заблокировано \(блокировка сеанса|заблокировано после выхода').Count -gt $n } 30
-    @{ ok = $ok }
+    Start-Sleep 8
+    $early = @(Get-Content $logF -Encoding UTF8 | Select-String 'заблокировано').Count -gt $n
+    $alive = [bool](Get-Process standin -ErrorAction SilentlyContinue)
+    Stop-Process -Name standin -Force
+    $ok = WaitFor { @(Get-Content $logF -Encoding UTF8 | Select-String 'заблокировано после выхода').Count -ge 1 } 40
+    @{ up = $up; early = $early; alive = $alive; ok = $ok }
 }
-Check $r.ok 'блокировка сеанса Windows заблокировала хранилище'
+Check ($r.up -and -not $r.early -and $r.alive) 'Win+L при запущенном приложении: хранилище пока не заблокировано'
+Check $r.ok 'после закрытия приложения хранилище заблокировалось (блокировка отложена)'
 
 Write-Host '--- 16. удаление программы возвращает данные браузеров ---'
 # Путь приманки Edge подменён ссылкой (блок 15): удаление должно отказаться и ничего не увести в чужую папку.
