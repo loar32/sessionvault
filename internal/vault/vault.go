@@ -16,9 +16,14 @@ const (
 	metaFile = "vault.json"
 	dataFile = "data.enc"
 	openFile = "open"
+
+	backupFile = "data.enc.bak"
 )
 
-var ErrWrongPassword = errors.New("неверный пароль")
+var (
+	ErrWrongPassword = errors.New("неверный пароль")
+	ErrEmptyData     = errors.New("рабочая папка пуста: шифрование отменено, прежний архив сохранён")
+)
 
 // Vault — одно приложение: Dir\vault.json, Dir\data.enc и открытая папка Dir\<DataName> на время работы.
 type Vault struct {
@@ -105,14 +110,24 @@ func (v Vault) Unlock(password []byte) ([]byte, error) {
 // Открытая папка → data.enc. Порядок важен при сбое: пока data.enc не заменён, маркер и открытая копия целы;
 // после замены data.enc полный, а недоудалённая папка без маркера при следующем Decrypt затирается.
 func (v Vault) Encrypt(dek []byte) error {
-	tar, err := packDir(v.dataDir())
+	tar, files, err := packDir(v.dataDir())
 	if err != nil {
 		return err
 	}
 	defer crypto.Wipe(tar)
+	// Пустая папка — признак того, что приложение стёрло данные или упало: архив из неё затёр бы рабочую копию.
+	if files == 0 {
+		return ErrEmptyData
+	}
 	blob, err := crypto.Seal(dek, tar)
 	if err != nil {
 		return err
+	}
+	// Предыдущий архив остаётся на случай, если в новый попало повреждённое состояние приложения.
+	if old, err := os.ReadFile(v.path(dataFile)); err == nil {
+		if err := writeAtomic(v.path(backupFile), old); err != nil {
+			return err
+		}
 	}
 	if err := writeAtomic(v.path(dataFile), blob); err != nil {
 		return err

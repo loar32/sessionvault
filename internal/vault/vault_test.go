@@ -162,3 +162,57 @@ func TestUnlockRejectsBadParams(t *testing.T) {
 		}
 	}
 }
+
+func TestEmptyDataKeepsArchive(t *testing.T) {
+	v := newVault(t)
+	dek, _ := v.Create([]byte("pw"))
+	if err := v.Encrypt(dek); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Decrypt(dek); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(v.dataDir(), "emoji")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(v.dataDir(), "key_datas")); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Encrypt(dek); !errors.Is(err, ErrEmptyData) {
+		t.Fatalf("ждали ErrEmptyData, получили %v", err)
+	}
+	if !v.NeedsRecovery() {
+		t.Fatal("при отказе маркер и открытая папка должны остаться")
+	}
+	if err := v.Decrypt(dek); err != nil {
+		t.Fatalf("прежний архив испорчен: %v", err)
+	}
+}
+
+func TestBackupHoldsPreviousArchive(t *testing.T) {
+	v := newVault(t)
+	dek, _ := v.Create([]byte("pw"))
+	if err := v.Encrypt(dek); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(v.path(backupFile)); err == nil {
+		t.Fatal("первое шифрование не должно создавать .bak")
+	}
+	if err := v.Decrypt(dek); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(v.dataDir(), "key_datas"), "новое")
+	if err := v.Encrypt(dek); err != nil {
+		t.Fatal(err)
+	}
+	bak := Vault{Dir: v.Dir, DataName: v.DataName}
+	if err := os.Rename(v.path(backupFile), v.path(dataFile)); err != nil {
+		t.Fatalf(".bak не создан: %v", err)
+	}
+	if err := bak.Decrypt(dek); err != nil {
+		t.Fatal(err)
+	}
+	if read(t, filepath.Join(v.dataDir(), "key_datas")) != "секрет" {
+		t.Fatal(".bak должен хранить прежнее состояние")
+	}
+}

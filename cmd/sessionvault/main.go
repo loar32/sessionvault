@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"time"
+	"unicode/utf8"
 
 	"github.com/loar32/sessionvault/internal/audit"
 	"github.com/loar32/sessionvault/internal/crypto"
@@ -255,10 +256,10 @@ func status() error {
 }
 
 func promptWindow(args []string) error {
-	if len(args) != 1 {
-		return errors.New("укажи профиль")
+	if len(args) != 2 {
+		return errors.New("укажи профиль и pipe")
 	}
-	return prompt.Run(args[0])
+	return prompt.Run(args[0], args[1])
 }
 
 func alertWindow(args []string) error {
@@ -318,6 +319,16 @@ func checkPasswordLen(pw []byte) error {
 	return nil
 }
 
+// Короткий пароль подбирается быстро, если у вора окажется копия диска с data.enc.
+const minPasswordChars = 10
+
+func checkNewPassword(pw []byte) error {
+	if utf8.RuneCount(pw) < minPasswordChars {
+		return fmt.Errorf("мастер-пароль короче %d символов", minPasswordChars)
+	}
+	return nil
+}
+
 func readPassword(stdin, confirm bool) ([]byte, error) {
 	if stdin {
 		line, err := bufio.NewReader(os.Stdin).ReadBytes('\n')
@@ -327,6 +338,11 @@ func readPassword(stdin, confirm bool) ([]byte, error) {
 		pw := bytes.TrimRight(line, "\r\n")
 		if len(pw) == 0 {
 			return nil, errors.New("пароль не может быть пустым")
+		}
+		if confirm {
+			if err := checkNewPassword(pw); err != nil {
+				return nil, err
+			}
 		}
 		return pw, checkPasswordLen(pw)
 	}
@@ -343,6 +359,9 @@ func readPassword(stdin, confirm bool) ([]byte, error) {
 		return nil, err
 	}
 	if confirm {
+		if err := checkNewPassword(pw); err != nil {
+			return nil, err
+		}
 		fmt.Fprint(os.Stderr, "Повтори пароль: ")
 		again, err := term.ReadPassword(int(os.Stdin.Fd()))
 		fmt.Fprintln(os.Stderr)

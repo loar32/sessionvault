@@ -138,11 +138,11 @@ func wstr(s string) *uint16 {
 }
 
 // Run показывает окно и отправляет введённый пароль службе; возвращается, когда пароль принят или окно закрыто.
-func Run(profile string) error {
+func Run(profile, pipe string) error {
 	// Окно принадлежит потоку ОС, на котором создано: без привязки рантайм Go может перенести горутину на другой поток,
 	// и цикл сообщений перестанет получать сообщения окна (оно зависает: «Not Responding»).
 	runtime.LockOSThread()
-	c, err := ipc.Dial(ipc.UnlockPipe, dialTimeout)
+	c, err := ipc.Dial(pipe, dialTimeout)
 	if err != nil {
 		return err
 	}

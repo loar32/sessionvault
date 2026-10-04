@@ -9,7 +9,8 @@ import (
 
 const (
 	CommandPipe = `\\.\pipe\SessionVault`
-	UnlockPipe  = `\\.\pipe\SessionVault-unlock`
+	// Префикс: к нему служба на каждый запрос добавляет случайный хвост, чтобы чужой процесс не занял имя заранее.
+	UnlockPipe = `\\.\pipe\SessionVault-unlock-`
 
 	MaxLine     = 64
 	MaxPassword = 256

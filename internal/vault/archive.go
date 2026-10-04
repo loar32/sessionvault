@@ -11,11 +11,13 @@ import (
 	"path/filepath"
 )
 
-func packDir(root string) ([]byte, error) {
+func packDir(root string) ([]byte, int, error) {
 	var buf bytes.Buffer
 	var tw *tar.Writer
+	var files int
 	err := retry(func() error {
 		buf.Reset()
+		files = 0
 		tw = tar.NewWriter(&buf)
 		return filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 			if err != nil {
@@ -40,6 +42,7 @@ func packDir(root string) ([]byte, error) {
 			if err := tw.WriteHeader(h); err != nil || info.IsDir() {
 				return err
 			}
+			files++
 			f, err := os.Open(p)
 			if err != nil {
 				return err
@@ -50,12 +53,12 @@ func packDir(root string) ([]byte, error) {
 		})
 	})
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if err := tw.Close(); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return buf.Bytes(), nil
+	return buf.Bytes(), files, nil
 }
 
 func unpackDir(data []byte, root string) error {

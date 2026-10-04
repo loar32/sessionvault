@@ -15,6 +15,8 @@ type Profile struct {
 	Exe        string   `json:"exe"`
 	DataDir    string   `json:"data_dir"` // папка сессии внутри рабочей папки приложения
 	LaunchArgs []string `json:"launch_args"`
+	// Издатель в подписи Authenticode: установщик не примет exe с другой подписью.
+	Publisher string `json:"publisher,omitempty"`
 }
 
 // Шаблон, который установщик записывает в ProgramData; службе нужен только файл оттуда.
@@ -23,6 +25,7 @@ var Telegram = Profile{
 	Exe:        `C:\Program Files\Telegram Desktop\Telegram.exe`,
 	DataDir:    "tdata",
 	LaunchArgs: []string{"-workdir", "{data_path}"},
+	Publisher:  "Telegram FZ-LLC",
 }
 
 var validName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)

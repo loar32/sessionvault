@@ -91,7 +91,7 @@ function WaitFor($sb, $sec = 60) {
 }
 function Done($name, $sec = 60) { WaitFor { (Out $name) -match 'EXIT=' } $sec }
 function PromptUp() { [bool](Get-CimInstance Win32_Process -Filter "Name='sessionvault.exe'" | Where-Object { $_.CommandLine -like '* prompt *' }) }
-function Files() { (Get-ChildItem $v -Recurse -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'running.lock' } | ForEach-Object { $_.FullName.Substring($v.Length + 1) }) -join ',' }
+function Files() { (Get-ChildItem $v -Recurse -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -notin 'running.lock', 'data.enc.bak' } | ForEach-Object { $_.FullName.Substring($v.Length + 1) }) -join ',' }
 function Standin() { Get-Process standin -IncludeUserName -ErrorAction SilentlyContinue | Select-Object -First 1 }
 '@
 function Vm($block, $ar = @()) {
@@ -102,6 +102,7 @@ function WaitPrompt() { Vm { WaitFor { PromptUp } 30 } }
 Write-Host '--- 1. установка службы ---'
 $r = Vm {
     param($tg)
+    $env:SESSIONVAULT_SKIP_SIGNATURE = '1'
     $out = & C:\sv\sessionvault.exe install -user tester -telegram-exe $tg 2>&1
     Start-Sleep 3
     @{ out = ($out -join ' '); svc = (Get-Service SessionVault).Status.ToString(); exe = (Test-Path $exe) }

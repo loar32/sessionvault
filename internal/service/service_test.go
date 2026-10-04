@@ -3,8 +3,11 @@ package service
 import (
 	"io"
 	"log"
+	"os"
 	"testing"
 	"time"
+
+	"github.com/loar32/sessionvault/internal/profiles"
 )
 
 func testService(idle time.Duration) *Service {
@@ -63,5 +66,22 @@ func TestStartingRunCancelsIdle(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 	if keysCount(s) != 1 {
 		t.Fatal("отменённый таймер всё равно сработал")
+	}
+}
+
+func TestVerifyPublisherSkipsMissingExe(t *testing.T) {
+	p := profiles.Profile{Exe: `C:\нет\такого.exe`, Publisher: "Telegram FZ-LLC"}
+	if err := verifyPublisher(p); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestVerifyPublisherRejectsUnsigned(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyPublisher(profiles.Profile{Exe: exe, Publisher: "Telegram FZ-LLC"}); err == nil {
+		t.Fatal("неподписанный exe должен отклоняться")
 	}
 }

@@ -81,7 +81,7 @@ function WaitFor($sb, $sec = 60) {
     return $false
 }
 function PromptUp() { [bool](Get-CimInstance Win32_Process -Filter "Name='sessionvault.exe'" | Where-Object { $_.CommandLine -like '* prompt *' }) }
-function Files() { (Get-ChildItem $v -Recurse -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'running.lock' } | ForEach-Object { $_.FullName.Substring($v.Length + 1) }) -join ',' }
+function Files() { (Get-ChildItem $v -Recurse -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -notin 'running.lock', 'data.enc.bak' } | ForEach-Object { $_.FullName.Substring($v.Length + 1) }) -join ',' }
 function Tg() { Get-Process Telegram -IncludeUserName -ErrorAction SilentlyContinue | Select-Object -First 1 }
 '@
 function Vm($block, $ar = @()) {
@@ -105,6 +105,7 @@ Check ($r.code -eq 3 -and -not $r.svc -and -not $r.dir) "install для адми
 
 Write-Host '--- 2. тихая установка Setup.exe ---'
 $r = Vm {
+    $env:SESSIONVAULT_SKIP_SIGNATURE = '1'
     $p = Start-Process C:\sv\SessionVaultSetup.exe -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/LOG=C:\sv\setup.log' -Wait -PassThru
     Start-Sleep 3
     $cfg = Get-Content C:\ProgramData\SessionVault\config.json -Raw | ConvertFrom-Json

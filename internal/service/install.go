@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/loar32/sessionvault/internal/audit"
 	"github.com/loar32/sessionvault/internal/isolation"
 	"github.com/loar32/sessionvault/internal/profiles"
 	"golang.org/x/sys/windows"
@@ -72,6 +73,26 @@ func ensureReadableByVault(name, exe string) (string, error) {
 		return "", err
 	}
 	return dst, copyFile(exe, dst)
+}
+
+// Приложение запускается рядом с расшифрованными данными, поэтому подмену exe (копия берётся из профиля пользователя) ловим здесь.
+// Если файла нет (Telegram ещё не установлен), проверять нечего: путь в профиле поправят вручную.
+func verifyPublisher(p profiles.Profile) error {
+	// Только для автотестов в ВМ: подставной Telegram там не подписан. Переменную задаёт сам администратор, запускающий установку.
+	if p.Publisher == "" || os.Getenv("SESSIONVAULT_SKIP_SIGNATURE") == "1" {
+		return nil
+	}
+	if _, err := os.Stat(p.Exe); err != nil {
+		return nil
+	}
+	name, err := audit.Signer(p.Exe)
+	if err != nil {
+		return fmt.Errorf("%s: подпись не проверена: %w", p.Exe, err)
+	}
+	if !strings.EqualFold(name, p.Publisher) {
+		return fmt.Errorf("%s подписан %q, ожидался %q", p.Exe, name, p.Publisher)
+	}
+	return nil
 }
 
 func Install(mainUser, telegramExe string) (err error) {
@@ -166,6 +187,9 @@ func Install(mainUser, telegramExe string) (err error) {
 	}
 	tg := profiles.Telegram
 	if tg.Exe, err = ensureReadableByVault(tg.Name, telegramExe); err != nil {
+		return err
+	}
+	if err = verifyPublisher(tg); err != nil {
 		return err
 	}
 	if err = profiles.Save(isolation.ProfilesDir(), tg); err != nil {

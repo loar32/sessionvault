@@ -139,13 +139,16 @@ func checkPipes() {
 	} else {
 		fmt.Println("закрыто   служба жива после проб, отвечает только статусом:", resp)
 	}
-	c, err := ipc.Dial(ipc.UnlockPipe, time.Second)
-	if err == nil {
-		leaks++
-		c.Close()
-		fmt.Println("УТЕЧКА    pipe пароля доступен обычной учётке")
-	} else {
-		fmt.Println("закрыто   pipe пароля:", err)
+	// Имя pipe пароля случайное и живёт только пока открыто окно; если оно сейчас есть, подключиться нельзя.
+	pipes, _ := filepath.Glob(`\\.\pipe\` + strings.TrimPrefix(ipc.UnlockPipe, `\\.\pipe\`) + "*")
+	for _, p := range pipes {
+		if c, err := ipc.Dial(p, time.Second); err == nil {
+			leaks++
+			c.Close()
+			fmt.Println("УТЕЧКА    pipe пароля доступен обычной учётке:", p)
+		} else {
+			fmt.Println("закрыто   pipe пароля:", err)
+		}
 	}
 }
 

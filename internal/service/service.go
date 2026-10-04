@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -325,12 +326,17 @@ func (s *Service) askPassword(name string, v vault.Vault, session uint32) ([]byt
 		s.mu.Unlock()
 	}()
 
-	l, err := ipc.Listen(ipc.UnlockPipe, systemOnlySDDL)
+	tail, err := crypto.NewSalt()
+	if err != nil {
+		return nil, err
+	}
+	pipe := ipc.UnlockPipe + hex.EncodeToString(tail)
+	l, err := ipc.Listen(pipe, systemOnlySDDL)
 	if err != nil {
 		return nil, err
 	}
 	defer l.Close()
-	pid, proc, _, err := isolation.StartInSession(session, fmt.Sprintf(`"%s" prompt %s`, s.exe, name), false)
+	pid, proc, _, err := isolation.StartInSession(session, fmt.Sprintf(`"%s" prompt %s %s`, s.exe, name, pipe), false)
 	if err != nil {
 		return nil, err
 	}
