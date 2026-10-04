@@ -32,9 +32,16 @@ func GiveToUser(root string, user *windows.SID) error {
 	if err != nil {
 		return err
 	}
-	return filepath.WalkDir(root, func(p string, _ fs.DirEntry, err error) error {
+	return filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+		// Приложение под vault могло оставить в своих данных ссылку или junction: права по ней ушли бы на чужие файлы.
+		if d.Type()&(fs.ModeSymlink|fs.ModeIrregular) != 0 {
+			if d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
 		}
 		return windows.SetNamedSecurityInfo(p, windows.SE_FILE_OBJECT,
 			windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION|windows.UNPROTECTED_DACL_SECURITY_INFORMATION,

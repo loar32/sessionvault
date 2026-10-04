@@ -505,6 +505,7 @@ func (s *Service) keep(name string, dek []byte) ([]byte, error) {
 }
 
 func OpenLog() (*log.Logger, func(), error) {
+	rotateLog(isolation.BaseDir() + `\service.log`)
 	f, err := os.OpenFile(isolation.BaseDir()+`\service.log`, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return nil, nil, err
