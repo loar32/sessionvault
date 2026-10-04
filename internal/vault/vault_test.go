@@ -375,3 +375,63 @@ func TestExcludePatterns(t *testing.T) {
 		}
 	}
 }
+
+func TestHelloSlot(t *testing.T) {
+	v := newVault(t)
+	dek, err := v.Create([]byte("парольпароль1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret := bytes.Repeat([]byte{9}, 256)
+	challenge := bytes.Repeat([]byte{3}, 32)
+	if err := v.EnableHello(dek, "SessionVault", challenge, secret); err != nil {
+		t.Fatal(err)
+	}
+	name, ch, ok := v.HelloInfo()
+	if !ok || name != "SessionVault" || !bytes.Equal(ch, challenge) {
+		t.Fatalf("HelloInfo: %q %x %v", name, ch, ok)
+	}
+	got, err := v.UnlockHello(secret)
+	if err != nil || !bytes.Equal(got, dek) {
+		t.Fatalf("Hello не открыл DEK: %v", err)
+	}
+	if _, err := v.UnlockHello(bytes.Repeat([]byte{8}, 256)); !errors.Is(err, ErrWrongPassword) {
+		t.Fatalf("чужой секрет: %v", err)
+	}
+	if got, err := v.Unlock([]byte("парольпароль1")); err != nil || !bytes.Equal(got, dek) {
+		t.Fatalf("пароль перестал работать: %v", err)
+	}
+	// Запись данных (счётчик) не стирает слот.
+	if err := v.Encrypt(dek); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.UnlockHello(secret); err != nil {
+		t.Fatalf("слот потерян после Encrypt: %v", err)
+	}
+	if err := v.DisableHello(); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := v.HelloInfo(); ok {
+		t.Fatal("слот остался после DisableHello")
+	}
+	if _, err := v.UnlockHello(secret); err == nil {
+		t.Fatal("Hello открыл хранилище после отключения")
+	}
+}
+
+func TestHelloSlotTamperRejected(t *testing.T) {
+	v := newVault(t)
+	dek, _ := v.Create([]byte("парольпароль1"))
+	secret := bytes.Repeat([]byte{9}, 256)
+	if err := v.EnableHello(dek, "SessionVault", bytes.Repeat([]byte{3}, 32), secret); err != nil {
+		t.Fatal(err)
+	}
+	m, _ := v.readMeta()
+	m.Hello.Challenge[0] ^= 1 // другой запрос при том же слоте
+	if err := v.writeMeta(m); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.UnlockHello(secret); err == nil {
+		t.Fatal("подмена challenge не замечена")
+	}
+}

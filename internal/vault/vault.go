@@ -47,6 +47,22 @@ type meta struct {
 	WrappedDEK []byte
 	// Число записей data.enc; с версии 2. Откат data.enc на старую копию даёт номер меньше этого.
 	Counter uint64 `json:",omitempty"`
+	// Второй способ открыть тот же DEK: ключ из подписи Windows Hello. Пароль остаётся запасным.
+	Hello *helloSlot `json:",omitempty"`
+}
+
+type helloSlot struct {
+	Name       string // имя ключа Hello у пользователя
+	Challenge  []byte // запрос, который подписывается ключом
+	WrappedDEK []byte
+}
+
+// Имя и challenge, входящие в проверку подлинности: слот нельзя перенести в другое хранилище или подменить запрос.
+func (m meta) helloAAD(name string, challenge []byte) []byte {
+	b := append([]byte("sv-hello-v1"), m.aad()...)
+	b = binary.BigEndian.AppendUint32(b, uint32(len(name)))
+	b = append(b, name...)
+	return append(b, challenge...)
 }
 
 // Версия, соль и параметры вывода ключа входят в проверку обёрнутого ключа: подмена любого из них не пройдёт.
@@ -151,6 +167,68 @@ func (v Vault) Unlock(password []byte) ([]byte, error) {
 		return nil, ErrWrongPassword
 	}
 	return dek, nil
+}
+
+// HelloInfo — имя ключа Hello и challenge, если вход через Hello включён.
+func (v Vault) HelloInfo() (name string, challenge []byte, ok bool) {
+	m, err := v.readMeta()
+	if err != nil || m.Hello == nil {
+		return "", nil, false
+	}
+	return m.Hello.Name, m.Hello.Challenge, true
+}
+
+// EnableHello добавляет слот Hello: dek оборачивается ключом из secret (подписи challenge).
+func (v Vault) EnableHello(dek []byte, name string, challenge, secret []byte) error {
+	m, err := v.readMeta()
+	if err != nil {
+		return err
+	}
+	kek, err := crypto.DeriveHelloKey(secret)
+	if err != nil {
+		return err
+	}
+	defer crypto.Wipe(kek)
+	w, err := crypto.SealAAD(kek, dek, m.helloAAD(name, challenge))
+	if err != nil {
+		return err
+	}
+	m.Hello = &helloSlot{Name: name, Challenge: challenge, WrappedDEK: w}
+	return v.writeMeta(m)
+}
+
+// UnlockHello открывает DEK ключом из подписи Hello.
+func (v Vault) UnlockHello(secret []byte) ([]byte, error) {
+	m, err := v.readMeta()
+	if err != nil {
+		return nil, err
+	}
+	if m.Hello == nil {
+		return nil, errors.New("вход через Windows Hello не включён")
+	}
+	kek, err := crypto.DeriveHelloKey(secret)
+	if err != nil {
+		return nil, err
+	}
+	defer crypto.Wipe(kek)
+	dek, err := crypto.OpenAAD(kek, m.Hello.WrappedDEK, m.helloAAD(m.Hello.Name, m.Hello.Challenge))
+	if err != nil {
+		return nil, ErrWrongPassword
+	}
+	return dek, nil
+}
+
+// DisableHello убирает слот Hello; пароль продолжает работать.
+func (v Vault) DisableHello() error {
+	m, err := v.readMeta()
+	if err != nil {
+		return err
+	}
+	if m.Hello == nil {
+		return nil
+	}
+	m.Hello = nil
+	return v.writeMeta(m)
 }
 
 // Открытая папка → data.enc. Порядок важен при сбое: пока data.enc не заменён, маркер и открытая копия целы;

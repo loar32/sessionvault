@@ -4,11 +4,14 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"crypto/sha256"
 	"errors"
+	"io"
 	"runtime"
 	"unsafe"
 
 	"golang.org/x/crypto/argon2"
+	"golang.org/x/crypto/hkdf"
 	"golang.org/x/sys/windows"
 )
 
@@ -29,6 +32,15 @@ func DefaultParams() Params {
 
 func DeriveKey(password, salt []byte, p Params) []byte {
 	return argon2.IDKey(password, salt, p.Time, p.Memory, p.Threads, KeySize)
+}
+
+// Ключ обёртки из подписи Windows Hello: подпись — секрет, известный только владельцу ключа Hello.
+func DeriveHelloKey(secret []byte) ([]byte, error) {
+	key := make([]byte, KeySize)
+	if _, err := io.ReadFull(hkdf.New(sha256.New, secret, nil, []byte("sv-hello-kek-v1")), key); err != nil {
+		return nil, err
+	}
+	return key, nil
 }
 
 func random(n int) ([]byte, error) {
