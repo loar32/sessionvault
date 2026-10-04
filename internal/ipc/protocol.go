@@ -2,6 +2,7 @@ package ipc
 
 import (
 	"errors"
+	"net/url"
 	"strings"
 
 	"github.com/loar32/sessionvault/internal/profiles"
@@ -14,6 +15,7 @@ const (
 
 	MaxLine     = 64
 	MaxPassword = 256
+	MaxURL      = 2048
 	MaxReply    = 256 // ответ на list: имена профилей через запятую
 
 	Ok       = "ok"
@@ -32,7 +34,7 @@ type Request struct {
 
 var errBadRequest = errors.New("неверный запрос")
 
-// Единственные запросы: «status», «list», «run <профиль>» и «hello <профиль>». Ни аргументов, ни путей, ни данных в ответе (list отдаёт только имена).
+// Единственные запросы: «status», «list», «open» (ссылка следующей строкой, см. ValidURL), «run <профиль>» и «hello <профиль>». Ни аргументов, ни путей, ни данных в ответе (list отдаёт только имена).
 func Parse(line string) (Request, error) {
 	if len(line) > MaxLine {
 		return Request{}, errBadRequest
@@ -50,8 +52,28 @@ func Parse(line string) (Request, error) {
 		return Request{Cmd: "list"}, nil
 	case len(parts) == 2 && parts[0] == "run" && profiles.ValidName(parts[1]):
 		return Request{Cmd: "run", Profile: parts[1]}, nil
+	case len(parts) == 1 && parts[0] == "open":
+		return Request{Cmd: "open"}, nil
 	case len(parts) == 2 && parts[0] == "hello" && profiles.ValidName(parts[1]):
 		return Request{Cmd: "hello", Profile: parts[1]}, nil
 	}
 	return Request{}, errBadRequest
+}
+
+// Ссылка уходит в командную строку браузера, поэтому допускаются только http(s) и печатный ASCII без пробелов и кавычек
+// (всё остальное в ссылке должно быть закодировано через %). Начинаться с «-» она не может: схема обязательна.
+func ValidURL(s string) error {
+	if len(s) == 0 || len(s) > MaxURL {
+		return errBadRequest
+	}
+	for _, r := range s {
+		if r <= 0x20 || r > 0x7e || r == '"' || r == '\\' || r == '^' || r == '`' {
+			return errBadRequest
+		}
+	}
+	u, err := url.Parse(s)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+		return errBadRequest
+	}
+	return nil
 }

@@ -35,6 +35,7 @@ sessionvault restore-backup <профиль>
 sessionvault harden [-off]
 sessionvault hello disable [профиль]
 sessionvault run <профиль>
+sessionvault open <ссылка>
 sessionvault status
 sessionvault alerts
 sessionvault tray`
@@ -87,6 +88,8 @@ func main() {
 		err = helloCmd(args)
 	case "hello-unlock", "hello-enroll":
 		err = helloHelper(os.Args[1], args)
+	case "open":
+		err = openLink(args)
 	case "run":
 		err = run(args)
 	case "status":
@@ -415,7 +418,7 @@ func alerts() error {
 
 // Запускается службой от SYSTEM в сессии пользователя: стартует приложение от vault и ждёт его выхода.
 func launch(args []string) error {
-	if len(args) != 1 {
+	if len(args) < 1 || len(args) > 2 {
 		return errors.New("укажи профиль")
 	}
 	p, err := profiles.Load(isolation.ProfilesDir(), args[0])
@@ -427,7 +430,14 @@ func launch(args []string) error {
 		return err
 	}
 	work := isolation.WorkPath(p.Name)
-	_, proc, cleanup, err := isolation.LaunchAsVault(isolation.VaultUser, pw, p.CommandLine(work), work)
+	cmd := p.CommandLine(work)
+	if len(args) == 2 {
+		if err := ipc.ValidURL(args[1]); err != nil {
+			return err
+		}
+		cmd += " " + args[1]
+	}
+	_, proc, cleanup, err := isolation.LaunchAsVault(isolation.VaultUser, pw, cmd, work)
 	if err != nil {
 		return err
 	}
@@ -500,4 +510,34 @@ func readPassword(stdin, confirm bool) ([]byte, error) {
 		}
 	}
 	return pw, nil
+}
+
+// Ссылка открывается в защищённом браузере; если хранилище заперто, служба сама покажет окно разблокировки.
+func openLink(args []string) error {
+	if len(args) != 1 {
+		return errors.New("укажи ссылку: sessionvault open https://example.com")
+	}
+	if err := ipc.ValidURL(args[0]); err != nil {
+		return errors.New("ссылка должна быть http(s) без пробелов и кавычек")
+	}
+	c, err := ipc.Dial(ipc.CommandPipe, 3*time.Second)
+	if err != nil {
+		return fmt.Errorf("служба недоступна: %w", err)
+	}
+	defer c.Close()
+	if err := c.WriteLine("open"); err != nil {
+		return err
+	}
+	if err := c.WriteLine(args[0]); err != nil {
+		return err
+	}
+	resp, err := c.ReadLine(3*time.Minute, ipc.MaxReply)
+	if err != nil {
+		return err
+	}
+	fmt.Println(resp)
+	if resp != ipc.Ok {
+		return errors.New("ссылка не открыта")
+	}
+	return nil
 }

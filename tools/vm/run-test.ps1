@@ -588,8 +588,11 @@ function BrowserTest($app, $title, $exePath, $proc, $originRel, $required) {
     } @($app, $proc)
     Check ($r.enc -and $r.left -eq 0) "после закрытия $title данные зашифрованы, фоновых процессов нет"
 
-    Write-Host '  повторный запуск: данные сохранились'
-    Vm { param($app) AsTester 'runB2' "`"$exe`" run $app" } @($app)
+    # Ссылка открывается в первом защищённом браузере из chrome, edge, brave: при запертом хранилище служба сама просит пароль.
+    $link = ($app -ne 'brave')
+    if ($link) { Write-Host '  повторный запуск через sessionvault open: данные сохранились' } else { Write-Host '  повторный запуск: данные сохранились' }
+    $cmdB = if ($link) { "open https://example.com/sv-open-$app" } else { "run $app" }
+    Vm { param($c) AsTester 'runB2' "`"$exe`" $c" } @($cmdB)
     $r = Vm {
         param($app, $proc)
         Done 'runB2' 90 | Out-Null
@@ -598,6 +601,20 @@ function BrowserTest($app, $title, $exePath, $proc, $originRel, $required) {
         @{ out = (Out 'runB2'); up = [bool]$up; marker = (Get-Content "C:\ProgramData\SessionVault\vault\$app\work\User Data\marker.txt" -ErrorAction SilentlyContinue) }
     } @($app, $proc)
     Check ($r.up -and $r.marker -eq 'browser-session-marker') "профиль $title сохранился между запусками ($("$($r.out)" -replace '\s+',' '))"
+    if ($link) {
+        $r = Vm {
+            param($proc, $app)
+            $c = (Get-CimInstance Win32_Process -Filter "Name='$proc.exe'" | Where-Object { $_.CommandLine -like "*sv-open-$app*" } | Select-Object -First 1).CommandLine
+            # Браузер уже запущен: вторая ссылка не требует пароля, Chromium открывает вкладку в работающем экземпляре.
+            AsTester 'openB' "`"$exe`" open https://example.com/sv-open2-$app"; Done 'openB' 30 | Out-Null
+            AsTester 'openBad' "`"$exe`" open --remote-debugging-port=9222"; Done 'openBad' 30 | Out-Null
+            AsTester 'openBad2' "`"$exe`" open file:///C:/Windows/win.ini"; Done 'openBad2' 30 | Out-Null
+            @{ first = $c; second = (Out 'openB'); bad = (Out 'openBad'); bad2 = (Out 'openBad2'); prompt = (PromptUp) }
+        } @($proc, $app)
+        Check ($r.first -like "*sv-open-$app*") "ссылка передана браузеру $title в командной строке запуска"
+        Check ($r.second -match 'ok' -and -not $r.prompt) "вторая ссылка открыта без нового окна пароля ($("$($r.second)" -replace '\s+',' '))"
+        Check ($r.bad -notmatch 'EXIT=0' -and $r.bad2 -notmatch 'EXIT=0') 'ссылки не http(s) отклонены клиентом'
+    }
 
     Write-Host "  тревога: стилер-имитация читает приманку $title"
     $before = Vm { @(Get-Content C:\ProgramData\SessionVault\alerts.log -Encoding UTF8 -ErrorAction SilentlyContinue).Count }

@@ -155,7 +155,7 @@ func Save(dir string, p Profile) error {
 	return os.WriteFile(filepath.Join(dir, p.Name+".json"), b, 0o644)
 }
 
-// Командная строка собирается только из профиля: аргументы извне не принимаются.
+// Командная строка собирается только из профиля; ссылку для браузера (ipc.ValidURL) добавляет вызывающий.
 func (p Profile) CommandLine(workDir string) string {
 	parts := []string{syscall.EscapeArg(p.Exe)}
 	for _, a := range p.LaunchArgs {
