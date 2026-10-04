@@ -27,11 +27,11 @@ func setup(t *testing.T) (string, *windows.SID) {
 
 func TestEnsureCreatesStructure(t *testing.T) {
 	path, sid := setup(t)
-	created, err := Ensure("telegram", path, sid, time.Hour)
+	created, err := Ensure("telegram", "telegram", path, sid, time.Hour)
 	if err != nil || !created {
 		t.Fatalf("created=%v err=%v", created, err)
 	}
-	for _, f := range layout {
+	for _, f := range layouts["telegram"] {
 		fi, err := os.Stat(filepath.Join(path, f.name))
 		if err != nil {
 			t.Fatal(err)
@@ -40,18 +40,18 @@ func TestEnsureCreatesStructure(t *testing.T) {
 			t.Errorf("%s: размер %d вне %d..%d", f.name, fi.Size(), f.min, f.max)
 		}
 	}
-	if created, err = Ensure("telegram", path, sid, time.Hour); err != nil || created {
+	if created, err = Ensure("telegram", "telegram", path, sid, time.Hour); err != nil || created {
 		t.Fatalf("повтор: created=%v err=%v", created, err)
 	}
 }
 
 func TestEnsureRefreshes(t *testing.T) {
 	path, sid := setup(t)
-	if _, err := Ensure("telegram", path, sid, time.Hour); err != nil {
+	if _, err := Ensure("telegram", "telegram", path, sid, time.Hour); err != nil {
 		t.Fatal(err)
 	}
 	before, _ := os.ReadFile(filepath.Join(path, "usertag"))
-	created, err := Ensure("telegram", path, sid, 0)
+	created, err := Ensure("telegram", "telegram", path, sid, 0)
 	if err != nil || !created {
 		t.Fatalf("created=%v err=%v", created, err)
 	}
@@ -69,7 +69,7 @@ func TestEnsureKeepsForeignData(t *testing.T) {
 	if err := os.WriteFile(real, []byte("настоящее"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Ensure("telegram", path, sid, 0); !errors.Is(err, ErrForeign) {
+	if _, err := Ensure("telegram", "telegram", path, sid, 0); !errors.Is(err, ErrForeign) {
 		t.Fatalf("ожидался ErrForeign, получено %v", err)
 	}
 	if b, _ := os.ReadFile(real); string(b) != "настоящее" {
@@ -85,20 +85,20 @@ func TestEnsureKeepsForeignData(t *testing.T) {
 
 func TestForeignFileInsideOurDecoy(t *testing.T) {
 	path, sid := setup(t)
-	if _, err := Ensure("telegram", path, sid, time.Hour); err != nil {
+	if _, err := Ensure("telegram", "telegram", path, sid, time.Hour); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(path, "new"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Ensure("telegram", path, sid, 0); !errors.Is(err, ErrForeign) {
+	if _, err := Ensure("telegram", "telegram", path, sid, 0); !errors.Is(err, ErrForeign) {
 		t.Fatalf("ожидался ErrForeign, получено %v", err)
 	}
 }
 
 func TestRemoveOurs(t *testing.T) {
 	path, sid := setup(t)
-	if _, err := Ensure("telegram", path, sid, time.Hour); err != nil {
+	if _, err := Ensure("telegram", "telegram", path, sid, time.Hour); err != nil {
 		t.Fatal(err)
 	}
 	if err := Remove("telegram", path); err != nil {
@@ -114,16 +114,51 @@ func TestKnownSurvivesForeignFile(t *testing.T) {
 	if Known("telegram", path) {
 		t.Fatal("приманка известна до создания")
 	}
-	if _, err := Ensure("telegram", path, sid, time.Hour); err != nil {
+	if _, err := Ensure("telegram", "telegram", path, sid, time.Hour); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(path, "x.txt"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Ensure("telegram", path, sid, 0); !errors.Is(err, ErrForeign) {
+	if _, err := Ensure("telegram", "telegram", path, sid, 0); !errors.Is(err, ErrForeign) {
 		t.Fatalf("ожидался ErrForeign, получено %v", err)
 	}
 	if !Known("telegram", path) {
 		t.Error("наблюдение за приманкой с чужим файлом потеряно")
+	}
+}
+
+func TestChromiumLayout(t *testing.T) {
+	_, sid := setup(t)
+	path := filepath.Join(t.TempDir(), "Chrome", "User Data")
+	created, err := Ensure("chrome", "chromium", path, sid, time.Hour)
+	if err != nil || !created {
+		t.Fatalf("created=%v err=%v", created, err)
+	}
+	for _, f := range layouts["chromium"] {
+		b, err := os.ReadFile(filepath.Join(path, f.name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(b) < f.min || len(b) > f.max {
+			t.Errorf("%s: размер %d вне %d..%d", f.name, len(b), f.min, f.max)
+		}
+		if f.sqlite && (len(b)%4096 != 0 || string(b[:len(sqliteHeader)]) != sqliteHeader) {
+			t.Errorf("%s: нет заголовка SQLite или размер не кратен странице", f.name)
+		}
+	}
+	// Своя приманка с вложенными папками (Default, Default\Network) не должна считаться чужой.
+	if created, err = Ensure("chrome", "chromium", path, sid, time.Hour); err != nil || created {
+		t.Fatalf("повтор: created=%v err=%v", created, err)
+	}
+	if err := Remove("chrome", path); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestUnknownKind(t *testing.T) {
+	path, sid := setup(t)
+	if _, err := Ensure("x", "firefox", path, sid, time.Hour); !errors.Is(err, ErrKind) {
+		t.Fatalf("ждали ErrKind, получили %v", err)
 	}
 }

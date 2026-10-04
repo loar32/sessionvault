@@ -234,5 +234,5 @@ func Call(name, request string, timeout time.Duration) (string, error) {
 	if err := c.WriteLine(request); err != nil {
 		return "", err
 	}
-	return c.ReadLine(timeout, MaxLine)
+	return c.ReadLine(timeout, MaxReply)
 }

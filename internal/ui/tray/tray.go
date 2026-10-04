@@ -4,11 +4,13 @@ package tray
 import (
 	"errors"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 	"unsafe"
 
 	"github.com/loar32/sessionvault/internal/ipc"
+	"github.com/loar32/sessionvault/internal/profiles"
 	"golang.org/x/sys/windows"
 )
 
@@ -63,8 +65,9 @@ const (
 	mfGrayed      = 0x1
 	tpmRightBtn   = 0x2
 	tpmBottomAlgn = 0x20
-	idRun         = 1001
-	idExit        = 1002
+	idRun         = 1001 // и далее по одному на приложение; меньше idExit не бывает: приложений не больше maxMenuApps
+	maxMenuApps   = 16
+	idExit        = 1100
 	pollEvery     = 2 * time.Second
 	iconSize      = 32
 )
@@ -134,6 +137,7 @@ var (
 	icons       [4]uintptr
 	state       = stateDown
 	taskbarMsg  uintptr
+	menuApps    []string
 	stateTitles = [4]string{"SessionVault: служба недоступна", "SessionVault: заблокировано", "SessionVault: открыто", "SessionVault: ТРЕВОГА, прочитана приманка"}
 )
 
@@ -278,12 +282,42 @@ func runApp(profile string) {
 	}
 }
 
+var titles = map[string]string{"telegram": "Telegram", "chrome": "Google Chrome", "edge": "Microsoft Edge", "brave": "Brave"}
+
+func appTitle(name string) string {
+	if t, ok := titles[name]; ok {
+		return t
+	}
+	return name
+}
+
+// Приложения с хранилищем спрашиваем у службы: у обычной учётки нет доступа к её папкам.
+func protectedApps() []string {
+	resp, err := ipc.Call(ipc.CommandPipe, "list", 2*time.Second)
+	if err != nil || resp == "" {
+		return nil
+	}
+	var apps []string
+	for _, n := range strings.Split(resp, ",") {
+		if profiles.ValidName(n) && len(apps) < maxMenuApps {
+			apps = append(apps, n)
+		}
+	}
+	return apps
+}
+
 func showMenu() {
 	menu, _, _ := pCreatePopupMenu.Call()
 	defer func() { _, _, _ = pDestroyMenu.Call(menu) }()
 	_, _, _ = pAppendMenu.Call(menu, mfString|mfGrayed, 0, uintptr(unsafe.Pointer(wstr(stateTitles[state]))))
 	_, _, _ = pAppendMenu.Call(menu, mfSeparator, 0, 0)
-	_, _, _ = pAppendMenu.Call(menu, mfString, idRun, uintptr(unsafe.Pointer(wstr("Запустить Telegram"))))
+	menuApps = protectedApps()
+	if len(menuApps) == 0 {
+		_, _, _ = pAppendMenu.Call(menu, mfString|mfGrayed, 0, uintptr(unsafe.Pointer(wstr("Нет защищённых приложений"))))
+	}
+	for i, name := range menuApps {
+		_, _, _ = pAppendMenu.Call(menu, mfString, uintptr(idRun+i), uintptr(unsafe.Pointer(wstr("Запустить "+appTitle(name)))))
+	}
 	_, _, _ = pAppendMenu.Call(menu, mfSeparator, 0, 0)
 	_, _, _ = pAppendMenu.Call(menu, mfString, idExit, uintptr(unsafe.Pointer(wstr("Выход"))))
 	var p point
@@ -312,10 +346,11 @@ func wndProc(h, message, wparam, lparam uintptr) uintptr {
 		notify(nimModify, texts[wparam])
 		return 0
 	case wmCommand:
-		switch wparam & 0xffff {
-		case idRun:
-			go runApp("telegram")
-		case idExit:
+		id := int(wparam & 0xffff)
+		switch {
+		case id >= idRun && id < idRun+len(menuApps):
+			go runApp(menuApps[id-idRun])
+		case id == idExit:
 			_, _, _ = pDestroyWindow.Call(h)
 		}
 		return 0

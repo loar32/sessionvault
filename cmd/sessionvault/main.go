@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -27,6 +28,7 @@ import (
 )
 
 const usage = `sessionvault install [-user имя] [-telegram-exe путь]
+sessionvault protect [-yes] [-password-stdin] <telegram|chrome|edge|brave>
 sessionvault import-tdata [путь-к-tdata]
 sessionvault uninstall
 sessionvault restore-backup <профиль>
@@ -69,6 +71,8 @@ func main() {
 	switch os.Args[1] {
 	case "install":
 		err = install(args)
+	case "protect":
+		err = protect(args)
 	case "import-tdata":
 		err = importTdata(args)
 	case "uninstall":
@@ -123,6 +127,53 @@ func install(args []string) error {
 		return err
 	}
 	fmt.Println("готово: служба SessionVault установлена и защищает учётку", *user)
+	return nil
+}
+
+// Защита приложения: Telegram — перенос существующей tdata, браузеры — новый пустой профиль (прежний удаляется).
+func protect(args []string) error {
+	fs := flag.NewFlagSet("protect", flag.ContinueOnError)
+	stdin := fs.Bool("password-stdin", false, "")
+	yes := fs.Bool("yes", false, "удалить прежний профиль браузера без вопроса")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() < 1 {
+		return errors.New("укажи приложение: sessionvault protect telegram|chrome|edge|brave")
+	}
+	app := fs.Arg(0)
+	rest := fs.Args()[1:]
+	if app == "telegram" {
+		if *stdin {
+			rest = append([]string{"-password-stdin"}, rest...)
+		}
+		return importTdata(rest)
+	}
+	// Флаги можно писать и после имени приложения.
+	if err := fs.Parse(rest); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return errors.New("лишние аргументы: " + strings.Join(fs.Args(), " "))
+	}
+	confirm := func(path string, size int64) bool {
+		fmt.Fprintf(os.Stderr, "Прежний профиль браузера будет УДАЛЁН: %s (%d МБ).\n", path, size>>20)
+		fmt.Fprintln(os.Stderr, "Куки и пароли в нём привязаны к вашей учётной записи; новый защищённый профиль начнётся с пустого, входы придётся сделать заново.")
+		if *yes {
+			return true
+		}
+		fmt.Fprint(os.Stderr, "Закройте браузер и введите delete для подтверждения: ")
+		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		return strings.TrimSpace(line) == "delete"
+	}
+	left, err := service.ProtectBrowser(app, confirm, func() ([]byte, error) { return readPassword(*stdin, true) })
+	if err != nil {
+		return err
+	}
+	fmt.Println("готово:", app, "защищён; запускайте его из иконки SessionVault в трее")
+	if left != "" {
+		fmt.Fprintln(os.Stderr, "ВНИМАНИЕ: прежний профиль удалён не полностью, удалите вручную:", left)
+	}
 	return nil
 }
 

@@ -119,7 +119,7 @@ func checkProcess(pid uint32) {
 func checkPipes() {
 	junk := []string{
 		"", " ", "stop", "unlock", "unlock secret", "quit", "shutdown", "status x", "STATUS",
-		"run", "run telegram arg", "run telegram -workdir C:\\", "run ../telegram", `run ..	elegram`, "run nonexistent",
+		"run", "list arg", "list; calc", "run telegram arg", "run telegram -workdir C:\\", "run ../telegram", `run ..	elegram`, "run nonexistent",
 		"run telegram\x00", "run telegram; calc", "run $(calc)", "run телеграм",
 		strings.Repeat("A", 1<<20), strings.Repeat("run telegram ", 5000),
 	}

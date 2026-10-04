@@ -15,6 +15,7 @@ import (
 	"github.com/loar32/sessionvault/internal/audit"
 	"github.com/loar32/sessionvault/internal/decoy"
 	"github.com/loar32/sessionvault/internal/isolation"
+	"github.com/loar32/sessionvault/internal/profiles"
 	"github.com/loar32/sessionvault/internal/ui/alert"
 	"golang.org/x/sys/windows"
 )
@@ -102,7 +103,11 @@ func (s *Service) syncDecoys() {
 		if _, err := os.Stat(filepath.Join(isolation.DataPath(name), "data.enc")); err != nil {
 			continue
 		}
-		created, err := decoy.Ensure(name, origin, user, decoyRefresh)
+		p, err := profiles.Load(isolation.ProfilesDir(), name)
+		if err != nil || p.Decoy == "" {
+			continue
+		}
+		created, err := decoy.Ensure(name, p.Decoy, origin, user, decoyRefresh)
 		foreign := errors.Is(err, decoy.ErrForeign)
 		switch {
 		case foreign && !decoy.Known(name, origin):

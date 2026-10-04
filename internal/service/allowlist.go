@@ -6,6 +6,7 @@ import (
 
 	"github.com/loar32/sessionvault/internal/audit"
 	"github.com/loar32/sessionvault/internal/isolation"
+	"github.com/loar32/sessionvault/internal/profiles"
 	"golang.org/x/sys/windows"
 )
 
@@ -20,12 +21,20 @@ func defaultAllow() []Allow {
 	sys := isolation.KnownDir(windows.FOLDERID_Windows, `C:\Windows`)
 	pd := isolation.KnownDir(windows.FOLDERID_ProgramData, `C:\ProgramData`)
 	pf := isolation.KnownDir(windows.FOLDERID_ProgramFiles, `C:\Program Files`)
-	return []Allow{
+	a := []Allow{
 		{Path: filepath.Join(sys, `System32\SearchIndexer.exe`)},
 		{Path: filepath.Join(pd, `Microsoft\Windows Defender\Platform\*\MsMpEng.exe`)},
 		{Path: filepath.Join(pd, `Microsoft\Windows Defender\Platform\*\MpCopyAccelerator.exe`)},
 		{Path: filepath.Join(pf, `Windows Defender\MsMpEng.exe`)},
 	}
+	// Обычный браузер, запущенный из основной учётки (ссылка, автозапуск), читает свой прежний профиль:
+	// это не кража, и тревога убила бы защищённые приложения. Подпись проверяется, подмена exe не пройдёт.
+	for _, name := range profiles.TemplateNames() {
+		if p, _ := profiles.Template(name); p.Decoy == "chromium" {
+			a = append(a, Allow{Path: p.Exe, Publisher: p.Publisher})
+		}
+	}
+	return a
 }
 
 // Каталоги, где нет записи у обычной учётки: exe оттуда нельзя подменить без прав администратора.

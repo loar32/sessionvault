@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 	"unsafe"
@@ -55,8 +56,8 @@ type Service struct {
 	keys      map[string][]byte // DEK профилей, пока хранилище разблокировано
 	running   map[string]bool
 	prompting bool
-	lastRun   time.Time
-	promptEnd time.Time // когда последнее окно пароля закончилось отказом или закрытием
+	lastRun   map[string]time.Time // по профилям: запуск одного приложения не задерживает другое
+	promptEnd map[string]time.Time // когда последнее окно пароля профиля закончилось отказом или закрытием
 	idle      *time.Timer
 	wg        sync.WaitGroup
 }
@@ -158,9 +159,30 @@ func (s *Service) handle(c *ipc.Conn) {
 	switch req.Cmd {
 	case "status":
 		_ = c.WriteLine(s.state())
+	case "list":
+		_ = c.WriteLine(s.list())
 	case "run":
 		_ = c.WriteLine(s.run(c, req.Profile))
 	}
+}
+
+// Имена профилей, у которых есть хранилище: по ним трей строит меню. Ничего, кроме имён, наружу не уходит.
+func (s *Service) list() string {
+	entries, err := os.ReadDir(isolation.VaultDir())
+	if err != nil {
+		return ""
+	}
+	var names []string
+	for _, e := range entries {
+		if !e.IsDir() || !profiles.ValidName(e.Name()) {
+			continue
+		}
+		v := vault.Vault{Dir: isolation.DataPath(e.Name()), DataName: workDataName}
+		if _, err := profiles.Load(isolation.ProfilesDir(), e.Name()); err == nil && v.Exists() {
+			names = append(names, e.Name())
+		}
+	}
+	return strings.Join(names, ",")
 }
 
 func (s *Service) state() string {
@@ -185,7 +207,7 @@ func (s *Service) run(c *ipc.Conn, name string) string {
 	if err != nil || session == 0 {
 		return ipc.Failed
 	}
-	v := vault.Vault{Dir: isolation.DataPath(name), DataName: workDataName}
+	v := vault.Vault{Dir: isolation.DataPath(name), DataName: workDataName, Exclude: p.Exclude}
 	if !v.Exists() {
 		s.log.Printf("run %s: хранилища нет", name)
 		return ipc.Failed
@@ -221,10 +243,13 @@ func (s *Service) admit(name string, now time.Time) bool {
 	if s.running[name] || s.prompting {
 		return false
 	}
-	if now.Sub(s.lastRun) < runGap || (s.keys[name] == nil && now.Sub(s.promptEnd) < promptCooldown) {
+	if now.Sub(s.lastRun[name]) < runGap || (s.keys[name] == nil && now.Sub(s.promptEnd[name]) < promptCooldown) {
 		return false
 	}
-	s.lastRun = now
+	if s.lastRun == nil {
+		s.lastRun = map[string]time.Time{}
+	}
+	s.lastRun[name] = now
 	return true
 }
 
@@ -233,7 +258,10 @@ func (s *Service) start(p profiles.Profile, v vault.Vault, dek []byte, session u
 		var err error
 		if dek, err = s.askPassword(p.Name, v, session); err != nil {
 			s.mu.Lock()
-			s.promptEnd = time.Now()
+			if s.promptEnd == nil {
+				s.promptEnd = map[string]time.Time{}
+			}
+			s.promptEnd[p.Name] = time.Now()
 			s.mu.Unlock()
 			return "", err
 		}

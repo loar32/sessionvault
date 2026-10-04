@@ -29,16 +29,34 @@ type entry struct {
 type file struct {
 	name     string
 	min, max int
+	sqlite   bool // начало как у базы SQLite, размер кратен странице
 }
 
-// Имена и порядок размеров как у tdata Telegram Desktop; D877F783D5D3EF8C — постоянное имя папки первого аккаунта.
-var layout = []file{
-	{"key_datas", 1500, 3500},
-	{"D877F783D5D3EF8Cs", 15000, 60000},
-	{`D877F783D5D3EF8C\maps`, 20000, 80000},
-	{"settingss", 300, 900},
-	{"usertag", 8, 8},
+const sqliteHeader = "SQLite format 3\x00"
+
+// Раскладки приманки по виду приложения: имена и порядок размеров как у настоящих данных.
+// У telegram D877F783D5D3EF8C — постоянное имя папки первого аккаунта; у chromium базы лежат в профиле Default.
+var layouts = map[string][]file{
+	"telegram": {
+		{"key_datas", 1500, 3500, false},
+		{"D877F783D5D3EF8Cs", 15000, 60000, false},
+		{`D877F783D5D3EF8C\maps`, 20000, 80000, false},
+		{"settingss", 300, 900, false},
+		{"usertag", 8, 8, false},
+	},
+	"chromium": {
+		{"Local State", 20000, 60000, false},
+		{"First Run", 0, 0, false},
+		{`Default\Preferences`, 20000, 80000, false},
+		{`Default\Login Data`, 40960, 61440, true},
+		{`Default\Web Data`, 98304, 163840, true},
+		{`Default\History`, 122880, 245760, true},
+		{`Default\Network\Cookies`, 24576, 122880, true},
+	},
 }
+
+// ErrKind — неизвестная раскладка приманки.
+var ErrKind = errors.New("неизвестная раскладка приманки")
 
 func statePath() string { return filepath.Join(isolation.BaseDir(), "decoys.json") }
 
@@ -64,7 +82,10 @@ func save(m map[string]entry) error {
 
 // Ensure создаёт приманку, если места нет, и пересоздаёт её не реже раза в refresh, чтобы даты выглядели живыми.
 // created сообщает, что папка новая: на неё нужно заново поставить аудит.
-func Ensure(profile, path string, user *windows.SID, refresh time.Duration) (created bool, err error) {
+func Ensure(profile, kind, path string, user *windows.SID, refresh time.Duration) (created bool, err error) {
+	if _, ok := layouts[kind]; !ok {
+		return false, ErrKind
+	}
 	st, err := load()
 	if err != nil {
 		return false, err
@@ -82,10 +103,10 @@ func Ensure(profile, path string, user *windows.SID, refresh time.Duration) (cre
 			return false, err
 		}
 	}
-	if err := noReparse(path); err != nil {
+	if err := NoReparse(path); err != nil {
 		return false, err
 	}
-	names, err := generate(path)
+	names, err := generate(path, layouts[kind])
 	if err != nil {
 		_ = os.RemoveAll(path)
 		return false, err
@@ -108,9 +129,9 @@ func Known(profile, path string) bool {
 	return ok && e.Path == path
 }
 
-// SYSTEM пишет и меняет владельца по пути из профиля пользователя; если пользователь подменил каталог
+// NoReparse: SYSTEM пишет и меняет владельца по пути из профиля пользователя; если пользователь подменил каталог
 // ссылкой или junction, это ушло бы в чужое место.
-func noReparse(path string) error {
+func NoReparse(path string) error {
 	for p := path; ; {
 		if fi, err := os.Lstat(p); err == nil && fi.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 {
 			return errors.New("на пути есть ссылка или junction: " + p)
@@ -160,7 +181,7 @@ func ours(root string, names []string) bool {
 }
 
 // В списке и сами файлы, и их папки: иначе обход сочтёт папку чужой.
-func generate(root string) ([]string, error) {
+func generate(root string, layout []file) ([]string, error) {
 	var names []string
 	for _, f := range layout {
 		p := filepath.Join(root, f.name)
@@ -171,9 +192,15 @@ func generate(root string) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
+		if f.sqlite {
+			size -= size % 4096
+		}
 		buf := make([]byte, size)
 		if _, err := rand.Read(buf); err != nil {
 			return nil, err
+		}
+		if f.sqlite {
+			copy(buf, sqliteHeader)
 		}
 		if err := os.WriteFile(p, buf, 0o644); err != nil {
 			return nil, err
@@ -187,8 +214,11 @@ func generate(root string) ([]string, error) {
 			return nil, err
 		}
 		names = append(names, f.name)
-		if d := filepath.Dir(f.name); d != "." {
-			names = append(names, d)
+		// Все папки на пути к файлу: иначе обход сочтёт промежуточную папку чужой.
+		for d := filepath.Dir(f.name); d != "."; d = filepath.Dir(d) {
+			if !slices.Contains(names, d) {
+				names = append(names, d)
+			}
 		}
 	}
 	return names, nil
