@@ -42,7 +42,32 @@ function PressEnter() {
     Invoke-CimMethod $kb -MethodName PressKey -Arguments @{ keyCode = 13 } | Out-Null
     Invoke-CimMethod $kb -MethodName ReleaseKey -Arguments @{ keyCode = 13 } | Out-Null
 }
-function TypeInVm($text) {
+# Обычный тест (чекпойнт browsers): свежая оболочка перехватывает фокус, поэтому перед вводом кликаем по полю. Проверено в v0.6.
+function TypeInVmClick($text) {
+    $before = LogCount
+    foreach ($step in 'type', 'enter', 'retype', 'enter') {
+        ClickPrompt
+        if ($step -eq 'retype') {
+            foreach ($i in 1..30) {
+                Invoke-CimMethod $kb -MethodName PressKey -Arguments @{ keyCode = 8 } | Out-Null
+                Invoke-CimMethod $kb -MethodName ReleaseKey -Arguments @{ keyCode = 8 } | Out-Null
+            }
+        }
+        if ($step -ne 'enter') {
+            Invoke-CimMethod $kb -MethodName TypeText -Arguments @{ asciiText = $text } | Out-Null
+            Start-Sleep -Milliseconds 1500
+        }
+        PressEnter
+        for ($i = 0; $i -lt 8; $i++) {
+            Start-Sleep 1
+            if ((LogCount) -gt $before) { return }
+        }
+        Write-Host "  (ввод не дошёл до окна, шаг '$step': повтор)"
+    }
+}
+# Чекпойнт hello (SV_HELLO_ONLY=1): клик по окну там сбивает фокус, поэтому ввод без клика (TypeInVmHello).
+function TypeInVm($text) { if ($env:SV_HELLO_ONLY -eq '1') { TypeInVmHello $text } else { TypeInVmClick $text } }
+function TypeInVmHello($text) {
     # Верный пароль считается принятым только по «разблокировано»: потерянная клавиша даёт «неверный пароль», и ввод надо повторить.
     $pat = if ($text -eq $MasterPassword) { 'разблокировано' } else { 'неверный пароль|разблокировано' }
     $before = LogCount $pat
