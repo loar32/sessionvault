@@ -15,6 +15,8 @@ import (
 // Запускается службой под токеном пользователя: показывает окно Windows Hello и отдаёт службе подпись challenge.
 // Ничего не пишет на диск и не выводит в консоль.
 func helloHelper(mode string, args []string) error {
+	// Служба ждёт ответ 90 с: успеть отменить операцию и закрыть окно Hello раньше, чем она убьёт процесс.
+	hello.Timeout = 70 * time.Second
 	if len(args) != 1 {
 		return errors.New("укажи pipe")
 	}

@@ -121,6 +121,7 @@ func checkPipes() {
 		"", " ", "stop", "unlock", "unlock secret", "quit", "shutdown", "status x", "STATUS",
 		"run", "list arg", "list; calc", "run telegram arg", "run telegram -workdir C:\\", "run ../telegram", `run ..	elegram`, "run nonexistent",
 		"run telegram\x00", "run telegram; calc", "run $(calc)", "run телеграм",
+		"hello", "hello ", "hello ../telegram", "hello telegram arg", "hello nonexistent", "hello telegram; calc",
 		strings.Repeat("A", 1<<20), strings.Repeat("run telegram ", 5000),
 	}
 	for _, q := range junk {

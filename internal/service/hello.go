@@ -21,7 +21,7 @@ const (
 	helloKeyName     = "SessionVault"
 	helloStartWait   = 30 * time.Second // помощник должен подключиться
 	helloGestureWait = 90 * time.Second // пользователь делает жест (палец, лицо, PIN)
-	maxHelloLine     = 1024
+	maxHelloLine     = 4096
 )
 
 // Секрет от Windows Hello получает помощник под токеном пользователя (ключ Hello принадлежит ему, а не SYSTEM) и отдаёт службе
