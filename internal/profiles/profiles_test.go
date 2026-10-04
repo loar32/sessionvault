@@ -105,3 +105,14 @@ func TestLoadRejectsBadNewFields(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadAcceptsBOM(t *testing.T) {
+	dir := t.TempDir()
+	b := append([]byte{0xEF, 0xBB, 0xBF}, []byte(`{"name":"bom","exe":"C:\\a.exe","data_dir":"d"}`)...)
+	if err := os.WriteFile(filepath.Join(dir, "bom.json"), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(dir, "bom"); err != nil {
+		t.Fatalf("профиль с BOM не читается: %v", err)
+	}
+}

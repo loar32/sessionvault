@@ -1,6 +1,7 @@
 package profiles
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -102,6 +103,7 @@ func Load(dir, name string) (Profile, error) {
 		return Profile{}, fmt.Errorf("недопустимое имя профиля %q", name)
 	}
 	b, err := os.ReadFile(filepath.Join(dir, name+".json"))
+	b = bytes.TrimPrefix(b, []byte{0xEF, 0xBB, 0xBF}) // BOM, который добавляют некоторые редакторы и PowerShell
 	if err != nil {
 		return Profile{}, fmt.Errorf("неизвестный профиль %q", name)
 	}

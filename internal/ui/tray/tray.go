@@ -348,8 +348,15 @@ func wndProc(h, message, wparam, lparam uintptr) uintptr {
 	case wmCommand:
 		id := int(wparam & 0xffff)
 		switch {
-		case id >= idRun && id < idRun+len(menuApps):
-			go runApp(menuApps[id-idRun])
+		case id >= idRun && id < idRun+maxMenuApps:
+			// Список строится при открытии меню; команду могли послать и без него.
+			apps := menuApps
+			if len(apps) == 0 {
+				apps = protectedApps()
+			}
+			if i := id - idRun; i < len(apps) {
+				go runApp(apps[i])
+			}
 		case id == idExit:
 			_, _, _ = pDestroyWindow.Call(h)
 		}

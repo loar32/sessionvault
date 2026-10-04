@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"os"
@@ -25,6 +26,7 @@ const defaultIdleMinutes = 15
 func LoadConfig() (Config, error) {
 	var c Config
 	b, err := os.ReadFile(isolation.ConfigPath())
+	b = bytes.TrimPrefix(b, []byte{0xEF, 0xBB, 0xBF}) // BOM, который добавляют некоторые редакторы и PowerShell
 	if err != nil {
 		return c, err
 	}

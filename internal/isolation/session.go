@@ -114,15 +114,22 @@ func LaunchAsVault(user, password, cmdline, workDir string) (pid uint32, process
 		_ = tok.Close()
 		return
 	}
+	if err = setNamedObjectAccess(sid, windows.GRANT_ACCESS); err != nil {
+		_ = setDesktopAccess(sid, windows.REVOKE_ACCESS)
+		_ = tok.Close()
+		return
+	}
 	// Без загруженного профиля у приложения нет HKCU.
 	pi := profileInfo{Size: uint32(unsafe.Sizeof(profileInfo{})), Flags: piNoUI, UserName: u}
 	if r, _, e := procLoadUserProfile.Call(uintptr(tok), uintptr(unsafe.Pointer(&pi))); r == 0 {
+		_ = setNamedObjectAccess(sid, windows.REVOKE_ACCESS)
 		_ = setDesktopAccess(sid, windows.REVOKE_ACCESS)
 		_ = tok.Close()
 		return 0, 0, nil, e
 	}
 	cleanup = func() {
 		_, _, _ = procUnloadUserProfile.Call(uintptr(tok), uintptr(pi.Profile))
+		_ = setNamedObjectAccess(sid, windows.REVOKE_ACCESS)
 		_ = setDesktopAccess(sid, windows.REVOKE_ACCESS)
 		_ = tok.Close()
 	}
@@ -153,7 +160,7 @@ func setDesktopAccess(sid *windows.SID, mode windows.ACCESS_MODE) error {
 		return e
 	}
 	defer func() { _, _, _ = procCloseWindowStn.Call(h) }()
-	if err := editObjectACL(windows.Handle(h), sid, mode); err != nil {
+	if err := editObjectACL(windows.Handle(h), windows.SE_WINDOW_OBJECT, sid, mode, windows.GENERIC_ALL); err != nil {
 		return err
 	}
 	dname, _ := windows.UTF16PtrFromString("Default")
@@ -162,11 +169,11 @@ func setDesktopAccess(sid *windows.SID, mode windows.ACCESS_MODE) error {
 		return e
 	}
 	defer func() { _, _, _ = procCloseDesktop.Call(d) }()
-	return editObjectACL(windows.Handle(d), sid, mode)
+	return editObjectACL(windows.Handle(d), windows.SE_WINDOW_OBJECT, sid, mode, windows.GENERIC_ALL)
 }
 
-func editObjectACL(h windows.Handle, sid *windows.SID, mode windows.ACCESS_MODE) error {
-	sd, err := windows.GetSecurityInfo(h, windows.SE_WINDOW_OBJECT, windows.DACL_SECURITY_INFORMATION)
+func editObjectACL(h windows.Handle, typ windows.SE_OBJECT_TYPE, sid *windows.SID, mode windows.ACCESS_MODE, access uint32) error {
+	sd, err := windows.GetSecurityInfo(h, typ, windows.DACL_SECURITY_INFORMATION)
 	if err != nil {
 		return err
 	}
@@ -175,7 +182,7 @@ func editObjectACL(h windows.Handle, sid *windows.SID, mode windows.ACCESS_MODE)
 		return err
 	}
 	acl, err := windows.ACLFromEntries([]windows.EXPLICIT_ACCESS{{
-		AccessPermissions: windows.GENERIC_ALL,
+		AccessPermissions: windows.ACCESS_MASK(access),
 		AccessMode:        mode,
 		Inheritance:       windows.NO_INHERITANCE,
 		Trustee: windows.TRUSTEE{
@@ -187,7 +194,7 @@ func editObjectACL(h windows.Handle, sid *windows.SID, mode windows.ACCESS_MODE)
 	if err != nil {
 		return err
 	}
-	return windows.SetSecurityInfo(h, windows.SE_WINDOW_OBJECT, windows.DACL_SECURITY_INFORMATION, nil, nil, acl, nil)
+	return windows.SetSecurityInfo(h, typ, windows.DACL_SECURITY_INFORMATION, nil, nil, acl, nil)
 }
 
 var (
