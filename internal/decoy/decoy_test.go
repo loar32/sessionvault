@@ -162,3 +162,22 @@ func TestUnknownKind(t *testing.T) {
 		t.Fatalf("ждали ErrKind, получили %v", err)
 	}
 }
+
+func TestOverwrittenDecoyFileIsForeign(t *testing.T) {
+	path, sid := setup(t)
+	if _, err := Ensure("telegram", "telegram", path, sid, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "key_datas"), []byte("real session"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Ensure("telegram", "telegram", path, sid, 0); !errors.Is(err, ErrForeign) {
+		t.Fatalf("ожидался ErrForeign, получено %v", err)
+	}
+	if err := Remove("telegram", path); !errors.Is(err, ErrForeign) {
+		t.Fatalf("Remove: ожидался ErrForeign, получено %v", err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(path, "key_datas")); string(b) != "real session" {
+		t.Fatal("чужие данные затронуты")
+	}
+}

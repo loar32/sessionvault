@@ -56,6 +56,7 @@ type Service struct {
 	mu          sync.Mutex
 	keys        map[string][]byte // DEK профилей, пока хранилище разблокировано
 	running     map[string]bool
+	closing     map[string]bool // приложение вышло, данные ещё шифруются: новый экземпляр запускать нельзя
 	prompting   bool
 	lastFailLog time.Time            // когда последний раз писали об ошибке запуска
 	lastRun     map[string]time.Time // по профилям: запуск одного приложения не задерживает другое
@@ -342,6 +343,12 @@ func (s *Service) start(p profiles.Profile, v vault.Vault, dek []byte, session u
 		defer s.wg.Done()
 		_, _ = windows.WaitForSingleObject(proc, windows.INFINITE)
 		_ = windows.CloseHandle(proc)
+		s.mu.Lock()
+		if s.closing == nil {
+			s.closing = map[string]bool{}
+		}
+		s.closing[p.Name] = true
+		s.mu.Unlock()
 		if err := v.Encrypt(dek); err != nil {
 			s.log.Printf("%s: шифрование после закрытия: %v", p.Name, err)
 		}
@@ -355,6 +362,7 @@ func (s *Service) finish(name string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.running, name)
+	delete(s.closing, name)
 	if s.lockPending && len(s.running) == 0 {
 		s.lock()
 		s.log.Println("хранилище заблокировано после выхода приложений (блокировка сеанса, сон или выход)")

@@ -53,8 +53,11 @@ func (s *Service) open(c *ipc.Conn) string {
 		return ipc.Failed
 	}
 	s.mu.Lock()
-	running := s.running[name]
+	running, closing := s.running[name], s.closing[name]
 	s.mu.Unlock()
+	if closing {
+		return ipc.Busy
+	}
 	if !running {
 		return s.run(c, name, link)
 	}
