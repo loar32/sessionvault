@@ -101,8 +101,8 @@ func ProtectDir(root string) error {
 }
 
 // Рабочая папка приложения: vault пишет и читает всё, но не запускает файлы и не меняет права; запуск разрешён только
-// в папках execDirs (путь относительно root). Вызывается, пока приложение не запущено.
-func ProtectWork(root string, execDirs []string) error {
+// файлам, которые одобрил allowExec (им даются лишь чтение и запуск). Вызывается, пока приложение не запущено.
+func ProtectWork(root string, allowExec func(path string) bool) error {
 	vault, _, _, err := windows.LookupSID("", VaultUser)
 	if err != nil {
 		return err
@@ -111,5 +111,5 @@ func ProtectWork(root string, execDirs []string) error {
 	if err != nil {
 		return err
 	}
-	return protectNoExec(root, execDirs, vault, []*windows.SID{system, admins}, nil, admins)
+	return protectNoExec(root, allowExec, vault, []*windows.SID{system, admins}, nil, admins)
 }

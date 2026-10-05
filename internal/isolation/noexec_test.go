@@ -43,32 +43,20 @@ func TestFileHasNoExecuteOrChangePermissions(t *testing.T) {
 	}
 }
 
-func TestExecAllowedInWhitelistedDir(t *testing.T) {
-	s := sddl(t, true, true)
-	if !strings.Contains(s, "(A;OIIO;0x1301ff;;;S-1-5-21-1-2-3-1001)") {
-		t.Fatalf("в белой папке файлам нужен запуск: %s", s)
-	}
-	if !strings.Contains(s, "(A;CI;0x1301ff;;;S-1-5-21-1-2-3-1001)") {
-		t.Fatalf("каталогу нужны права без смены DACL: %s", s)
-	}
-	n := sddl(t, true, false)
-	if !strings.Contains(n, "(A;OIIO;0x1301df;;;S-1-5-21-1-2-3-1001)") {
-		t.Fatalf("вне белой папки файлы без запуска: %s", n)
+func TestApprovedFileOnlyReadsAndExecutes(t *testing.T) {
+	s := sddl(t, false, true)
+	if !strings.Contains(s, "(A;;0x1200a9;;;S-1-5-21-1-2-3-1001)") {
+		t.Fatalf("одобренному файлу только чтение и запуск, без записи: %s", s)
 	}
 }
 
-func TestInExecDir(t *testing.T) {
-	root := `C:\v\work`
-	dirs := []string{`User Data\WidevineCdm`}
-	for p, want := range map[string]bool{
-		root + `\User Data\WidevineCdm`:           true,
-		root + `\User Data\WidevineCdm\1.0\a.dll`: true,
-		root + `\User Data\WidevineCdmX`:          false,
-		root + `\User Data\Default`:               false,
-		root:                                      false,
-	} {
-		if got := inExecDir(root, p, dirs); got != want {
-			t.Errorf("%s: %v, ждали %v", p, got, want)
-		}
+func TestNewFilesInDirNeverExecute(t *testing.T) {
+	// Каталог одобренного файла (fileExec для каталога не действует): созданные позже файлы запуска не получают.
+	s := sddl(t, true, true)
+	if !strings.Contains(s, "(A;OIIO;0x1301df;;;S-1-5-21-1-2-3-1001)") {
+		t.Fatalf("новые файлы без запуска: %s", s)
+	}
+	if !strings.Contains(s, "(A;CI;0x1301ff;;;S-1-5-21-1-2-3-1001)") {
+		t.Fatalf("каталогу нужны права без смены DACL: %s", s)
 	}
 }
