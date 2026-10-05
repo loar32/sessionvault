@@ -164,9 +164,14 @@ func active(sys system) int {
 	}
 	n := 0
 	for _, r := range Rules {
-		if v, ok := sys.get(rulesKey, r.ID); policy && ok && v == block {
-			n++
-		} else if v, ok := sys.get(localKey, r.ID); ok && v == block {
+		// Значение из политики главнее локальной настройки: отключённое политикой правило не работает.
+		if v, ok := sys.get(rulesKey, r.ID); policy && ok {
+			if v == block {
+				n++
+			}
+			continue
+		}
+		if v, ok := sys.get(localKey, r.ID); ok && v == block {
 			n++
 		}
 	}

@@ -9,6 +9,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 )
@@ -22,6 +24,7 @@ type Result struct {
 
 const (
 	maxExtensions = 500
+	maxProfiles   = 50
 	maxManifest   = 1 << 20
 	maxNameRunes  = 60
 )
@@ -38,26 +41,60 @@ type manifest struct {
 // принадлежит приложению под vault, а читает его служба с высокими правами: ссылки и junction не открываются.
 func Scan(userData string) Result {
 	var res Result
-	seen := map[string]bool{}
-	for _, prof := range plainDirs(userData) {
+	seen, flagged := map[string]bool{}, map[string]bool{}
+	for i, prof := range plainDirs(userData) {
+		if i >= maxProfiles {
+			break
+		}
 		exts := filepath.Join(userData, prof, "Extensions")
 		for _, id := range plainDirs(exts) {
-			if seen[id] || len(seen) >= maxExtensions {
-				continue
+			if !seen[id] {
+				if len(seen) >= maxExtensions {
+					continue
+				}
+				seen[id] = true
+				res.Checked++
 			}
-			seen[id] = true
-			res.Checked++
+			// Разрешения одного расширения в разных профилях могут отличаться: смотрим каждый профиль.
 			vers := plainDirs(filepath.Join(exts, id))
-			if len(vers) == 0 {
+			if len(vers) == 0 || flagged[id] {
 				continue
 			}
+			sort.Slice(vers, func(a, b int) bool { return versionLess(vers[a], vers[b]) })
 			m, ok := read(filepath.Join(exts, id, vers[len(vers)-1], "manifest.json"))
 			if ok && risky(m) {
+				flagged[id] = true
 				res.Risky = append(res.Risky, Finding{ID: clean(id), Name: displayName(m.Name, id)})
 			}
 		}
 	}
 	return res
+}
+
+// Версии каталогов вида 1.10_0 сравниваются по числам: по строкам 1.9_0 оказалась бы новее 1.10_0.
+func versionLess(a, b string) bool {
+	pa, pb := versionParts(a), versionParts(b)
+	for i := 0; i < len(pa) && i < len(pb); i++ {
+		if pa[i] != pb[i] {
+			return pa[i] < pb[i]
+		}
+	}
+	if len(pa) != len(pb) {
+		return len(pa) < len(pb)
+	}
+	return a < b
+}
+
+func versionParts(s string) []int {
+	var out []int
+	for _, f := range strings.FieldsFunc(s, func(r rune) bool { return r < '0' || r > '9' }) {
+		n, err := strconv.Atoi(f)
+		if err != nil {
+			n = 0
+		}
+		out = append(out, n)
+	}
+	return out
 }
 
 // Обычные каталоги: ссылки (в Go их тип не каталог) пропускаются.
