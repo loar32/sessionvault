@@ -39,12 +39,16 @@ const (
 )
 
 type Service struct {
-	cfg       Config
-	idleAfter time.Duration
-	exe       string
-	log       *log.Logger
-	job       windows.Handle // под mu: после тревоги заменяется новым
-	cmdL      *ipc.Listener
+	cfg        Config
+	idleAfter  time.Duration
+	exe        string
+	log        *log.Logger
+	job        windows.Handle       // под mu: после тревоги заменяется новым
+	memWatchAt time.Time            // под mu: когда в последний раз ставили аудит на процессы приложений
+	memSeen    map[string]time.Time // под mu: недавние обращения к памяти (процесс+права), чтобы не писать повторы
+	memReads   int                  // под mu: записано обращений с запуска службы
+	memLast    string               // под mu: последнее обращение
+	cmdL       *ipc.Listener
 
 	allow     allowlist
 	stopAudit func()
@@ -175,6 +179,7 @@ func (s *Service) handle(c *ipc.Conn) {
 	}
 	switch req.Cmd {
 	case "status":
+		s.watchMemory()
 		_ = c.WriteLine(s.state())
 	case "list":
 		_ = c.WriteLine(s.list())
@@ -337,6 +342,8 @@ func (s *Service) start(p profiles.Profile, v vault.Vault, dek []byte, session u
 	}
 	_, _ = windows.ResumeThread(thread)
 	_ = windows.CloseHandle(thread)
+	// Приложение запущено: потомки появятся позже, их подхватит ближайший опрос статуса.
+	time.AfterFunc(memWatchEvery, s.watchMemory)
 
 	// Быстрый выход помощника — ошибка запуска, а не нормальная работа приложения.
 	if ev, _ := windows.WaitForSingleObject(proc, uint32(launchGrace.Milliseconds())); ev == windows.WAIT_OBJECT_0 {

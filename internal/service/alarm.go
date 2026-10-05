@@ -66,14 +66,25 @@ func (s *Service) ensureAudit() {
 	changed, err := audit.EnableFileSystem()
 	if err != nil {
 		s.log.Println("аудит файловой системы не включён:", err)
+	} else if changed {
+		s.log.Println("аудит файловой системы включён")
+		if cfg, err := LoadConfig(); err == nil && !cfg.AuditByUs {
+			if err := UpdateConfig(func(c *Config) { c.AuditByUs = true }); err != nil {
+				s.log.Println("config.json:", err)
+			}
+		}
+	}
+	changed, err = audit.EnableKernelObject()
+	if err != nil {
+		s.log.Println("аудит объектов ядра не включён:", err)
 		return
 	}
 	if !changed {
 		return
 	}
-	s.log.Println("аудит файловой системы включён")
-	if cfg, err := LoadConfig(); err == nil && !cfg.AuditByUs {
-		if err := UpdateConfig(func(c *Config) { c.AuditByUs = true }); err != nil {
+	s.log.Println("аудит объектов ядра включён")
+	if cfg, err := LoadConfig(); err == nil && !cfg.KernelAuditByUs {
+		if err := UpdateConfig(func(c *Config) { c.KernelAuditByUs = true }); err != nil {
 			s.log.Println("config.json:", err)
 		}
 	}
@@ -216,6 +227,10 @@ func (s *Service) handleRead(r audit.Read) {
 			s.log.Printf("обработка события чтения: %v", p)
 		}
 	}()
+	if r.Type == "Process" {
+		s.handleMemory(r)
+		return
+	}
 	// Сама служба читает приманку при проверке (список файлов) — это не тревога.
 	if !s.watchedLong(r.Object) || strings.EqualFold(r.Process, s.exe) || s.allow.allowed(r.Process, r.PID) {
 		return

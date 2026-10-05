@@ -281,6 +281,17 @@ $vaultPid = $r.pid
 Write-Host '--- 5. защита, пока приложение открыто ---'
 $r = Vm { param($p) AsTester 'ac' "C:\sv\access-check.exe -pid $p"; Done 'ac' | Out-Null; Out 'ac' } @($vaultPid)
 Check ($r -match 'EXIT=0') 'access-check из tester: утечек нет'
+# Чтение памяти процесса vault из tester (access-check выше) попадает в тихий журнал: без окон и тревог.
+$r = Vm {
+    $f = 'C:\ProgramData\SessionVault\memory.log'
+    WaitFor { (Test-Path $f) -and ((Get-Content $f -Raw -Encoding UTF8) -match 'access-check') } 40 | Out-Null
+    AsTester 'ckm' "`"$exe`" check -json"; Done 'ckm' 60 | Out-Null
+    @{ log = (Get-Content $f -Raw -Encoding UTF8 -ErrorAction SilentlyContinue); report = (Out 'ckm'); alerts = @(Get-Content C:\ProgramData\SessionVault\alerts.log -Encoding UTF8 -ErrorAction SilentlyContinue).Count }
+}
+Check ($r.log -match 'access-check\.exe' -and $r.log -match 'чтение памяти') "memory.log: чтение памяти процесса vault записано ($("$($r.log)" -replace '\s+',' ')))"
+Check ($r.report -match '"id":"memory"[^}]*"level":"info"') 'check: пункт «Чтение памяти приложений» показывает обращения справкой'
+Check ($r.alerts -eq 0) "чтение памяти не создало тревог ($($r.alerts))"
+
 $r = Vm { (icacls $v) -join ' ' }
 Check ($r -notmatch 'vault:') 'у vault нет доступа к метаданным профиля (vault.json, data.enc)'
 $r = Vm { (icacls "$v\work") -join ' ' }
@@ -771,7 +782,7 @@ $r = Vm {
 }
 $rep = try { $r.json | ConvertFrom-Json } catch { $null }
 $ids = if ($rep) { ($rep.items | ForEach-Object { $_.id }) -join ',' } else { '' }
-Check ($rep -and $ids -match 'user,windows,defender,bitlocker,hvci,secureboot,blocklist,asr,audit,harden,hello,extensions,telegram,clickfix') "check -json: отчёт от службы со всеми пунктами ($ids)"
+Check ($rep -and $ids -match 'user,windows,defender,bitlocker,hvci,secureboot,blocklist,asr,audit,harden,hello,extensions,memory,telegram,clickfix') "check -json: отчёт от службы со всеми пунктами ($ids)"
 Check ($rep -and ($rep.items | Where-Object { $_.id -eq 'user' }).level -eq 'ok' -and ($rep.items | Where-Object { $_.id -eq 'audit' }).level -eq 'ok') "check: основная учётка не админ, аудит работает"
 Check ($rep -and ($rep.items | Where-Object { $_.id -eq 'hvci' }).level -eq 'warn') "check: выключенная HVCI найдена (жёлтый пункт)"
 Check ($r.saved -and $r.file -notmatch 'items') "check.json создан и недоступен обычной учётке"

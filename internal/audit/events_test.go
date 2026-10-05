@@ -43,3 +43,13 @@ func TestUnder(t *testing.T) {
 		}
 	}
 }
+
+func TestParseProcessEvent(t *testing.T) {
+	x := `<Event><EventData><Data Name="SubjectUserSid">S-1-5-21-1-2-3-1001</Data><Data Name="SubjectUserName">tester</Data>` +
+		`<Data Name="ObjectType">Process</Data><Data Name="ObjectName">\Device\HarddiskVolume3\Program Files\Google\Chrome\Application\chrome.exe</Data>` +
+		`<Data Name="AccessMask">0x10</Data><Data Name="ProcessId">0x1c38</Data><Data Name="ProcessName">C:\Users\tester\x.exe</Data></EventData></Event>`
+	r, err := parseRead([]byte(x))
+	if err != nil || r.Type != "Process" || r.User != "tester" || r.SID != "S-1-5-21-1-2-3-1001" || r.Mask != 0x10 || r.PID != 0x1c38 {
+		t.Fatalf("событие процесса разобрано неверно: %+v, %v", r, err)
+	}
+}

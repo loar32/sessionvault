@@ -39,7 +39,7 @@ func good() fake {
 	}
 }
 
-var allOn = Input{Audit: true, Hardened: true, Hello: true, ASRActive: 4, ASRTotal: 4}
+var allOn = Input{Audit: true, Hardened: true, Hello: true, ASRActive: 4, ASRTotal: 4, MemAudit: true}
 
 func level(r Report, id string) Level {
 	for _, it := range r.Items {
@@ -186,5 +186,22 @@ func TestExtensionsItem(t *testing.T) {
 		if it.ID == "extensions" && (!strings.Contains(it.Detail, "A (chrome)") || !strings.Contains(it.Detail, "и ещё 2") || strings.Contains(it.Detail, "G (edge)")) {
 			t.Fatalf("список обрезан неверно: %s", it.Detail)
 		}
+	}
+}
+
+func TestMemoryItem(t *testing.T) {
+	in := allOn
+	in.MemAudit = false
+	if r := run(good(), in, time.Now()); level(r, "memory") != Info {
+		t.Fatal("аудит не включён — справка")
+	}
+	in.MemAudit = true
+	if r := run(good(), in, time.Now()); level(r, "memory") != OK {
+		t.Fatal("обращений нет — зелёный")
+	}
+	in.MemReads, in.MemLast = 3, "x.exe -> chrome.exe"
+	r := run(good(), in, time.Now())
+	if level(r, "memory") != Info || r.Overall != OK {
+		t.Fatalf("обращения — только справка, итог не меняется: %+v", r)
 	}
 }

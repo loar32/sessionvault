@@ -166,7 +166,7 @@ func Install(mainUser, telegramExe string) (err error) {
 	// При повторной установке сохраняем исходные места данных: без них uninstall не вернёт сессии.
 	cfg := Config{MainUser: mainUser, IdleMinutes: defaultIdleMinutes}
 	if old, e := LoadConfig(); e == nil {
-		cfg.Origins, cfg.AuditByUs, cfg.DecoyAllow, cfg.Hardening, cfg.ASR = old.Origins, old.AuditByUs, old.DecoyAllow, old.Hardening, old.ASR
+		cfg.Origins, cfg.AuditByUs, cfg.DecoyAllow, cfg.Hardening, cfg.ASR, cfg.KernelAuditByUs = old.Origins, old.AuditByUs, old.DecoyAllow, old.Hardening, old.ASR, old.KernelAuditByUs
 	}
 	if err = SaveConfig(cfg); err != nil {
 		return err
