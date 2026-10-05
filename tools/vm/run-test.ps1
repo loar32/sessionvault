@@ -555,10 +555,6 @@ function BrowserTest($app, $title, $exePath, $proc, $originRel, $required) {
         $d = "$o\Default"
         New-Item -ItemType Directory -Force $d | Out-Null
         Set-Content "$d\Cookies" 'old-cookie'
-        # Поддельное расширение с доступом к cookies и ко всем сайтам: служба должна найти его при запуске браузера.
-        $x = "$d\Extensions\aaaabbbbccccddddeeeeffffgggghhhh\1.0_0"
-        New-Item -ItemType Directory -Force $x | Out-Null
-        Set-Content "$x\manifest.json" '{"name":"Cookie Grabber","version":"1.0","manifest_version":3,"permissions":["cookies"],"host_permissions":["<all_urls>"]}'
     } -ArgumentList $origin
     $r = Vm {
         param($pw, $app, $o)
@@ -601,17 +597,17 @@ function BrowserTest($app, $title, $exePath, $proc, $originRel, $required) {
         Start-Sleep 5
         $cl = (Get-CimInstance Win32_Process -Filter "Name='$proc.exe'" | Select-Object -First 1).CommandLine
         $vp = (Get-Process $proc -IncludeUserName -ErrorAction SilentlyContinue | Where-Object { $_.UserName -like '*\vault' } | Select-Object -First 1).Id
-        if ($ok) { Set-Content "$ud\marker.txt" 'browser-session-marker' }
+        if ($ok) {
+            Set-Content "$ud\marker.txt" 'browser-session-marker'
+            # Старый профиль при protect не переносится, поэтому расширение кладём в рабочий: служба найдёт его при следующем запуске.
+            $x = "$ud\Default\Extensions\aaaabbbbccccddddeeeeffffgggghhhh\1.0_0"
+            New-Item -ItemType Directory -Force $x | Out-Null
+            Set-Content "$x\manifest.json" '{"name":"Cookie Grabber","version":"1.0","manifest_version":3,"permissions":["cookies"],"host_permissions":["<all_urls>"]}'
+        }
         @{ out = (Out 'runB'); up = [bool]$up; profile = $ok; cmd = $cl; vp = $vp }
     } @($app, $proc)
     Check ($r.out -match 'ok' -and $r.up) "$title запущен от vault ($("$($r.out)" -replace '\s+',' '))"
     Check ($r.profile -and $r.cmd -like "*vault\$app\work\User Data*") "$title работает с профилем в защищённой папке"
-    $x = Vm {
-        AsTester 'ckx' "`"$exe`" check -json"
-        Done 'ckx' 60 | Out-Null
-        Out 'ckx'
-    }
-    Check ($x -match "Cookie Grabber \($app\)") "расширение с доступом к cookies и ко всем сайтам найдено при запуске $title"
 
     # Пока браузер работает, обычная учётка не должна дотянуться ни до файлов, ни до памяти его процесса.
     $ac = Vm {
@@ -645,6 +641,12 @@ function BrowserTest($app, $title, $exePath, $proc, $originRel, $required) {
         @{ out = (Out 'runB2'); up = [bool]$up; marker = (Get-Content "C:\ProgramData\SessionVault\vault\$app\work\User Data\marker.txt" -ErrorAction SilentlyContinue) }
     } @($app, $proc)
     Check ($r.up -and $r.marker -eq 'browser-session-marker') "профиль $title сохранился между запусками ($("$($r.out)" -replace '\s+',' '))"
+    $x = Vm {
+        AsTester 'ckx' "`"$exe`" check -json"
+        Done 'ckx' 60 | Out-Null
+        Out 'ckx'
+    }
+    Check ($x -match "Cookie Grabber \($app\)") "расширение с доступом к cookies и ко всем сайтам найдено при запуске $title"
     if ($link) {
         $r = Vm {
             param($proc, $app)
@@ -826,7 +828,8 @@ Write-Host '--- 15c. правила ASR: check -fix ---'
 $asrIds = @('5beb7efe-fd9a-4556-801d-275e5ffc04cc', 'd3e037e1-3eb8-44c8-a917-57927947596d', 'be9ba2d9-53ea-4cdc-84e5-9b1eeee46550', '9e6c4e1f-7d60-472f-ba1a-a39ef669e4b2')
 $r = Vm {
     param($ids)
-    function Blocked { $mp = Get-MpPreference; $n = 0; for ($i = 0; $i -lt @($mp.AttackSurfaceReductionRules_Ids).Count; $i++) { if ($ids -contains "$($mp.AttackSurfaceReductionRules_Ids[$i])".ToLower() -and $mp.AttackSurfaceReductionRules_Actions[$i] -eq 1) { $n++ } }; $n }
+    function Blocked { $mp = Get-MpPreference; $n = 0; for ($i = 0; $i -lt @($mp.AttackSurfaceReductionRules_Ids | Where-Object { $_ }).Count; $i++) { if ($ids -contains "$($mp.AttackSurfaceReductionRules_Ids[$i])".ToLower() -and $mp.AttackSurfaceReductionRules_Actions[$i] -eq 1) { $n++ } }; $n }
+    [Console]::OutputEncoding = [Text.Encoding]::UTF8
     $before = Blocked
     $denied = 'n' | & C:\sv\sessionvault.exe check -fix 2>&1 | Out-String
     Start-Sleep 2
@@ -850,7 +853,8 @@ Check ($r.report -match '"id":"asr","title":"[^"]*","level":"ok"') 'check от �
 Check ($r.user -match 'администратор' -and $r.user -notmatch 'EXIT=0') "check -fix от обычной учётки отказывает ($("$($r.user)" -replace '\s+',' '))"
 $r = Vm {
     param($ids)
-    function Blocked { $mp = Get-MpPreference; $n = 0; for ($i = 0; $i -lt @($mp.AttackSurfaceReductionRules_Ids).Count; $i++) { if ($ids -contains "$($mp.AttackSurfaceReductionRules_Ids[$i])".ToLower() -and $mp.AttackSurfaceReductionRules_Actions[$i] -eq 1) { $n++ } }; $n }
+    function Blocked { $mp = Get-MpPreference; $n = 0; for ($i = 0; $i -lt @($mp.AttackSurfaceReductionRules_Ids | Where-Object { $_ }).Count; $i++) { if ($ids -contains "$($mp.AttackSurfaceReductionRules_Ids[$i])".ToLower() -and $mp.AttackSurfaceReductionRules_Actions[$i] -eq 1) { $n++ } }; $n }
+    [Console]::OutputEncoding = [Text.Encoding]::UTF8
     $out = & C:\sv\sessionvault.exe check -fix -off 2>&1 | Out-String
     $off = WaitFor { (Blocked) -eq 0 } 40
     # Для проверки отката при удалении правила включаются снова.
