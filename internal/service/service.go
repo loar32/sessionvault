@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -315,7 +317,7 @@ func (s *Service) start(p profiles.Profile, v vault.Vault, dek []byte, session u
 		unlock()
 		return "", err
 	}
-	if err := isolation.ProtectWork(isolation.WorkPath(p.Name), p.ExecAllow); err != nil {
+	if err := isolation.ProtectWork(isolation.WorkPath(p.Name), execApproved(p)); err != nil {
 		unlock()
 		return "", errors.Join(err, v.Encrypt(dek))
 	}
@@ -524,4 +526,19 @@ func (s *Service) jobHandle() windows.Handle {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.job
+}
+
+// Запуск разрешается только файлам из списка профиля, подписанным нужным издателем: подпись проверяется перед каждым
+// запуском приложения, пока оно ничего не может менять.
+func execApproved(p profiles.Profile) func(string) bool {
+	if len(p.ExecFiles) == 0 || p.ExecSigner == "" {
+		return nil
+	}
+	return func(path string) bool {
+		if !slices.ContainsFunc(p.ExecFiles, func(n string) bool { return strings.EqualFold(n, filepath.Base(path)) }) {
+			return false
+		}
+		name, err := audit.Signer(path)
+		return err == nil && strings.EqualFold(name, p.ExecSigner)
+	}
 }

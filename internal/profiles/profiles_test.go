@@ -116,3 +116,27 @@ func TestLoadAcceptsBOM(t *testing.T) {
 		t.Fatalf("профиль с BOM не читается: %v", err)
 	}
 }
+
+func TestExecFiles(t *testing.T) {
+	dir := t.TempDir()
+	// Профиль браузера, записанный до v0.13, получает исключение для Widevine.
+	old := `{"name":"chrome","exe":"C:/a.exe","data_dir":"User Data","decoy":"chromium"}`
+	if err := os.WriteFile(filepath.Join(dir, "chrome.json"), []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p, err := Load(dir, "chrome")
+	if err != nil || len(p.ExecFiles) != 1 || p.ExecFiles[0] != "widevinecdm.dll" || p.ExecSigner != "Google LLC" {
+		t.Fatalf("исключение для Widevine: %+v, %v", p, err)
+	}
+	// Имя файла, а не путь: иначе запуск разрешился бы файлу в произвольной подпапке.
+	bad := `{"name":"x","exe":"C:/a.exe","data_dir":"d","exec_files":["a/b.dll"]}`
+	if err := os.WriteFile(filepath.Join(dir, "x.json"), []byte(bad), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(dir, "x"); err == nil {
+		t.Fatal("путь вместо имени файла принят")
+	}
+	if Telegram.ExecFiles != nil {
+		t.Fatal("у Telegram исключений нет")
+	}
+}

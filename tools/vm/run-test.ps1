@@ -908,10 +908,12 @@ $r = Vm {
         $m[$p.Key] = (Get-Content "$($p.Value)\marker.txt" -ErrorAction SilentlyContinue)
     }
     @{ code = $code; out = ($out -replace '\s+', ' '); svc = [bool](Get-Service SessionVault -ErrorAction SilentlyContinue)
-       base = (Test-Path 'C:\ProgramData\SessionVault'); markers = $m
+       base = @(Get-ChildItem 'C:\ProgramData\SessionVault' -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'exchange' }).Count
+       exchange = (Test-Path 'C:\ProgramData\SessionVault\exchange\u.exe'); markers = $m
        owner = (Get-Acl 'C:\Users\tester\AppData\Local\Google\Chrome\User Data').Owner }
 } @($MasterPassword)
-Check ($r.code -eq 0 -and -not $r.svc -and -not $r.base) "удаление после устранения ссылки прошло: служба и каталог данных убраны ($($r.out))"
+Check ($r.code -eq 0 -and -not $r.svc -and $r.base -eq 0) "удаление после устранения ссылки прошло: служба и каталог данных убраны ($($r.out))"
+Check $r.exchange 'файлы общей папки после удаления остались'
 Check ($r.markers.edge -eq 'browser-session-marker' -and $r.markers.chrome -eq 'browser-session-marker' -and $r.markers.brave -eq 'browser-session-marker') 'профили Edge, Chrome и Brave возвращены на прежние места с данными'
 Check ($r.owner -like '*\tester') "владелец вернувшихся данных — основная учётка ($($r.owner))"
 

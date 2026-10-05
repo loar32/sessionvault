@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 
 	"golang.org/x/sys/windows"
 )
@@ -40,9 +39,12 @@ const (
 	inheritFiles = windows.OBJECT_INHERIT_ACE | windows.INHERIT_ONLY_ACE
 )
 
-// noExecACL — доступ vault к папке и вложенному: каталогам без смены прав, файлам ещё и без запуска (или с запуском,
-// если папка в белом списке). Если указан extra, он получает полный доступ, кроме смены прав и владельца.
-func noExecACL(isDir, allowExec bool, vault *windows.SID, full []*windows.SID, extra *windows.SID) (*windows.ACL, error) {
+// Файл из белого списка vault может только читать и запускать: переписать его и подсунуть свой код нельзя.
+const execOnlyRights = 0x1200A9
+
+// noExecACL — доступ vault к папке и вложенному: каталогам без смены прав, файлам ещё и без запуска (кроме файла из
+// белого списка, fileExec). Если указан extra, он получает полный доступ, кроме смены прав и владельца.
+func noExecACL(isDir, fileExec bool, vault *windows.SID, full []*windows.SID, extra *windows.SID) (*windows.ACL, error) {
 	owner, err := ownerRightsSID()
 	if err != nil {
 		return nil, err
@@ -53,8 +55,8 @@ func noExecACL(isDir, allowExec bool, vault *windows.SID, full []*windows.SID, e
 	}
 	es = append(es, entry(owner, windows.READ_CONTROL, inheritAll))
 	vaultFiles := uint32(fileRights)
-	if allowExec {
-		vaultFiles = dirRights
+	if fileExec && !isDir {
+		vaultFiles = execOnlyRights
 	}
 	add := func(sid *windows.SID, files uint32) {
 		if isDir {
@@ -70,9 +72,10 @@ func noExecACL(isDir, allowExec bool, vault *windows.SID, full []*windows.SID, e
 	return windows.ACLFromEntries(es, nil)
 }
 
-// protectNoExec обходит папку и выставляет каждому объекту защищённый DACL. execDirs — папки (относительно root),
-// где запуск файлов разрешён; ссылки и junction пропускаются: SYSTEM не должен менять права по чужому указателю.
-func protectNoExec(root string, execDirs []string, vault *windows.SID, full []*windows.SID, extra *windows.SID, owner *windows.SID) error {
+// protectNoExec обходит папку и выставляет каждому объекту защищённый DACL. allowExec решает, какому существующему
+// файлу разрешён запуск (nil — никому); новые файлы запуска не получают. Ссылки и junction пропускаются: SYSTEM не
+// должен менять права по чужому указателю.
+func protectNoExec(root string, allowExec func(path string) bool, vault *windows.SID, full []*windows.SID, extra *windows.SID, owner *windows.SID) error {
 	type item struct {
 		path      string
 		dir, exec bool
@@ -85,7 +88,7 @@ func protectNoExec(root string, execDirs []string, vault *windows.SID, full []*w
 		if d.Type()&(fs.ModeSymlink|fs.ModeIrregular) != 0 {
 			return nil
 		}
-		items = append(items, item{p, d.IsDir(), inExecDir(root, p, execDirs)})
+		items = append(items, item{p, d.IsDir(), !d.IsDir() && allowExec != nil && allowExec(p)})
 		return nil
 	})
 	if err != nil {
@@ -106,19 +109,6 @@ func protectNoExec(root string, execDirs []string, vault *windows.SID, full []*w
 		}
 	}
 	return nil
-}
-
-func inExecDir(root, path string, execDirs []string) bool {
-	rel, err := filepath.Rel(root, path)
-	if err != nil {
-		return false
-	}
-	for _, d := range execDirs {
-		if rel == d || strings.HasPrefix(rel, d+`\`) {
-			return true
-		}
-	}
-	return false
 }
 
 // ExchangeDir — общая папка: основная учётка и vault обмениваются файлами, запустить файл отсюда может только основная.
