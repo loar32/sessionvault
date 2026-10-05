@@ -315,7 +315,7 @@ func (s *Service) start(p profiles.Profile, v vault.Vault, dek []byte, session u
 		unlock()
 		return "", err
 	}
-	if err := isolation.ProtectWork(isolation.WorkPath(p.Name)); err != nil {
+	if err := isolation.ProtectWork(isolation.WorkPath(p.Name), p.ExecAllow); err != nil {
 		unlock()
 		return "", errors.Join(err, v.Encrypt(dek))
 	}

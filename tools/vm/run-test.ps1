@@ -286,6 +286,23 @@ Check ($r -notmatch 'vault:') 'у vault нет доступа к метадан�
 $r = Vm { (icacls "$v\work") -join ' ' }
 Check ($r -match 'vault:') 'у vault есть доступ к рабочей папке'
 
+Write-Host '--- 5b. запуск файлов из рабочей папки и общей папки запрещён ---'
+$r = Vm {
+    $f = "$v\work\probe.txt"
+    WaitFor { (Test-Path $f) -and ((Get-Content $f -Raw) -match 'END') } 60 | Out-Null
+    $ex = 'C:\ProgramData\SessionVault\exchange'
+    # Основная учётка кладёт файл в общую папку и запускает его оттуда: ей это разрешено.
+    AsTester 'exu' "copy /y C:\sv\standin.exe $ex\u.exe >nul && $ex\u.exe -exit"
+    Done 'exu' 30 | Out-Null
+    @{ probe = (Get-Content $f -Raw -ErrorAction SilentlyContinue); user = (Out 'exu') }
+}
+foreach ($k in 'work', 'exchange') {
+    Check ($r.probe -match "${k}_write=yes") "vault пишет файлы в ${k}"
+    Check ($r.probe -match "${k}_exec=no") "vault не может запустить exe из ${k}"
+    Check ($r.probe -match "${k}_chmod=no") "vault не может дать себе право запуска в ${k}"
+}
+Check ($r.user -match 'EXIT=0') "основная учётка запускает файл из общей папки ($("$($r.user)" -replace '\s+',' '))"
+
 Write-Host '--- 6. закрытие приложения: снова только шифр, ключ в службе остаётся ---'
 $r = Vm {
     Stop-Process -Name standin -Force

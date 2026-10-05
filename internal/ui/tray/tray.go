@@ -13,6 +13,7 @@ import (
 	"github.com/loar32/sessionvault/internal/checkup"
 	"github.com/loar32/sessionvault/internal/hello"
 	"github.com/loar32/sessionvault/internal/ipc"
+	"github.com/loar32/sessionvault/internal/isolation"
 	"github.com/loar32/sessionvault/internal/profiles"
 	"github.com/loar32/sessionvault/internal/ui/checkwin"
 	"golang.org/x/sys/windows"
@@ -73,6 +74,7 @@ const (
 	maxMenuApps   = 16
 	idHello       = 1050
 	idCheck       = 1060
+	idExchange    = 1061
 	idExit        = 1100
 	pollEvery     = 2 * time.Second  // частый опрос: после действия пользователя, чтобы иконка не отставала
 	pollIdle      = 10 * time.Second // обычный опрос в простое
@@ -400,6 +402,7 @@ func showMenu() {
 	if len(menuApps) > 0 {
 		_, _, _ = pAppendMenu.Call(menu, mfString, idHello, uintptr(unsafe.Pointer(wstr("Включить вход через Windows Hello"))))
 	}
+	_, _, _ = pAppendMenu.Call(menu, mfString, idExchange, uintptr(unsafe.Pointer(wstr("Папка обмена с защищёнными приложениями"))))
 	_, _, _ = pAppendMenu.Call(menu, mfString, idCheck, uintptr(unsafe.Pointer(wstr("Проверить защиту"))))
 	_, _, _ = pAppendMenu.Call(menu, mfString, idExit, uintptr(unsafe.Pointer(wstr("Выход"))))
 	var p point
@@ -445,6 +448,8 @@ func wndProc(h, message, wparam, lparam uintptr) uintptr {
 			go enableHello()
 		case id == idCheck:
 			go checkProtection()
+		case id == idExchange:
+			_ = windows.ShellExecute(0, windows.StringToUTF16Ptr("open"), windows.StringToUTF16Ptr(isolation.ExchangeDir()), nil, nil, windows.SW_SHOWNORMAL)
 		case id == idExit:
 			_, _, _ = pDestroyWindow.Call(h)
 		}

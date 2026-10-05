@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"syscall"
 
@@ -25,6 +26,8 @@ type Profile struct {
 	Origin string `json:"origin,omitempty"`
 	// Пути внутри DataDir, которые не шифруются (кэши): при закрытии приложения они удаляются.
 	Exclude []string `json:"exclude,omitempty"`
+	// Папки внутри рабочей папки, где vault разрешено запускать файлы (остальное запрещено), например WidevineCdm.
+	ExecAllow []string `json:"exec_allow,omitempty"`
 	// Раскладка приманки: telegram или chromium.
 	Decoy string `json:"decoy,omitempty"`
 }
@@ -74,7 +77,9 @@ func chromium(name, title, exe, publisher, origin string, x86 bool) Profile {
 		Publisher:  publisher,
 		Origin:     origin,
 		Exclude:    chromiumExclude,
-		Decoy:      "chromium",
+		// Расширение для видео с защитой от копирования грузит свои DLL из профиля.
+		ExecAllow: []string{`User Data\WidevineCdm`},
+		Decoy:     "chromium",
 	}
 }
 
@@ -129,9 +134,9 @@ func Load(dir, name string) (Profile, error) {
 	if p.Decoy != "" && p.Decoy != "telegram" && p.Decoy != "chromium" {
 		return Profile{}, fmt.Errorf("профиль %q: неизвестная раскладка приманки %q", name, p.Decoy)
 	}
-	for _, x := range p.Exclude {
+	for _, x := range append(slices.Clone(p.Exclude), p.ExecAllow...) {
 		if !filepath.IsLocal(x) {
-			return Profile{}, fmt.Errorf("профиль %q: недопустимый путь исключения %q", name, x)
+			return Profile{}, fmt.Errorf("профиль %q: недопустимый путь %q", name, x)
 		}
 	}
 	// Профиль Telegram, записанный до появления этих полей.
