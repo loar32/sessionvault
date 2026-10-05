@@ -23,6 +23,7 @@ func (h handler) Execute(_ []string, r <-chan svc.ChangeRequest, st chan<- svc.S
 	st <- svc.Status{State: svc.StartPending}
 	go h.s.Serve()
 	go h.s.StartTraps()
+	go h.s.startCheck()
 	st <- svc.Status{State: svc.Running, Accepts: svc.AcceptStop | svc.AcceptShutdown | svc.AcceptPreShutdown | svc.AcceptSessionChange | svc.AcceptPowerEvent}
 	for c := range r {
 		switch c.Cmd {

@@ -176,6 +176,8 @@ func (s *Service) handle(c *ipc.Conn) {
 		_ = c.WriteLine(s.list())
 	case "run":
 		_ = c.WriteLine(s.run(c, req.Profile, ""))
+	case "check":
+		_ = c.WriteLine(s.check())
 	case "open":
 		_ = c.WriteLine(s.open(c))
 	case "hello":

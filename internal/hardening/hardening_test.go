@@ -90,3 +90,20 @@ func TestRevertRejectsOutOfRange(t *testing.T) {
 		t.Fatalf("значение в реестре изменено: %v", f.vals)
 	}
 }
+
+func TestApplied(t *testing.T) {
+	f := &fake{vals: map[string]int64{}}
+	if applied(f) {
+		t.Fatal("пустой реестр: меры не действуют")
+	}
+	if _, err := apply(f, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !applied(f) {
+		t.Fatal("после apply меры должны действовать")
+	}
+	f.vals[settings[1].key+"|"+settings[1].value] = 0
+	if applied(f) {
+		t.Fatal("вернули шифрование подкачки: меры не действуют")
+	}
+}

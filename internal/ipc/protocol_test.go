@@ -74,3 +74,14 @@ func TestValidURL(t *testing.T) {
 		}
 	}
 }
+
+func TestParseCheck(t *testing.T) {
+	if r, err := Parse("check"); err != nil || r.Cmd != "check" {
+		t.Fatalf("check: %+v %v", r, err)
+	}
+	for _, s := range []string{"check ", "check x", "CHECK", "check -json"} {
+		if _, err := Parse(s); err == nil {
+			t.Errorf("запрос %q принят", s)
+		}
+	}
+}

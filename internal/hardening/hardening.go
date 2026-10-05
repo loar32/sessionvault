@@ -164,3 +164,17 @@ func revert(sys system, st State) error {
 	}
 	return errors.Join(errs...)
 }
+
+// Applied говорит, действуют ли меры сейчас (по реестру, а не по записи в config.json: групповая политика или
+// пользователь могли их вернуть). Нет значения гибернации — она недоступна, то есть не помешает.
+func Applied() bool { return applied(winSystem{}) }
+
+func applied(sys system) bool {
+	for _, s := range settings {
+		v, err := sys.get(s.key, s.value)
+		if err != nil || (v != int64(s.want) && (s.name != "hibernate" || v != absent)) {
+			return false
+		}
+	}
+	return true
+}

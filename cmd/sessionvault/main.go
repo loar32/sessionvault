@@ -37,6 +37,7 @@ sessionvault hello disable [профиль]
 sessionvault run <профиль>
 sessionvault open <ссылка>
 sessionvault status
+sessionvault check [-json]
 sessionvault alerts
 sessionvault tray`
 
@@ -94,6 +95,8 @@ func main() {
 		err = openLink(args)
 	case "run":
 		err = run(args)
+	case "check":
+		err = check(args)
 	case "status":
 		err = status()
 	case "service":
