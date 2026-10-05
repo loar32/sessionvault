@@ -49,7 +49,10 @@ type Service struct {
 	memReads     int                  // под mu: записано обращений с запуска службы
 	memLast      string               // под mu: последнее обращение
 	memWatched   map[uint32]bool      // под mu: процессы, на которые уже ставили аудит
-	targets      func() []string      // только для тестов: exe защищённых приложений
+	exeCache     []string             // под mu: exe защищённых приложений для фильтра обращений к памяти
+	exeCacheAt   time.Time
+	memFailed    map[uint32]bool // под mu: процессы, на которые аудит поставить не удалось (в журнал пишется один раз)
+	targets      func() []string // только для тестов: exe защищённых приложений
 	vaultSID     string
 	vaultSIDOnce sync.Once
 	cmdL         *ipc.Listener

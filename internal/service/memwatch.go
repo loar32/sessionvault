@@ -18,6 +18,7 @@ const (
 	memDedup      = time.Minute
 	memWatchEvery = 5 * time.Second // не чаще: статус опрашивает трей раз в 10 с, а после действия чаще
 	memSeenMax    = 8 * 1024
+	exeCacheTTL   = 30 * time.Second
 )
 
 func MemoryLogPath() string { return filepath.Join(isolation.BaseDir(), "memory.log") }
@@ -32,7 +33,8 @@ type jobPIDList struct {
 // jobPIDs — процессы, которые сейчас работают в job-объекте службы (все защищённые приложения и их потомки).
 func jobPIDs(job windows.Handle) []uint32 {
 	var l jobPIDList
-	if err := windows.QueryInformationJobObject(job, 3, uintptr(unsafe.Pointer(&l)), uint32(unsafe.Sizeof(l)), nil); err != nil {
+	// Процессов больше, чем влезло в список: берём то, что вернулось (ERROR_MORE_DATA).
+	if err := windows.QueryInformationJobObject(job, 3, uintptr(unsafe.Pointer(&l)), uint32(unsafe.Sizeof(l)), nil); err != nil && err != windows.ERROR_MORE_DATA {
 		return nil
 	}
 	n := min(int(l.InList), len(l.IDs))
@@ -53,22 +55,27 @@ func (s *Service) watchMemory() {
 		return
 	}
 	s.memWatchAt = time.Now()
-	job, done := s.job, s.memWatched
+	job, done, prevFailed := s.job, s.memWatched, s.memFailed
 	s.mu.Unlock()
-	// Процесс, на который аудит уже ставили (или не смогли поставить), второй раз не трогаем: иначе ошибка
-	// повторялась бы в журнале при каждом опросе. Вышедшие процессы из набора пропадают.
-	now := map[uint32]bool{}
+	// Процесс, на который аудит уже поставлен, второй раз не трогаем; вышедшие процессы из набора пропадают. Неудача
+	// запоминается лишь до следующего опроса, но пишется в журнал один раз на процесс: процесс мог ещё не дозапуститься.
+	now, failed := map[uint32]bool{}, map[uint32]bool{}
 	for _, pid := range jobPIDs(job) {
-		now[pid] = true
 		if done[pid] {
+			now[pid] = true
 			continue
 		}
 		if err := audit.WatchProcess(pid); err != nil {
-			s.log.Printf("аудит процесса %d: %v", pid, err)
+			if !prevFailed[pid] {
+				s.log.Printf("аудит процесса %d: %v", pid, err)
+			}
+			failed[pid] = true
+			continue
 		}
+		now[pid] = true
 	}
 	s.mu.Lock()
-	s.memWatched = now
+	s.memWatched, s.memFailed = now, failed
 	s.mu.Unlock()
 }
 
@@ -89,12 +96,22 @@ func (s *Service) protectedExes() []string {
 	if s.targets != nil {
 		return s.targets()
 	}
+	// Список читается с диска, а событий может быть много (чужой процесс способен слать их потоком): кеш на полминуты.
+	s.mu.Lock()
+	if s.exeCache != nil && time.Since(s.exeCacheAt) < exeCacheTTL {
+		defer s.mu.Unlock()
+		return s.exeCache
+	}
+	s.mu.Unlock()
 	exes := []string{s.exe}
 	for _, name := range strings.Split(s.list(), ",") {
 		if p, err := profiles.Load(isolation.ProfilesDir(), name); err == nil {
 			exes = append(exes, p.Exe)
 		}
 	}
+	s.mu.Lock()
+	s.exeCache, s.exeCacheAt = exes, time.Now()
+	s.mu.Unlock()
 	return exes
 }
 
@@ -113,18 +130,22 @@ func (s *Service) handleMemory(r audit.Read) {
 	if r.SID == "S-1-5-18" || r.SID == "S-1-5-19" || r.SID == "S-1-5-20" || strings.EqualFold(r.Process, s.exe) || s.isVaultSID(r.SID) {
 		return
 	}
+	// Повторы одной программы с теми же правами сливаются на минуту независимо от PID: процесс-спамер, порождающий
+	// потомков, не должен вытеснить из журнала нужную запись. Дешёвая проверка идёт первой: событий может быть много.
+	key := fmt.Sprintf("%s:%d:%t", strings.ToLower(r.Process), r.Mask, r.Failure)
+	s.mu.Lock()
+	if t, ok := s.memSeen[key]; ok && time.Since(t) < memDedup {
+		s.mu.Unlock()
+		return
+	}
+	s.mu.Unlock()
 	target := filepath.Base(r.Object)
 	if !protectedTarget(target, s.protectedExes()) {
 		return
 	}
-	key := fmt.Sprintf("%d:%d:%t", r.PID, r.Mask, r.Failure)
 	s.mu.Lock()
 	if s.memSeen == nil {
 		s.memSeen = map[string]time.Time{}
-	}
-	if t, ok := s.memSeen[key]; ok && time.Since(t) < memDedup {
-		s.mu.Unlock()
-		return
 	}
 	if len(s.memSeen) > memSeenMax {
 		clear(s.memSeen)
@@ -136,7 +157,7 @@ func (s *Service) handleMemory(r audit.Read) {
 	}
 	line := fmt.Sprintf("%s %s: %s (PID %d) -> %s, %s%s", time.Now().Format("2006/01/02 15:04:05"), clean(r.User), clean(r.Process), r.PID, clean(target), memAccess(r.Mask), outcome)
 	s.memReads++
-	s.memLast = line
+	s.memLast = truncRunes(line, 200) // идёт в ответ check: он ограничен по размеру
 	s.mu.Unlock()
 	s.log.Println("обращение к памяти защищённого приложения:", line)
 	checkMu.Lock()
@@ -191,4 +212,12 @@ func (s *Service) memoryState() (int, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.memReads, s.memLast
+}
+
+func truncRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
 }
