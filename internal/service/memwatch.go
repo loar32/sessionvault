@@ -15,10 +15,11 @@ import (
 )
 
 const (
-	memDedup      = time.Minute
-	memWatchEvery = 5 * time.Second // не чаще: статус опрашивает трей раз в 10 с, а после действия чаще
-	memSeenMax    = 8 * 1024
-	exeCacheTTL   = 30 * time.Second
+	memDedup          = time.Minute
+	memWatchEvery     = 5 * time.Second // не чаще: статус опрашивает трей раз в 10 с, а после действия чаще
+	memSeenMax        = 8 * 1024
+	exeCacheTTL       = 30 * time.Second
+	memLinesPerMinute = 60
 )
 
 func MemoryLogPath() string { return filepath.Join(isolation.BaseDir(), "memory.log") }
@@ -151,12 +152,27 @@ func (s *Service) handleMemory(r audit.Read) {
 		clear(s.memSeen)
 	}
 	s.memSeen[key] = time.Now()
+	s.memReads++
+	// Лимит записей в минуту: поток уникальных имён не должен вытеснить из ротации журнала нужную запись.
+	if time.Since(s.memWindow) > time.Minute {
+		s.memWindow, s.memWritten = time.Now(), 0
+	}
+	if s.memWritten >= memLinesPerMinute {
+		s.memSkipped++
+		s.mu.Unlock()
+		return
+	}
+	s.memWritten++
+	skipped := ""
+	if s.memSkipped > 0 {
+		skipped = fmt.Sprintf(" [пропущено до этой записи: %d]", s.memSkipped)
+		s.memSkipped = 0
+	}
 	outcome := ""
 	if r.Failure {
 		outcome = " (отказано)"
 	}
-	line := fmt.Sprintf("%s %s: %s (PID %d) -> %s, %s%s", time.Now().Format("2006/01/02 15:04:05"), clean(r.User), clean(r.Process), r.PID, clean(target), memAccess(r.Mask), outcome)
-	s.memReads++
+	line := fmt.Sprintf("%s %s: %s (PID %d) -> %s, %s%s", time.Now().Format("2006/01/02 15:04:05"), clean(r.User), clean(r.Process), r.PID, clean(target), memAccess(r.Mask), outcome) + skipped
 	s.memLast = truncRunes(line, 200) // идёт в ответ check: он ограничен по размеру
 	s.mu.Unlock()
 	s.log.Println("обращение к памяти защищённого приложения:", line)

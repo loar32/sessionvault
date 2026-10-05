@@ -1,6 +1,7 @@
 package service
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -98,5 +99,32 @@ func TestMemDedupIgnoresPID(t *testing.T) {
 	}
 	if n, _ := s.memoryState(); n != 1 {
 		t.Fatalf("50 процессов одной программы дают %d записей, ждали 1", n)
+	}
+}
+
+func TestMemLinesPerMinuteLimit(t *testing.T) {
+	isolation.ProgramData = t.TempDir()
+	t.Cleanup(func() { isolation.ProgramData = "" })
+	if err := os.MkdirAll(isolation.BaseDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s := testService(0)
+	s.targets = func() []string { return []string{`C:\chrome.exe`} }
+	for i := 0; i < memLinesPerMinute+40; i++ {
+		// Разные программы: слияние повторов их не склеивает.
+		s.handleMemory(audit.Read{Type: "Process", Object: `\Device\X\chrome.exe`, Process: fmt.Sprintf(`C:\spam%d.exe`, i), PID: uint32(i), Mask: 0x10, SID: "S-1-5-21-1-2-3-1001"})
+	}
+	b, _ := os.ReadFile(MemoryLogPath())
+	if got := strings.Count(string(b), "\n"); got != memLinesPerMinute {
+		t.Fatalf("в журнале %d строк, ждали не больше %d в минуту", got, memLinesPerMinute)
+	}
+	if n, _ := s.memoryState(); n != memLinesPerMinute+40 {
+		t.Fatalf("счётчик считает всё: %d", n)
+	}
+	s.mu.Lock()
+	skipped := s.memSkipped
+	s.mu.Unlock()
+	if skipped != 40 {
+		t.Fatalf("пропущено %d, ждали 40", skipped)
 	}
 }
