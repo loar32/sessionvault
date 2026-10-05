@@ -18,9 +18,9 @@ type Config struct {
 	Origins map[string]string `json:"origins,omitempty"`
 	// Аудит файловой системы включила служба (а не он уже был): при удалении возвращаем как было.
 	AuditByUs bool `json:"audit_by_us,omitempty"`
-	// Политику аудита объектов ядра (чтение памяти приложений) включили мы: при удалении её возвращаем.
-	KernelAuditByUs bool    `json:"kernel_audit_by_us,omitempty"`
-	DecoyAllow      []Allow `json:"decoy_allow,omitempty"`
+	// Прежние значения политик аудита обращений к процессам (журнал чтения памяти): при удалении возвращаются.
+	MemAuditPrev map[string]uint32 `json:"mem_audit_prev,omitempty"`
+	DecoyAllow   []Allow           `json:"decoy_allow,omitempty"`
 	// Профиль браузера для ссылок (sessionvault open); по умолчанию первый из chrome, edge, brave.
 	LinkProfile string `json:"link_profile,omitempty"`
 	// Прежние значения системных мер (hardening): при удалении они возвращаются.

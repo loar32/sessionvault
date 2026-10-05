@@ -7,15 +7,15 @@ const accessSystemSecurity = 0x01000000
 // Маска 0x3a в SDDL: чтение и запись памяти (0x10, 0x20), операции с памятью (0x8), создание потока (0x2).
 // Запрос сведений (QUERY_INFORMATION) и завершение не пишутся: обычный диспетчер задач не должен шуметь.
 
-// WatchProcess ставит на процесс аудит успешных обращений с этими правами от любого пользователя. Нужна привилегия
-// SeSecurityPrivilege; событие приходит, только если включён аудит объектов ядра (EnableKernelObject).
+// WatchProcess ставит на процесс аудит успешных и отказанных обращений с этими правами от любого пользователя. Нужна привилегия
+// SeSecurityPrivilege; событие приходит, только если включён аудит объектов ядра (EnableMemoryAudit).
 func WatchProcess(pid uint32) error {
 	h, err := windows.OpenProcess(accessSystemSecurity, false, pid)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = windows.CloseHandle(h) }()
-	sd, err := windows.SecurityDescriptorFromString("S:(AU;SA;0x3a;;;WD)")
+	sd, err := windows.SecurityDescriptorFromString("S:(AU;SAFA;0x3a;;;WD)")
 	if err != nil {
 		return err
 	}

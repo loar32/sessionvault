@@ -288,7 +288,7 @@ $r = Vm {
     AsTester 'ckm' "`"$exe`" check -json"; Done 'ckm' 60 | Out-Null
     @{ log = (Get-Content $f -Raw -Encoding UTF8 -ErrorAction SilentlyContinue); report = (Out 'ckm'); alerts = @(Get-Content C:\ProgramData\SessionVault\alerts.log -Encoding UTF8 -ErrorAction SilentlyContinue).Count }
 }
-Check ($r.log -match 'access-check\.exe' -and $r.log -match 'чтение памяти') "memory.log: чтение памяти процесса vault записано ($("$($r.log)" -replace '\s+',' ')))"
+Check ($r.log -match 'access-check\.exe' -and $r.log -match 'чтение памяти' -and $r.log -match 'отказано') "memory.log: отказанная попытка чтения памяти процесса vault записана ($("$($r.log)" -replace '\s+',' ')))"
 Check ($r.report -match '"id":"memory"[^}]*"level":"info"') 'check: пункт «Чтение памяти приложений» показывает обращения справкой'
 Check ($r.alerts -eq 0) "чтение памяти не создало тревог ($($r.alerts))"
 

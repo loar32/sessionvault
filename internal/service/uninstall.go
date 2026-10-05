@@ -81,9 +81,7 @@ func Uninstall(password []byte) (err error) {
 	if cfg.AuditByUs {
 		_ = audit.DisableFileSystem()
 	}
-	if cfg.KernelAuditByUs {
-		_ = audit.DisableKernelObject()
-	}
+	_ = audit.RestoreMemoryAudit(cfg.MemAuditPrev)
 	_ = hardening.Revert(cfg.Hardening)
 	_ = asr.Revert(cfg.ASR)
 	if s, e := m.OpenService(Name); e == nil {

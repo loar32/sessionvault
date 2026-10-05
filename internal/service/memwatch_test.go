@@ -52,6 +52,12 @@ func TestHandleMemory(t *testing.T) {
 	if _, last := s.memoryState(); !strings.Contains(last, "запись памяти") {
 		t.Fatalf("последнее обращение: %q", last)
 	}
+	denied := read
+	denied.ID, denied.Failure, denied.PID = 4656, true, 8
+	s.handleMemory(denied)
+	if n, last := s.memoryState(); n != 3 || !strings.Contains(last, "(отказано)") {
+		t.Fatalf("отказанная попытка — отдельная запись с пометкой: %d %q", n, last)
+	}
 }
 
 func TestMemAccess(t *testing.T) {
