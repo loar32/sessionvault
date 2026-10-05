@@ -53,3 +53,17 @@ func TestParseProcessEvent(t *testing.T) {
 		t.Fatalf("событие процесса разобрано неверно: %+v, %v", r, err)
 	}
 }
+
+func TestParseDeniedHandleRequest(t *testing.T) {
+	x := `<Event><System><EventID>4656</EventID><Keywords>0x8010000000000000</Keywords></System><EventData>` +
+		`<Data Name="ObjectType">Process</Data><Data Name="ObjectName">chrome.exe</Data><Data Name="AccessMask">0x1410</Data></EventData></Event>`
+	r, err := parseRead([]byte(x))
+	if err != nil || r.ID != 4656 || !r.Failure || r.Mask != 0x1410 {
+		t.Fatalf("отказанный запрос дескриптора: %+v, %v", r, err)
+	}
+	ok := `<Event><System><EventID>4663</EventID><Keywords>0x8020000000000000</Keywords></System><EventData>` +
+		`<Data Name="ObjectType">Process</Data><Data Name="ObjectName">chrome.exe</Data></EventData></Event>`
+	if r, _ := parseRead([]byte(ok)); r.Failure || r.ID != 4663 {
+		t.Fatalf("успешное обращение принято за отказ: %+v", r)
+	}
+}

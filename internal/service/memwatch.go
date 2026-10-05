@@ -117,7 +117,7 @@ func (s *Service) handleMemory(r audit.Read) {
 	if !protectedTarget(target, s.protectedExes()) {
 		return
 	}
-	key := fmt.Sprintf("%d:%d", r.PID, r.Mask)
+	key := fmt.Sprintf("%d:%d:%t", r.PID, r.Mask, r.Failure)
 	s.mu.Lock()
 	if s.memSeen == nil {
 		s.memSeen = map[string]time.Time{}
@@ -130,7 +130,11 @@ func (s *Service) handleMemory(r audit.Read) {
 		clear(s.memSeen)
 	}
 	s.memSeen[key] = time.Now()
-	line := fmt.Sprintf("%s %s: %s (PID %d) -> %s, %s", time.Now().Format("2006/01/02 15:04:05"), clean(r.User), clean(r.Process), r.PID, clean(target), memAccess(r.Mask))
+	outcome := ""
+	if r.Failure {
+		outcome = " (отказано)"
+	}
+	line := fmt.Sprintf("%s %s: %s (PID %d) -> %s, %s%s", time.Now().Format("2006/01/02 15:04:05"), clean(r.User), clean(r.Process), r.PID, clean(target), memAccess(r.Mask), outcome)
 	s.memReads++
 	s.memLast = line
 	s.mu.Unlock()

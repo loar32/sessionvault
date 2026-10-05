@@ -54,7 +54,7 @@ func (s *Service) check() string {
 	admin, adminErr := isolation.IsAdminUser(cfg.MainUser)
 	ext, scanned := s.extensionsState()
 	memReads, memLast := s.memoryState()
-	in := checkup.Input{MemAudit: audit.KernelObjectEnabled(), MemReads: memReads, MemLast: memLast, ASRActive: asr.Active(), ASRTotal: len(asr.Rules), ExtScanned: scanned, ExtRisky: ext, MainUserAdmin: admin, MainUserUnknown: adminErr != nil, Audit: audit.IsEnabled(), Hardened: hardening.Applied(), Hello: s.helloEnabled()}
+	in := checkup.Input{MemAudit: audit.MemoryAuditEnabled(), MemReads: memReads, MemLast: memLast, ASRActive: asr.Active(), ASRTotal: len(asr.Rules), ExtScanned: scanned, ExtRisky: ext, MainUserAdmin: admin, MainUserUnknown: adminErr != nil, Audit: audit.IsEnabled(), Hardened: hardening.Applied(), Hello: s.helloEnabled()}
 	b, err := json.Marshal(checkup.Run(in))
 	if err != nil {
 		return ipc.Failed

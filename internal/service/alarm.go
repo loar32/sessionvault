@@ -75,19 +75,21 @@ func (s *Service) ensureAudit() {
 			}
 		}
 	}
-	changed, err = audit.EnableKernelObject()
+	cfg, err := LoadConfig()
 	if err != nil {
-		s.log.Println("аудит объектов ядра не включён:", err)
 		return
 	}
-	if !changed {
-		return
-	}
-	s.log.Println("аудит объектов ядра включён")
-	if cfg, err := LoadConfig(); err == nil && !cfg.KernelAuditByUs {
-		if err := UpdateConfig(func(c *Config) { c.KernelAuditByUs = true }); err != nil {
-			s.log.Println("config.json:", err)
+	prev, changed, err := audit.EnableMemoryAudit(cfg.MemAuditPrev)
+	// Прежние значения сохраняются и при ошибке: то, что уже изменено, должно откатываться.
+	if changed {
+		if e := UpdateConfig(func(c *Config) { c.MemAuditPrev = prev }); e != nil {
+			s.log.Println("config.json:", e)
 		}
+	}
+	if err != nil {
+		s.log.Println("аудит обращений к процессам не включён:", err)
+	} else if changed {
+		s.log.Println("аудит обращений к процессам включён")
 	}
 }
 
@@ -207,8 +209,11 @@ func (s *Service) watchedLong(object string) bool {
 func (s *Service) onRead(r audit.Read) {
 	// Обращения к памяти идут отдельной очередью: поток таких событий не должен вытеснить чтение приманки.
 	q := s.events
-	if r.Type == "Process" {
+	switch {
+	case r.Type == "Process":
 		q = s.memEvents
+	case r.ID == 4656:
+		return // запрос дескриптора файла (в том числе приманки): тревогу даёт само чтение, событие 4663
 	}
 	select {
 	case q <- r:

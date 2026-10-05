@@ -32,10 +32,17 @@ type Read struct {
 	Mask    uint32
 	SID     string // учётка обратившегося процесса
 	User    string
+	ID      uint32 // 4663 (обращение состоялось) или 4656 (запрос дескриптора, в том числе отказанный)
+	Failure bool   // запрос отклонён: событие 4656 с признаком «аудит отказа»
 }
 
+// Бит «аудит отказа» в ключевых словах события безопасности.
+const keywordAuditFailure = 0x10000000000000
+
 type eventXML struct {
-	Data []struct {
+	ID       uint32 `xml:"System>EventID"`
+	Keywords string `xml:"System>Keywords"`
+	Data     []struct {
 		Name  string `xml:"Name,attr"`
 		Value string `xml:",chardata"`
 	} `xml:"EventData>Data"`
@@ -46,7 +53,10 @@ func parseRead(b []byte) (Read, error) {
 	if err := xml.Unmarshal(b, &e); err != nil {
 		return Read{}, err
 	}
-	var r Read
+	r := Read{ID: e.ID}
+	if k, err := strconv.ParseUint(strings.TrimSpace(e.Keywords), 0, 64); err == nil {
+		r.Failure = k&keywordAuditFailure != 0
+	}
 	for _, d := range e.Data {
 		switch d.Name {
 		case "ObjectType":
@@ -99,7 +109,7 @@ func Under(root, object string) bool {
 // Subscribe вызывает onRead для каждого события чтения. Событие приходит из системы сразу, без опроса журнала.
 // Обработчик вызывается из потока ОС и должен возвращаться быстро.
 func Subscribe(onRead func(Read)) (closeFn func(), err error) {
-	query, err := windows.UTF16PtrFromString("*[System[EventID=4663]]")
+	query, err := windows.UTF16PtrFromString("*[System[(EventID=4663 or EventID=4656)]]")
 	if err != nil {
 		return nil, err
 	}
