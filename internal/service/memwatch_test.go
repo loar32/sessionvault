@@ -17,6 +17,7 @@ func TestHandleMemory(t *testing.T) {
 	}
 	s := testService(0)
 	s.exe = `C:\Program Files\SessionVault\sessionvault.exe`
+	s.targets = func() []string { return []string{`C:\Program Files\Google\Chrome\Application\chrome.exe`} }
 	read := audit.Read{Type: "Process", Object: `\Device\HarddiskVolume3\Chrome\chrome.exe`, Process: `C:\Users\u\steal.exe`, PID: 7, Mask: 0x10, SID: "S-1-5-21-1-2-3-1001", User: "u"}
 
 	s.handleMemory(read)
@@ -35,6 +36,9 @@ func TestHandleMemory(t *testing.T) {
 		sys.SID, sys.PID = sid, 99
 		s.handleMemory(sys)
 	}
+	notOurs := read
+	notOurs.Object, notOurs.PID = `\Device\HarddiskVolume3\Windows\System32\lsass.exe`, 101
+	s.handleMemory(notOurs) // обращение не к защищённому приложению
 	own := read
 	own.Process, own.PID = s.exe, 100
 	s.handleMemory(own)
