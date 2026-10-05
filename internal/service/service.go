@@ -39,16 +39,20 @@ const (
 )
 
 type Service struct {
-	cfg        Config
-	idleAfter  time.Duration
-	exe        string
-	log        *log.Logger
-	job        windows.Handle       // под mu: после тревоги заменяется новым
-	memWatchAt time.Time            // под mu: когда в последний раз ставили аудит на процессы приложений
-	memSeen    map[string]time.Time // под mu: недавние обращения к памяти (процесс+права), чтобы не писать повторы
-	memReads   int                  // под mu: записано обращений с запуска службы
-	memLast    string               // под mu: последнее обращение
-	cmdL       *ipc.Listener
+	cfg          Config
+	idleAfter    time.Duration
+	exe          string
+	log          *log.Logger
+	job          windows.Handle       // под mu: после тревоги заменяется новым
+	memWatchAt   time.Time            // под mu: когда в последний раз ставили аудит на процессы приложений
+	memSeen      map[string]time.Time // под mu: недавние обращения к памяти (процесс+права), чтобы не писать повторы
+	memReads     int                  // под mu: записано обращений с запуска службы
+	memLast      string               // под mu: последнее обращение
+	memWatched   map[uint32]bool      // под mu: процессы, на которые уже ставили аудит
+	targets      func() []string      // только для тестов: exe защищённых приложений
+	vaultSID     string
+	vaultSIDOnce sync.Once
+	cmdL         *ipc.Listener
 
 	allow     allowlist
 	stopAudit func()
@@ -58,6 +62,7 @@ type Service struct {
 	trapMu    sync.Mutex
 	watch     map[string]bool // папки приманок в формате устройства
 	events    chan audit.Read
+	memEvents chan audit.Read // обращения к памяти приложений: отдельно от чтения приманки
 	quitOnce  sync.Once
 	alarmAt   time.Time
 	warned    map[string]bool
@@ -82,7 +87,7 @@ func New(cfg Config, exe string, l *log.Logger) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Service{cfg: cfg, idleAfter: idleDuration(cfg.IdleMinutes), exe: exe, log: l, job: job, keys: map[string][]byte{}, running: map[string]bool{}, quit: make(chan struct{}), nudge: make(chan struct{}, 1), events: make(chan audit.Read, eventQueue), warned: map[string]bool{}}, nil
+	return &Service{cfg: cfg, idleAfter: idleDuration(cfg.IdleMinutes), exe: exe, log: l, job: job, keys: map[string][]byte{}, running: map[string]bool{}, quit: make(chan struct{}), nudge: make(chan struct{}, 1), events: make(chan audit.Read, eventQueue), memEvents: make(chan audit.Read, eventQueue), warned: map[string]bool{}}, nil
 }
 
 func killOnCloseJob() (windows.Handle, error) {

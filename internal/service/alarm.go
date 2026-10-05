@@ -46,6 +46,7 @@ func (s *Service) StartTraps() {
 		s.stopAudit = stop
 	}
 	go s.trapWorker()
+	go s.memWorker()
 	go s.trapLoop()
 }
 
@@ -204,8 +205,13 @@ func (s *Service) watchedLong(object string) bool {
 
 // Вызывается из потока доставки событий ОС: только ставит событие в очередь, тяжёлое делает trapWorker.
 func (s *Service) onRead(r audit.Read) {
+	// Обращения к памяти идут отдельной очередью: поток таких событий не должен вытеснить чтение приманки.
+	q := s.events
+	if r.Type == "Process" {
+		q = s.memEvents
+	}
 	select {
-	case s.events <- r:
+	case q <- r:
 	default:
 	}
 }
@@ -227,10 +233,6 @@ func (s *Service) handleRead(r audit.Read) {
 			s.log.Printf("обработка события чтения: %v", p)
 		}
 	}()
-	if r.Type == "Process" {
-		s.handleMemory(r)
-		return
-	}
 	// Сама служба читает приманку при проверке (список файлов) — это не тревога.
 	if !s.watchedLong(r.Object) || strings.EqualFold(r.Process, s.exe) || s.allow.allowed(r.Process, r.PID) {
 		return

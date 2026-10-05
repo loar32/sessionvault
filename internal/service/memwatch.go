@@ -10,18 +10,19 @@ import (
 
 	"github.com/loar32/sessionvault/internal/audit"
 	"github.com/loar32/sessionvault/internal/isolation"
+	"github.com/loar32/sessionvault/internal/profiles"
 	"golang.org/x/sys/windows"
 )
 
 const (
 	memDedup      = time.Minute
 	memWatchEvery = 5 * time.Second // не чаще: статус опрашивает трей раз в 10 с, а после действия чаще
-	memLogMax     = 8 * 1024
+	memSeenMax    = 8 * 1024
 )
 
 func MemoryLogPath() string { return filepath.Join(isolation.BaseDir(), "memory.log") }
 
-// jobBasicProcessIDList — JOBOBJECT_BASIC_PROCESS_ID_LIST с запасом под потомков браузера.
+// jobPIDList — JOBOBJECT_BASIC_PROCESS_ID_LIST с запасом под потомков браузера.
 type jobPIDList struct {
 	Assigned uint32
 	InList   uint32
@@ -52,22 +53,68 @@ func (s *Service) watchMemory() {
 		return
 	}
 	s.memWatchAt = time.Now()
-	job := s.job
+	job, done := s.job, s.memWatched
 	s.mu.Unlock()
+	// Процесс, на который аудит уже ставили (или не смогли поставить), второй раз не трогаем: иначе ошибка
+	// повторялась бы в журнале при каждом опросе. Вышедшие процессы из набора пропадают.
+	now := map[uint32]bool{}
 	for _, pid := range jobPIDs(job) {
+		now[pid] = true
+		if done[pid] {
+			continue
+		}
 		if err := audit.WatchProcess(pid); err != nil {
 			s.log.Printf("аудит процесса %d: %v", pid, err)
 		}
 	}
+	s.mu.Lock()
+	s.memWatched = now
+	s.mu.Unlock()
+}
+
+func (s *Service) memWorker() {
+	for {
+		select {
+		case <-s.quit:
+			return
+		case r := <-s.memEvents:
+			s.handleMemory(r)
+		}
+	}
+}
+
+// Имена exe защищённых приложений и самой программы: обращение к любому другому процессу (например, у которого есть
+// собственный системный аудит) к защищённым приложениям не относится.
+func (s *Service) protectedExes() []string {
+	if s.targets != nil {
+		return s.targets()
+	}
+	exes := []string{s.exe}
+	for _, name := range strings.Split(s.list(), ",") {
+		if p, err := profiles.Load(isolation.ProfilesDir(), name); err == nil {
+			exes = append(exes, p.Exe)
+		}
+	}
+	return exes
+}
+
+func (s *Service) isVaultSID(sid string) bool {
+	s.vaultSIDOnce.Do(func() {
+		if v, _, _, err := windows.LookupSID("", isolation.VaultUser); err == nil {
+			s.vaultSID = v.String()
+		}
+	})
+	return s.vaultSID != "" && sid == s.vaultSID
 }
 
 // handleMemory пишет в memory.log обращение чужого процесса к памяти защищённого приложения. Без окон и тревог: журнал
 // только для разбора. Свои процессы (vault, SYSTEM, служба) не считаются.
 func (s *Service) handleMemory(r audit.Read) {
-	if r.SID == "S-1-5-18" || r.SID == "S-1-5-19" || r.SID == "S-1-5-20" || strings.EqualFold(r.Process, s.exe) {
+	if r.SID == "S-1-5-18" || r.SID == "S-1-5-19" || r.SID == "S-1-5-20" || strings.EqualFold(r.Process, s.exe) || s.isVaultSID(r.SID) {
 		return
 	}
-	if vault, _, _, err := windows.LookupSID("", isolation.VaultUser); err == nil && r.SID == vault.String() {
+	target := filepath.Base(r.Object)
+	if !protectedTarget(target, s.protectedExes()) {
 		return
 	}
 	key := fmt.Sprintf("%d:%d", r.PID, r.Mask)
@@ -79,11 +126,11 @@ func (s *Service) handleMemory(r audit.Read) {
 		s.mu.Unlock()
 		return
 	}
-	if len(s.memSeen) > memLogMax {
+	if len(s.memSeen) > memSeenMax {
 		clear(s.memSeen)
 	}
 	s.memSeen[key] = time.Now()
-	line := fmt.Sprintf("%s %s: %s (PID %d) -> %s, %s", time.Now().Format("2006/01/02 15:04:05"), r.User, r.Process, r.PID, filepath.Base(r.Object), memAccess(r.Mask))
+	line := fmt.Sprintf("%s %s: %s (PID %d) -> %s, %s", time.Now().Format("2006/01/02 15:04:05"), clean(r.User), clean(r.Process), r.PID, clean(target), memAccess(r.Mask))
 	s.memReads++
 	s.memLast = line
 	s.mu.Unlock()
@@ -98,6 +145,25 @@ func (s *Service) handleMemory(r audit.Read) {
 	}
 	defer func() { _ = f.Close() }()
 	_, _ = f.WriteString(line + "\n")
+}
+
+func protectedTarget(base string, exes []string) bool {
+	for _, e := range exes {
+		if strings.EqualFold(filepath.Base(e), base) {
+			return true
+		}
+	}
+	return false
+}
+
+// Имена приходят из события Windows: управляющие символы в журнал не пускаем.
+func clean(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 func memAccess(mask uint32) string {
