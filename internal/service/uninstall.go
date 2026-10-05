@@ -86,6 +86,9 @@ func Uninstall(password []byte) (err error) {
 		_ = s.Close()
 	}
 	_ = removeAutostart()
+	// Флаг автопоказа окна проверки: после повторной установки окно снова должно показаться. Удаляется один файл, не папка:
+	// путь идёт через профиль пользователя, а службе с правами SYSTEM нельзя рекурсивно чистить то, что он может подменить ссылкой.
+	_ = os.Remove(filepath.Join(usersDir(), cfg.MainUser, `AppData\Local\SessionVault\check-shown`))
 	_ = os.RemoveAll(isolation.BaseDir())
 	_ = isolation.AllowRemoteLogon(isolation.VaultUser)
 	_ = isolation.DeleteUserProfile(isolation.VaultUser)

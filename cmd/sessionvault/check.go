@@ -10,6 +10,7 @@ import (
 	"github.com/loar32/sessionvault/internal/checkup"
 	"github.com/loar32/sessionvault/internal/ipc"
 	"github.com/loar32/sessionvault/internal/service"
+	"github.com/loar32/sessionvault/internal/ui/checkwin"
 	"golang.org/x/sys/windows"
 )
 
@@ -18,6 +19,7 @@ import (
 func check(args []string) error {
 	fs := flag.NewFlagSet("check", flag.ContinueOnError)
 	asJSON := fs.Bool("json", false, "вывести отчёт в JSON")
+	window := fs.Bool("window", false, "показать итог в окне, как пункт трея")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -33,6 +35,10 @@ func check(args []string) error {
 	var r checkup.Report
 	if err := json.Unmarshal([]byte(raw), &r); err != nil {
 		return fmt.Errorf("неверный отчёт: %w", err)
+	}
+	if *window {
+		checkwin.Show(r)
+		return nil
 	}
 	if *asJSON {
 		fmt.Println(raw)

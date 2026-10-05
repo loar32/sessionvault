@@ -392,6 +392,40 @@ $r = Vm {
 }
 Check ($r.count -eq 1 -and $r.session -ne 0) "трей запущен в сессии пользователя, второй экземпляр не плодится ($($r.count))"
 Check $r.icon 'Windows зарегистрировала иконку в области уведомлений'
+
+# Окно проверки защиты: автопоказ после установки только при красных пунктах, пункт меню трея (команда 1060 окну трея).
+$r = Vm {
+    param($b64)
+    $flag = 'C:\Users\tester\AppData\Local\SessionVault\check-shown'
+    $flagged = WaitFor { Test-Path $flag } 90
+    $ps1 = @'
+Add-Type @"
+using System; using System.Runtime.InteropServices;
+public class W { [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindow(string c, string t);
+ [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l); }
+"@
+$t = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('@@TITLE@@'))
+$auto = [W]::FindWindow([NullString]::Value, $t) -ne [IntPtr]::Zero
+$tray = [W]::FindWindow('SessionVaultTray', 'SessionVault')
+[void][W]::PostMessage($tray, 0x111, [IntPtr]1060, [IntPtr]0)
+$w = [IntPtr]::Zero
+for ($i = 0; $i -lt 90 -and $w -eq [IntPtr]::Zero; $i++) { $w = [W]::FindWindow([NullString]::Value, $t); Start-Sleep -Seconds 1 }
+Set-Content C:\sv\chk.state "auto=$auto shown=$($w -ne [IntPtr]::Zero)"
+Start-Sleep 8
+if ($w -ne [IntPtr]::Zero) { [void][W]::PostMessage($w, 0x10, [IntPtr]0, [IntPtr]0) }
+'@
+    Set-Content C:\sv\chk.ps1 $ps1.Replace('@@TITLE@@', $b64) -Encoding UTF8
+    Remove-Item C:\sv\chk.state -ErrorAction SilentlyContinue
+    AsTester 'chkw' 'powershell -NoProfile -ExecutionPolicy Bypass -File C:\sv\chk.ps1'
+    $got = WaitFor { Test-Path C:\sv\chk.state } 120
+    @{ flagged = $flagged; state = $(if ($got) { (Get-Content C:\sv\chk.state -Raw).Trim() } else { '' }) }
+} @([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('SessionVault: проверка защиты')))
+Start-Sleep 2
+& "$PSScriptRoot\screenshot.ps1" -VmName $VmName -Path "$env:TEMP\sv-check-window.png" | Out-Null
+Write-Host "  снимок экрана: $env:TEMP\sv-check-window.png"
+Check $r.flagged 'трей после первого ответа службы поставил флаг check-shown'
+Check ($r.state -match 'auto=False') "без красных пунктов окно само не появилось ($($r.state))"
+Check ($r.state -match 'shown=True') "пункт меню «Проверить защиту» открыл окно ($($r.state))"
 Vm {
     $ps1 = @'
 Add-Type @"
@@ -708,7 +742,7 @@ $r = Vm {
 }
 $rep = try { $r.json | ConvertFrom-Json } catch { $null }
 $ids = if ($rep) { ($rep.items | ForEach-Object { $_.id }) -join ',' } else { '' }
-Check ($rep -and $ids -match 'user,windows,defender,bitlocker,hvci,secureboot,blocklist,audit,harden,hello,telegram') "check -json: отчёт от службы со всеми пунктами ($ids)"
+Check ($rep -and $ids -match 'user,windows,defender,bitlocker,hvci,secureboot,blocklist,audit,harden,hello,telegram,clickfix') "check -json: отчёт от службы со всеми пунктами ($ids)"
 Check ($rep -and ($rep.items | Where-Object { $_.id -eq 'user' }).level -eq 'ok' -and ($rep.items | Where-Object { $_.id -eq 'audit' }).level -eq 'ok') "check: основная учётка не админ, аудит работает"
 Check ($rep -and ($rep.items | Where-Object { $_.id -eq 'hvci' }).level -eq 'warn') "check: выключенная HVCI найдена (жёлтый пункт)"
 Check ($r.saved -and $r.file -notmatch 'items') "check.json создан и недоступен обычной учётке"

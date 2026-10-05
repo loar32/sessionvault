@@ -37,7 +37,7 @@ sessionvault hello disable [профиль]
 sessionvault run <профиль>
 sessionvault open <ссылка>
 sessionvault status
-sessionvault check [-json]
+sessionvault check [-json|-window]
 sessionvault alerts
 sessionvault tray`
 

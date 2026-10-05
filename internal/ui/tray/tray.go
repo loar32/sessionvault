@@ -10,9 +10,11 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/loar32/sessionvault/internal/checkup"
 	"github.com/loar32/sessionvault/internal/hello"
 	"github.com/loar32/sessionvault/internal/ipc"
 	"github.com/loar32/sessionvault/internal/profiles"
+	"github.com/loar32/sessionvault/internal/ui/checkwin"
 	"golang.org/x/sys/windows"
 )
 
@@ -70,6 +72,7 @@ const (
 	idRun         = 1001 // и далее по одному на приложение; меньше idExit не бывает: приложений не больше maxMenuApps
 	maxMenuApps   = 16
 	idHello       = 1050
+	idCheck       = 1060
 	idExit        = 1100
 	pollEvery     = 2 * time.Second  // частый опрос: после действия пользователя, чтобы иконка не отставала
 	pollIdle      = 10 * time.Second // обычный опрос в простое
@@ -263,6 +266,7 @@ func speedUp() {
 }
 
 func poll() {
+	autoChecked := false
 	for {
 		s := stateDown
 		switch resp, err := ipc.Call(ipc.CommandPipe, "status", pollEvery); {
@@ -275,6 +279,11 @@ func poll() {
 			s = stateAlarm
 		}
 		_, _, _ = pPostMessage.Call(hwnd, wmState, uintptr(s), 0)
+		// Первый ответ службы после запуска трея: окно проверки при красных пунктах, один раз за учётку.
+		if s != stateDown && !autoChecked {
+			autoChecked = true
+			go checkwin.AutoCheck()
+		}
 		delay := pollIdle
 		if time.Now().UnixNano() < fastUntil.Load() {
 			delay = pollEvery
@@ -289,6 +298,21 @@ func poll() {
 var runMessages = map[string]string{
 	ipc.Busy:   "Уже идёт запуск или ввод пароля",
 	ipc.Failed: "Не удалось запустить приложение",
+}
+
+var checking atomic.Bool
+
+// Проверка идёт до 15 с, поэтому в отдельной горутине; повторный клик за это время ничего не запускает.
+func checkProtection() {
+	if !checking.CompareAndSwap(false, true) {
+		return
+	}
+	defer checking.Store(false)
+	r, err := checkwin.Fetch()
+	if err != nil {
+		r = checkup.Report{Overall: checkup.Bad, Items: []checkup.Item{{Title: "Служба SessionVault", Level: checkup.Bad, Detail: "недоступна", Hint: "Проверьте, что служба запущена, и повторите"}}}
+	}
+	checkwin.Show(r)
 }
 
 func runApp(profile string) {
@@ -376,6 +400,7 @@ func showMenu() {
 	if len(menuApps) > 0 {
 		_, _, _ = pAppendMenu.Call(menu, mfString, idHello, uintptr(unsafe.Pointer(wstr("Включить вход через Windows Hello"))))
 	}
+	_, _, _ = pAppendMenu.Call(menu, mfString, idCheck, uintptr(unsafe.Pointer(wstr("Проверить защиту"))))
 	_, _, _ = pAppendMenu.Call(menu, mfString, idExit, uintptr(unsafe.Pointer(wstr("Выход"))))
 	var p point
 	_, _, _ = pGetCursorPos.Call(uintptr(unsafe.Pointer(&p)))
@@ -418,6 +443,8 @@ func wndProc(h, message, wparam, lparam uintptr) uintptr {
 			}
 		case id == idHello:
 			go enableHello()
+		case id == idCheck:
+			go checkProtection()
 		case id == idExit:
 			_, _, _ = pDestroyWindow.Call(h)
 		}

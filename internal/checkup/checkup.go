@@ -40,6 +40,9 @@ type Report struct {
 	Items   []Item    `json:"items"`
 }
 
+// ClickFixText — справка про приём, против которого защита файлов бессильна: пользователь запускает вредонос сам.
+const ClickFixText = "ClickFix: не вставляйте в «Выполнить», PowerShell или Терминал команды с сайтов и из «проверок, что вы не робот». Так вы сами запускаете вредонос с вашими правами, и защита файлов этого не остановит."
+
 // Input — то, что знает сама служба: её меры и состояние основной учётки.
 type Input struct {
 	MainUserAdmin   bool
@@ -87,6 +90,7 @@ func run(sys system, in Input, now time.Time) Report {
 		{ID: "telegram", Title: "Код-пароль Telegram", Level: Info,
 			Detail: "включается в самом Telegram",
 			Hint:   "Настройки → Конфиденциальность → Код-пароль: без него украденные файлы tdata открываются сразу"},
+		{ID: "clickfix", Title: "ClickFix", Level: Info, Detail: "не запускайте чужие команды", Hint: ClickFixText},
 	}
 	overall := OK
 	for _, it := range items {
