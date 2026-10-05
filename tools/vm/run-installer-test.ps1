@@ -200,7 +200,8 @@ $r = Vm {
         cache = (Test-Path 'C:\Users\tester\AppData\Roaming\Telegram Desktop\tdata\emoji\cache')
         svc = [bool](Get-Service SessionVault -ErrorAction SilentlyContinue)
         user = [bool](Get-LocalUser vault -ErrorAction SilentlyContinue)
-        data = (Test-Path C:\ProgramData\SessionVault)
+        # Файлы общей папки при удалении остаются: остальное должно исчезнуть.
+        data = [bool](@(Get-ChildItem C:\ProgramData\SessionVault -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'exchange' }).Count)
         run = [bool](Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run' -Name SessionVaultTray -ErrorAction SilentlyContinue)
         profile = (Test-Path C:\Users\vault)
         apps = (Test-Path "$pf\apps")
