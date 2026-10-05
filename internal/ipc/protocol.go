@@ -16,7 +16,8 @@ const (
 	MaxLine     = 64
 	MaxPassword = 256
 	MaxURL      = 2048
-	MaxReply    = 256 // ответ на list: имена профилей через запятую
+	MaxReply    = 256  // ответ на list: имена профилей через запятую
+	MaxCheck    = 8192 // ответ на check: отчёт JSON одной строкой
 
 	Ok       = "ok"
 	Locked   = "locked"
@@ -34,7 +35,7 @@ type Request struct {
 
 var errBadRequest = errors.New("неверный запрос")
 
-// Единственные запросы: «status», «list», «open» (ссылка следующей строкой, см. ValidURL), «run <профиль>» и «hello <профиль>». Ни аргументов, ни путей, ни данных в ответе (list отдаёт только имена).
+// Единственные запросы: «status», «list», «check», «open» (ссылка следующей строкой, см. ValidURL), «run <профиль>» и «hello <профиль>». Ни аргументов, ни путей, ни данных в ответе (list отдаёт только имена).
 func Parse(line string) (Request, error) {
 	if len(line) > MaxLine {
 		return Request{}, errBadRequest
@@ -52,6 +53,8 @@ func Parse(line string) (Request, error) {
 		return Request{Cmd: "list"}, nil
 	case len(parts) == 2 && parts[0] == "run" && profiles.ValidName(parts[1]):
 		return Request{Cmd: "run", Profile: parts[1]}, nil
+	case len(parts) == 1 && parts[0] == "check":
+		return Request{Cmd: "check"}, nil
 	case len(parts) == 1 && parts[0] == "open":
 		return Request{Cmd: "open"}, nil
 	case len(parts) == 2 && parts[0] == "hello" && profiles.ValidName(parts[1]):

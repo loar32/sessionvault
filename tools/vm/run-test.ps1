@@ -697,6 +697,23 @@ $w = New-Object IO.StreamWriter($p); $w.WriteLine('list'); $w.Flush()
 }
 Check ($r -match 'telegram' -and $r -match 'edge' -and $r -notmatch '\\' -and $r -notmatch ':') "list отдаёт только имена профилей ($("$r" -replace '\s+',' '))"
 
+# Проверка защиты: отчёт приходит от службы, check.json для обычной учётки закрыт.
+$r = Vm {
+    AsTester 'ck' '"C:\Program Files\SessionVault\sessionvault.exe" check -json'
+    Done 'ck' 60 | Out-Null
+    $json = (Out 'ck') -replace 'EXIT=\d+', ''
+    AsTester 'ckf' 'type C:\ProgramData\SessionVault\check.json'
+    Done 'ckf' 30 | Out-Null
+    @{ json = $json; file = (Out 'ckf'); starts = @(Select-String -Path C:\ProgramData\SessionVault\service.log -Pattern 'проверка защиты выполнена' -Encoding UTF8).Count; saved = (Test-Path C:\ProgramData\SessionVault\check.json) }
+}
+$rep = try { $r.json | ConvertFrom-Json } catch { $null }
+$ids = if ($rep) { ($rep.items | ForEach-Object { $_.id }) -join ',' } else { '' }
+Check ($rep -and $ids -match 'user,windows,defender,bitlocker,hvci,secureboot,blocklist,audit,harden,hello,telegram') "check -json: отчёт от службы со всеми пунктами ($ids)"
+Check ($rep -and ($rep.items | Where-Object { $_.id -eq 'user' }).level -eq 'ok' -and ($rep.items | Where-Object { $_.id -eq 'audit' }).level -eq 'ok') "check: основная учётка не админ, аудит работает"
+Check ($rep -and ($rep.items | Where-Object { $_.id -eq 'hvci' }).level -eq 'warn') "check: выключенная HVCI найдена (жёлтый пункт)"
+Check ($r.saved -and $r.file -notmatch 'items') "check.json создан и недоступен обычной учётке"
+Check ($r.starts -ge 1) "в service.log есть запись о проверке при старте ($($r.starts))"
+
 # Подмена пути приманки ссылкой: SYSTEM не должен ставить аудит на чужую папку.
 $r = Vm {
     $edgeDir = 'C:\Users\tester\AppData\Local\Microsoft\Edge'

@@ -226,6 +226,10 @@ func Dial(name string, timeout time.Duration) (*Conn, error) {
 
 // Call — запрос-ответ одной строкой.
 func Call(name, request string, timeout time.Duration) (string, error) {
+	return CallMax(name, request, timeout, MaxReply)
+}
+
+func CallMax(name, request string, timeout time.Duration, maxReply int) (string, error) {
 	c, err := Dial(name, timeout)
 	if err != nil {
 		return "", err
@@ -234,5 +238,5 @@ func Call(name, request string, timeout time.Duration) (string, error) {
 	if err := c.WriteLine(request); err != nil {
 		return "", err
 	}
-	return c.ReadLine(timeout, MaxReply)
+	return c.ReadLine(timeout, maxReply)
 }
