@@ -18,6 +18,10 @@ var verdict = map[Level]string{
 	Bad:  "есть серьёзные проблемы (красные пункты)",
 }
 
+func Verdict(l Level) string { return verdict[l] }
+
+func Mark(l Level) string { return marks[l][0] }
+
 // Format — текст отчёта для консоли: строка на пункт, под ней подсказка; color включает ANSI-цвета.
 func Format(r Report, color bool) string {
 	paint := func(l Level, s string) string {
