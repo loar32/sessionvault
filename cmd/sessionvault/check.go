@@ -1,14 +1,19 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
+	"github.com/loar32/sessionvault/internal/asr"
 	"github.com/loar32/sessionvault/internal/checkup"
 	"github.com/loar32/sessionvault/internal/ipc"
+	"github.com/loar32/sessionvault/internal/isolation"
 	"github.com/loar32/sessionvault/internal/service"
 	"github.com/loar32/sessionvault/internal/ui/checkwin"
 	"golang.org/x/sys/windows"
@@ -20,8 +25,14 @@ func check(args []string) error {
 	fs := flag.NewFlagSet("check", flag.ContinueOnError)
 	asJSON := fs.Bool("json", false, "вывести отчёт в JSON")
 	window := fs.Bool("window", false, "показать итог в окне, как пункт трея")
+	fix := fs.Bool("fix", false, "включить правила ASR в Defender (от администратора)")
+	yes := fs.Bool("yes", false, "с -fix: не спрашивать подтверждение")
+	off := fs.Bool("off", false, "с -fix: вернуть прежние значения")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *fix {
+		return fixASR(*yes, *off)
 	}
 	raw, err := ipc.CallMax(ipc.CommandPipe, "check", 30*time.Second, ipc.MaxCheck)
 	stale := false
@@ -62,4 +73,38 @@ func enableColor() bool {
 		return false
 	}
 	return windows.SetConsoleMode(h, mode|windows.ENABLE_VIRTUAL_TERMINAL_PROCESSING) == nil
+}
+
+// Ничего не включается молча: сначала список правил и откат, потом вопрос (-yes его пропускает).
+func fixASR(yes, off bool) error {
+	if !isolation.IsElevated() {
+		return errors.New("нужен запуск от администратора")
+	}
+	if off {
+		if err := service.FixASR(true); err != nil {
+			return err
+		}
+		fmt.Println("правила ASR возвращены к прежним значениям")
+		return nil
+	}
+	fmt.Println("Будут включены правила ASR в Defender (режим блокировки):")
+	for _, r := range asr.Rules {
+		fmt.Println("  - " + r.Title)
+	}
+	fmt.Println("Откат: sessionvault check -fix -off (или удаление программы).")
+	if !yes {
+		fmt.Print("Включить? [y/N]: ")
+		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		switch strings.ToLower(strings.TrimSpace(line)) {
+		case "y", "yes", "д", "да":
+		default:
+			fmt.Println("отменено, ничего не изменено")
+			return nil
+		}
+	}
+	if err := service.FixASR(false); err != nil {
+		return err
+	}
+	fmt.Println("готово. Обновить отчёт: sessionvault check из основной учётки.")
+	return nil
 }

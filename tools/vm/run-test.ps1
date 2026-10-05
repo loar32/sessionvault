@@ -555,6 +555,10 @@ function BrowserTest($app, $title, $exePath, $proc, $originRel, $required) {
         $d = "$o\Default"
         New-Item -ItemType Directory -Force $d | Out-Null
         Set-Content "$d\Cookies" 'old-cookie'
+        # Поддельное расширение с доступом к cookies и ко всем сайтам: служба должна найти его при запуске браузера.
+        $x = "$d\Extensions\aaaabbbbccccddddeeeeffffgggghhhh\1.0_0"
+        New-Item -ItemType Directory -Force $x | Out-Null
+        Set-Content "$x\manifest.json" '{"name":"Cookie Grabber","version":"1.0","manifest_version":3,"permissions":["cookies"],"host_permissions":["<all_urls>"]}'
     } -ArgumentList $origin
     $r = Vm {
         param($pw, $app, $o)
@@ -602,6 +606,12 @@ function BrowserTest($app, $title, $exePath, $proc, $originRel, $required) {
     } @($app, $proc)
     Check ($r.out -match 'ok' -and $r.up) "$title запущен от vault ($("$($r.out)" -replace '\s+',' '))"
     Check ($r.profile -and $r.cmd -like "*vault\$app\work\User Data*") "$title работает с профилем в защищённой папке"
+    $x = Vm {
+        AsTester 'ckx' "`"$exe`" check -json"
+        Done 'ckx' 60 | Out-Null
+        Out 'ckx'
+    }
+    Check ($x -match "Cookie Grabber \($app\)") "расширение с доступом к cookies и ко всем сайтам найдено при запуске $title"
 
     # Пока браузер работает, обычная учётка не должна дотянуться ни до файлов, ни до памяти его процесса.
     $ac = Vm {
@@ -742,7 +752,7 @@ $r = Vm {
 }
 $rep = try { $r.json | ConvertFrom-Json } catch { $null }
 $ids = if ($rep) { ($rep.items | ForEach-Object { $_.id }) -join ',' } else { '' }
-Check ($rep -and $ids -match 'user,windows,defender,bitlocker,hvci,secureboot,blocklist,audit,harden,hello,telegram,clickfix') "check -json: отчёт от службы со всеми пунктами ($ids)"
+Check ($rep -and $ids -match 'user,windows,defender,bitlocker,hvci,secureboot,blocklist,asr,audit,harden,hello,extensions,telegram,clickfix') "check -json: отчёт от службы со всеми пунктами ($ids)"
 Check ($rep -and ($rep.items | Where-Object { $_.id -eq 'user' }).level -eq 'ok' -and ($rep.items | Where-Object { $_.id -eq 'audit' }).level -eq 'ok') "check: основная учётка не админ, аудит работает"
 Check ($rep -and ($rep.items | Where-Object { $_.id -eq 'hvci' }).level -eq 'warn') "check: выключенная HVCI найдена (жёлтый пункт)"
 Check ($r.saved -and $r.file -notmatch 'items') "check.json создан и недоступен обычной учётке"
@@ -812,6 +822,45 @@ $r = Vm {
 Check ($r.up -and -not $r.early -and $r.alive) 'Win+L при запущенном приложении: хранилище пока не заблокировано'
 Check $r.ok 'после закрытия приложения хранилище заблокировалось (блокировка отложена)'
 
+Write-Host '--- 15c. правила ASR: check -fix ---'
+$asrIds = @('5beb7efe-fd9a-4556-801d-275e5ffc04cc', 'd3e037e1-3eb8-44c8-a917-57927947596d', 'be9ba2d9-53ea-4cdc-84e5-9b1eeee46550', '9e6c4e1f-7d60-472f-ba1a-a39ef669e4b2')
+$r = Vm {
+    param($ids)
+    function Blocked { $mp = Get-MpPreference; $n = 0; for ($i = 0; $i -lt @($mp.AttackSurfaceReductionRules_Ids).Count; $i++) { if ($ids -contains "$($mp.AttackSurfaceReductionRules_Ids[$i])".ToLower() -and $mp.AttackSurfaceReductionRules_Actions[$i] -eq 1) { $n++ } }; $n }
+    $before = Blocked
+    $denied = 'n' | & C:\sv\sessionvault.exe check -fix 2>&1 | Out-String
+    Start-Sleep 2
+    $afterDeny = Blocked
+    $out = & C:\sv\sessionvault.exe check -fix -yes 2>&1 | Out-String
+    $code = $LASTEXITCODE
+    $on = WaitFor { (Blocked) -eq 4 } 40
+    $reg = (Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Windows Defender Exploit Guard\ASR\Rules' -ErrorAction SilentlyContinue).($ids[0])
+    @{ before = $before; denied = ($denied -replace '\s+', ' '); afterDeny = $afterDeny; code = $code; out = ($out -replace '\s+', ' '); on = $on; blocked = (Blocked); reg = $reg }
+} @(, $asrIds)
+Check ($r.before -eq 0) "до check -fix правила ASR не включены ($($r.before))"
+Check ($r.afterDeny -eq 0 -and $r.denied -match 'отменено') "ответ n: ничего не изменено ($($r.denied))"
+Check ($r.code -eq 0 -and $r.on -and $r.reg -eq '1') "check -fix -yes: Defender принял все 4 правила в режиме блокировки (включено $($r.blocked): $($r.out))"
+$r = Vm {
+    AsTester 'asrck' "`"$exe`" check -json"; Done 'asrck' 60 | Out-Null
+    $t = Out 'asrck'
+    AsTester 'asrfx' "`"$exe`" check -fix -yes"; Done 'asrfx' 30 | Out-Null
+    @{ report = $t; user = (Out 'asrfx') }
+}
+Check ($r.report -match '"id":"asr","title":"[^"]*","level":"ok"') 'check от обычной учётки: пункт ASR зелёный'
+Check ($r.user -match 'администратор' -and $r.user -notmatch 'EXIT=0') "check -fix от обычной учётки отказывает ($("$($r.user)" -replace '\s+',' '))"
+$r = Vm {
+    param($ids)
+    function Blocked { $mp = Get-MpPreference; $n = 0; for ($i = 0; $i -lt @($mp.AttackSurfaceReductionRules_Ids).Count; $i++) { if ($ids -contains "$($mp.AttackSurfaceReductionRules_Ids[$i])".ToLower() -and $mp.AttackSurfaceReductionRules_Actions[$i] -eq 1) { $n++ } }; $n }
+    $out = & C:\sv\sessionvault.exe check -fix -off 2>&1 | Out-String
+    $off = WaitFor { (Blocked) -eq 0 } 40
+    # Для проверки отката при удалении правила включаются снова.
+    & C:\sv\sessionvault.exe check -fix -yes 2>&1 | Out-Null
+    $again = WaitFor { (Blocked) -eq 4 } 40
+    @{ out = ($out -replace '\s+', ' '); off = $off; again = $again }
+} @(, $asrIds)
+Check ($r.off -and $r.out -match 'возвращены') "check -fix -off вернул прежнее: правил в блокировке нет ($($r.out))"
+Check $r.again 'после отката правила включаются снова (для проверки отката при удалении)'
+
 Write-Host '--- 16. удаление программы возвращает данные браузеров ---'
 # Путь приманки Edge подменён ссылкой (блок 15): удаление должно отказаться и ничего не увести в чужую папку.
 $r = Vm {
@@ -853,6 +902,13 @@ $r = Vm {
     ($keys | ForEach-Object { "$((Get-ItemProperty $_[0] -Name $_[1] -ErrorAction SilentlyContinue).($_[1]))" }) -join ','
 }
 Check ($r -eq $hardenBefore) "удаление вернуло системные меры (было $hardenBefore, стало $r)"
+$r = Vm {
+    param($ids)
+    $mp = Get-MpPreference
+    @{ left = @(@($mp.AttackSurfaceReductionRules_Ids) | Where-Object { $_ -and $ids -contains "$_".ToLower() }).Count
+       policy = (Test-Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Windows Defender Exploit Guard\ASR\Rules') }
+} @(, $asrIds)
+Check ($r.left -eq 0) "удаление вернуло правила ASR (осталось $($r.left))"
 
 if ($fails.Count -eq 0) { Write-Host 'ТЕСТ ПРОЙДЕН'; exit 0 }
 Write-Host "ТЕСТ ПРОВАЛЕН ($($fails.Count))"; exit 1

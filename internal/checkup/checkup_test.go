@@ -39,7 +39,7 @@ func good() fake {
 	}
 }
 
-var allOn = Input{Audit: true, Hardened: true, Hello: true}
+var allOn = Input{Audit: true, Hardened: true, Hello: true, ASRActive: 4, ASRTotal: 4}
 
 func level(r Report, id string) Level {
 	for _, it := range r.Items {
@@ -147,5 +147,44 @@ func TestReportFitsPipeReply(t *testing.T) {
 	b, _ := json.Marshal(r)
 	if len(b) > 4096 {
 		t.Fatalf("худший отчёт %d байт: лимит ответа pipe 8192, запас должен быть двойной", len(b))
+	}
+}
+
+func TestASRItem(t *testing.T) {
+	r := run(good(), allOn, time.Now())
+	if level(r, "asr") != OK {
+		t.Fatal("все правила включены — зелёный")
+	}
+	partial := allOn
+	partial.ASRActive = 1
+	r = run(good(), partial, time.Now())
+	if level(r, "asr") != Warn || r.Overall != Warn {
+		t.Fatalf("включено 1 из 4 — жёлтый: %+v", r)
+	}
+	f := good()
+	f.ints[defPolicy+"|DisableAntiSpyware"] = 1
+	if r := run(f, partial, time.Now()); level(r, "asr") != Info {
+		t.Fatal("при отключённом Defender правила — справка, а не второй красный пункт")
+	}
+}
+
+func TestExtensionsItem(t *testing.T) {
+	in := allOn
+	if r := run(good(), in, time.Now()); level(r, "extensions") != Info {
+		t.Fatal("до первого запуска браузера — справка")
+	}
+	in.ExtScanned = []string{"chrome", "edge"}
+	if r := run(good(), in, time.Now()); level(r, "extensions") != OK {
+		t.Fatal("проверено, опасных нет — зелёный")
+	}
+	in.ExtRisky = []string{"A (chrome)", "B (edge)", "C (edge)", "D (edge)", "E (edge)", "F (edge)", "G (edge)"}
+	r := run(good(), in, time.Now())
+	if level(r, "extensions") != Warn || r.Overall != Warn {
+		t.Fatalf("опасные расширения — жёлтый: %+v", r)
+	}
+	for _, it := range r.Items {
+		if it.ID == "extensions" && (!strings.Contains(it.Detail, "A (chrome)") || !strings.Contains(it.Detail, "и ещё 2") || strings.Contains(it.Detail, "G (edge)")) {
+			t.Fatalf("список обрезан неверно: %s", it.Detail)
+		}
 	}
 }

@@ -50,6 +50,10 @@ type Input struct {
 	Audit           bool
 	Hardened        bool
 	Hello           bool
+	ASRActive       int      // правил ASR в блокировке
+	ASRTotal        int      // сколько правил в нашем наборе
+	ExtScanned      []string // браузеры, у которых расширения проверены при запуске
+	ExtRisky        []string // «Название (браузер)»: доступ к cookies и ко всем сайтам
 }
 
 // Реестр и BitLocker за интерфейсом: в тестах подменяются.
@@ -76,17 +80,20 @@ const (
 func Run(in Input) Report { return run(winSystem{}, in, time.Now()) }
 
 func run(sys system, in Input, now time.Time) Report {
+	def := defenderItem(sys)
 	items := []Item{
 		userItem(in),
 		windowsItem(sys),
-		defenderItem(sys),
+		def,
 		bitlockerItem(sys),
 		hvciItem(sys),
 		secureBootItem(sys),
 		blocklistItem(sys),
+		asrItem(in, def.Level),
 		auditItem(in),
 		hardenItem(in),
 		helloItem(in),
+		extensionsItem(in),
 		{ID: "telegram", Title: "Код-пароль Telegram", Level: Info,
 			Detail: "включается в самом Telegram",
 			Hint:   "Настройки → Конфиденциальность → Код-пароль: без него украденные файлы tdata открываются сразу"},
@@ -260,3 +267,38 @@ func (winSystem) bitlocker() (int, error) {
 	}
 	return n, nil
 }
+
+func asrItem(in Input, defender Level) Item {
+	const title = "Правила ASR (Defender)"
+	switch {
+	case defender == Bad:
+		return Item{"asr", title, Info, "Defender отключён: правила не действуют", ""}
+	case in.ASRTotal > 0 && in.ASRActive >= in.ASRTotal:
+		return Item{"asr", title, OK, fmt.Sprintf("включено %d из %d (блокировка)", in.ASRActive, in.ASRTotal), ""}
+	}
+	return Item{"asr", title, Warn, fmt.Sprintf("включено %d из %d", in.ASRActive, in.ASRTotal),
+		"От администратора: sessionvault check -fix (покажет список и спросит; откат: check -fix -off)"}
+}
+
+// Расширения проверяются только при запуске защищённого Chromium-браузера, когда профиль уже расшифрован.
+func extensionsItem(in Input) Item {
+	const title = "Расширения браузеров"
+	const shown = 5
+	switch {
+	case len(in.ExtScanned) == 0:
+		return Item{"extensions", title, Info, "проверяются при запуске защищённого браузера", ""}
+	case len(in.ExtRisky) == 0:
+		return Item{"extensions", title, OK, "опасных не найдено (" + strings.Join(in.ExtScanned, ", ") + ")", ""}
+	}
+	list := in.ExtRisky
+	more := ""
+	if len(list) > shown {
+		more = fmt.Sprintf(" и ещё %d", len(list)-shown)
+		list = list[:shown]
+	}
+	return Item{"extensions", title, Warn, "доступ к cookies и ко всем сайтам: " + strings.Join(list, ", ") + more,
+		"Удалите расширения, которым не доверяете (страница chrome://extensions, edge://extensions или brave://extensions)"}
+}
+
+// DefenderOff — Defender отключён политикой или без защиты в реальном времени (те же признаки, что у пункта отчёта).
+func DefenderOff() bool { return defenderItem(winSystem{}).Level == Bad }

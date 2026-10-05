@@ -4,14 +4,18 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
+	"github.com/loar32/sessionvault/internal/asr"
 	"github.com/loar32/sessionvault/internal/audit"
 	"github.com/loar32/sessionvault/internal/checkup"
+	"github.com/loar32/sessionvault/internal/extscan"
 	"github.com/loar32/sessionvault/internal/hardening"
 	"github.com/loar32/sessionvault/internal/ipc"
 	"github.com/loar32/sessionvault/internal/isolation"
+	"github.com/loar32/sessionvault/internal/profiles"
 	"github.com/loar32/sessionvault/internal/vault"
 )
 
@@ -47,7 +51,8 @@ func (s *Service) check() string {
 		cfg = s.cfg
 	}
 	admin, adminErr := isolation.IsAdminUser(cfg.MainUser)
-	in := checkup.Input{MainUserAdmin: admin, MainUserUnknown: adminErr != nil, Audit: audit.IsEnabled(), Hardened: hardening.Applied(), Hello: s.helloEnabled()}
+	ext, scanned := s.extensionsState()
+	in := checkup.Input{ASRActive: asr.Active(), ASRTotal: len(asr.Rules), ExtScanned: scanned, ExtRisky: ext, MainUserAdmin: admin, MainUserUnknown: adminErr != nil, Audit: audit.IsEnabled(), Hardened: hardening.Applied(), Hello: s.helloEnabled()}
 	b, err := json.Marshal(checkup.Run(in))
 	if err != nil {
 		return ipc.Failed
@@ -74,4 +79,38 @@ func (s *Service) helloEnabled() bool {
 		}
 	}
 	return false
+}
+
+// Расширения Chromium проверяются, когда защищённый браузер запускается и его профиль уже расшифрован: только тогда
+// служба видит их файлы. Результат живёт в памяти до следующего запуска браузера или перезапуска службы.
+func (s *Service) scanExtensions(p profiles.Profile) {
+	if p.Decoy != "chromium" {
+		return
+	}
+	res := extscan.Scan(filepath.Join(isolation.WorkPath(p.Name), p.DataDir))
+	s.mu.Lock()
+	if s.ext == nil {
+		s.ext = map[string]extscan.Result{}
+	}
+	s.ext[p.Name] = res
+	s.mu.Unlock()
+	checkMu.Lock()
+	lastCheck = "" // отчёт должен учесть свежий результат, а не кеш
+	checkMu.Unlock()
+	s.log.Printf("%s: расширений проверено %d, с доступом к cookies и ко всем сайтам %d", p.Name, res.Checked, len(res.Risky))
+}
+
+// Проверенные браузеры и «Название (браузер)» для расширений с доступом к cookies и ко всем сайтам.
+func (s *Service) extensionsState() (risky, scanned []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for browser, res := range s.ext {
+		scanned = append(scanned, browser)
+		for _, f := range res.Risky {
+			risky = append(risky, f.Name+" ("+browser+")")
+		}
+	}
+	sort.Strings(scanned)
+	sort.Strings(risky)
+	return risky, scanned
 }
