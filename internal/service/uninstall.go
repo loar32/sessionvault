@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/loar32/sessionvault/internal/asr"
 	"github.com/loar32/sessionvault/internal/audit"
 	"github.com/loar32/sessionvault/internal/crypto"
 	"github.com/loar32/sessionvault/internal/decoy"
@@ -81,6 +82,7 @@ func Uninstall(password []byte) (err error) {
 		_ = audit.DisableFileSystem()
 	}
 	_ = hardening.Revert(cfg.Hardening)
+	_ = asr.Revert(cfg.ASR)
 	if s, e := m.OpenService(Name); e == nil {
 		_ = s.Delete()
 		_ = s.Close()

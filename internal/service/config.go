@@ -23,6 +23,8 @@ type Config struct {
 	LinkProfile string `json:"link_profile,omitempty"`
 	// Прежние значения системных мер (hardening): при удалении они возвращаются.
 	Hardening map[string]int64 `json:"hardening,omitempty"`
+	// Прежние значения правил ASR (check -fix): при -off и удалении они возвращаются.
+	ASR map[string]string `json:"asr,omitempty"`
 }
 
 // Блокировка по бездействию — страховка на случай, если событие Windows (блокировка сеанса, сон) не пришло.

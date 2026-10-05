@@ -14,6 +14,7 @@ import (
 
 	"github.com/loar32/sessionvault/internal/audit"
 	"github.com/loar32/sessionvault/internal/crypto"
+	"github.com/loar32/sessionvault/internal/extscan"
 	"github.com/loar32/sessionvault/internal/ipc"
 	"github.com/loar32/sessionvault/internal/isolation"
 	"github.com/loar32/sessionvault/internal/profiles"
@@ -58,7 +59,8 @@ type Service struct {
 	mu          sync.Mutex
 	keys        map[string][]byte // DEK профилей, пока хранилище разблокировано
 	running     map[string]bool
-	closing     map[string]bool // приложение вышло, данные ещё шифруются: новый экземпляр запускать нельзя
+	closing     map[string]bool           // приложение вышло, данные ещё шифруются: новый экземпляр запускать нельзя
+	ext         map[string]extscan.Result // результат последней проверки расширений по профилям браузеров
 	prompting   bool
 	lastFailLog time.Time            // когда последний раз писали об ошибке запуска
 	lastRun     map[string]time.Time // по профилям: запуск одного приложения не задерживает другое
@@ -317,6 +319,7 @@ func (s *Service) start(p profiles.Profile, v vault.Vault, dek []byte, session u
 		unlock()
 		return "", errors.Join(err, v.Encrypt(dek))
 	}
+	s.scanExtensions(p)
 
 	_, proc, thread, err := isolation.StartInSession(session, launchLine(s.exe, p.Name, link), true)
 	if err != nil {

@@ -38,6 +38,7 @@ sessionvault run <профиль>
 sessionvault open <ссылка>
 sessionvault status
 sessionvault check [-json|-window]
+sessionvault check -fix [-yes|-off]
 sessionvault alerts
 sessionvault tray`
 
