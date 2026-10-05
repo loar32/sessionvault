@@ -11,6 +11,7 @@ import (
 	"github.com/loar32/sessionvault/internal/asr"
 	"github.com/loar32/sessionvault/internal/audit"
 	"github.com/loar32/sessionvault/internal/checkup"
+	"github.com/loar32/sessionvault/internal/decoy"
 	"github.com/loar32/sessionvault/internal/extscan"
 	"github.com/loar32/sessionvault/internal/hardening"
 	"github.com/loar32/sessionvault/internal/ipc"
@@ -87,7 +88,13 @@ func (s *Service) scanExtensions(p profiles.Profile) {
 	if p.Decoy != "chromium" {
 		return
 	}
-	res := extscan.Scan(filepath.Join(isolation.WorkPath(p.Name), p.DataDir))
+	dir := filepath.Join(isolation.WorkPath(p.Name), p.DataDir)
+	// Профиль принадлежит приложению под vault, а читает его служба с высокими правами: подменённый каталог не сканируем.
+	if err := decoy.NoReparse(dir); err != nil {
+		s.log.Printf("%s: расширения не проверены: %v", p.Name, err)
+		return
+	}
+	res := extscan.Scan(dir)
 	s.mu.Lock()
 	if s.ext == nil {
 		s.ext = map[string]extscan.Result{}

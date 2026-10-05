@@ -75,3 +75,22 @@ func TestBigManifestSkipped(t *testing.T) {
 		t.Fatal("слишком большой manifest не читается")
 	}
 }
+
+func TestNewestVersionByNumber(t *testing.T) {
+	root := t.TempDir()
+	put(t, root, "Default", "aaaa", "1.9_0", `{"name":"Старая","permissions":["tabs"]}`)
+	put(t, root, "Default", "aaaa", "1.10_0", `{"name":"Новая","permissions":["cookies"],"host_permissions":["<all_urls>"]}`)
+	if res := Scan(root); len(res.Risky) != 1 || res.Risky[0].Name != "Новая" {
+		t.Fatalf("1.10_0 новее 1.9_0: %+v", res)
+	}
+}
+
+func TestSameIDDifferentProfiles(t *testing.T) {
+	root := t.TempDir()
+	put(t, root, "Default", "aaaa", "1.0_0", `{"name":"Безобидное","permissions":["tabs"]}`)
+	put(t, root, "Profile 1", "aaaa", "1.0_0", `{"name":"Опасное","permissions":["cookies"],"host_permissions":["<all_urls>"]}`)
+	res := Scan(root)
+	if res.Checked != 1 || len(res.Risky) != 1 {
+		t.Fatalf("опасное в одном из профилей должно находиться: %+v", res)
+	}
+}

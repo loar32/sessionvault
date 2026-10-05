@@ -79,3 +79,13 @@ func TestActiveNeedsPolicySwitch(t *testing.T) {
 		t.Fatal("режим аудита не считается блокировкой")
 	}
 }
+
+func TestPolicyOverridesLocal(t *testing.T) {
+	f := newFake()
+	f.vals[policyKey+"|"+master] = "1"
+	f.vals[rulesKey+"|"+Rules[0].ID] = "0"
+	f.vals[localKey+"|"+Rules[0].ID] = "1"
+	if active(f) != 0 {
+		t.Fatal("правило, отключённое политикой, не работает, даже если локально включено")
+	}
+}
