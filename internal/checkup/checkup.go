@@ -54,6 +54,9 @@ type Input struct {
 	ASRTotal        int      // сколько правил в нашем наборе
 	ExtScanned      []string // браузеры, у которых расширения проверены при запуске
 	ExtRisky        []string // «Название (браузер)»: доступ к cookies и ко всем сайтам
+	MemAudit        bool     // включён аудит объектов ядра: по нему видно чтение памяти приложений
+	MemReads        int      // обращений чужих процессов к памяти защищённых приложений с запуска службы
+	MemLast         string   // последнее обращение
 }
 
 // Реестр и BitLocker за интерфейсом: в тестах подменяются.
@@ -94,6 +97,7 @@ func run(sys system, in Input, now time.Time) Report {
 		hardenItem(in),
 		helloItem(in),
 		extensionsItem(in),
+		memoryItem(in),
 		{ID: "telegram", Title: "Код-пароль Telegram", Level: Info,
 			Detail: "включается в самом Telegram",
 			Hint:   "Настройки → Конфиденциальность → Код-пароль: без него украденные файлы tdata открываются сразу"},
@@ -298,6 +302,20 @@ func extensionsItem(in Input) Item {
 	}
 	return Item{"extensions", title, Warn, "доступ к cookies и ко всем сайтам: " + strings.Join(list, ", ") + more,
 		"Удалите расширения, которым не доверяете (страница chrome://extensions, edge://extensions или brave://extensions)"}
+}
+
+// Только справка: чужие обращения к памяти бывают и безобидными (отладчик, антивирус), поэтому ни жёлтого, ни красного.
+func memoryItem(in Input) Item {
+	const title = "Чтение памяти приложений"
+	switch {
+	case !in.MemAudit:
+		return Item{"memory", title, Info, "аудит объектов Windows не включён, обращения не записываются",
+			"Включит служба при запуске; если политику сбросили, перезапустите службу SessionVault"}
+	case in.MemReads == 0:
+		return Item{"memory", title, OK, "чужих обращений не было с запуска службы", ""}
+	}
+	return Item{"memory", title, Info, fmt.Sprintf("обращений с запуска службы: %d, последнее: %s", in.MemReads, in.MemLast),
+		"Журнал memory.log в папке данных SessionVault; если вы сами не запускали отладчик или похожую программу, проверьте, что это за процесс"}
 }
 
 // DefenderOff — Defender отключён политикой или без защиты в реальном времени (те же признаки, что у пункта отчёта).

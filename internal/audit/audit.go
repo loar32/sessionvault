@@ -14,6 +14,7 @@ var (
 	procAuditSet          = auditProc("AuditSetSystemPolicy")
 	procAuditFree         = auditProc("AuditFree")
 	guidFileSystem        = windows.GUID{Data1: 0x0CCE921D, Data2: 0x69AE, Data3: 0x11D9, Data4: [8]byte{0xBE, 0xD3, 0x50, 0x50, 0x54, 0x50, 0x30, 0x30}}
+	guidKernelObject      = windows.GUID{Data1: 0x0CCE921F, Data2: 0x69AE, Data3: 0x11D9, Data4: [8]byte{0xBE, 0xD3, 0x50, 0x50, 0x54, 0x50, 0x30, 0x30}}
 	guidCategoryObjAccess = windows.GUID{Data1: 0x6997984A, Data2: 0x797A, Data3: 0x11D9, Data4: [8]byte{0xBE, 0xD3, 0x50, 0x50, 0x54, 0x50, 0x30, 0x30}}
 )
 
@@ -33,8 +34,7 @@ type policy struct {
 	Category    windows.GUID
 }
 
-func fileSystemPolicy() (uint32, error) {
-	g := guidFileSystem
+func policyFor(g windows.GUID) (uint32, error) {
 	var p *policy
 	if r, _, e := procAuditQuery.Call(uintptr(unsafe.Pointer(&g)), 1, uintptr(unsafe.Pointer(&p))); r == 0 {
 		return 0, e
@@ -43,40 +43,58 @@ func fileSystemPolicy() (uint32, error) {
 	return p.Info, nil
 }
 
-func setFileSystemPolicy(info uint32) error {
-	p := policy{SubCategory: guidFileSystem, Info: info, Category: guidCategoryObjAccess}
+func setPolicy(g windows.GUID, info uint32) error {
+	p := policy{SubCategory: g, Info: info, Category: guidCategoryObjAccess}
 	if r, _, e := procAuditSet.Call(uintptr(unsafe.Pointer(&p)), 1); r == 0 {
 		return e
 	}
 	return nil
 }
 
-// EnableFileSystem включает запись успешных обращений к файлам; changed — политику включили мы, а не она уже была.
-func EnableFileSystem() (changed bool, err error) {
-	cur, err := fileSystemPolicy()
+func fileSystemPolicy() (uint32, error) { return policyFor(guidFileSystem) }
+
+// enable включает запись успешных обращений; changed — политику включили мы, а не она уже была.
+// Неудачи оставляем как были: меняем только то, что нужно нам.
+func enable(g windows.GUID) (changed bool, err error) {
+	cur, err := policyFor(g)
 	if err != nil {
 		return false, err
 	}
 	if cur&auditSuccess != 0 {
 		return false, nil
 	}
-	// Неудачи оставляем как были: меняем только то, что нужно нам.
-	if err := setFileSystemPolicy(cur&auditFailure | auditSuccess); err != nil {
+	if err := setPolicy(g, cur&auditFailure|auditSuccess); err != nil {
 		return false, err
 	}
 	return true, nil
 }
 
-// DisableFileSystem возвращает политику, которую включили мы.
-func DisableFileSystem() error {
-	cur, err := fileSystemPolicy()
+func disable(g windows.GUID) error {
+	cur, err := policyFor(g)
 	if err != nil {
 		return err
 	}
 	if cur&auditFailure != 0 {
-		return setFileSystemPolicy(auditFailure)
+		return setPolicy(g, auditFailure)
 	}
-	return setFileSystemPolicy(auditNone)
+	return setPolicy(g, auditNone)
+}
+
+// EnableFileSystem включает запись успешных обращений к файлам; changed — политику включили мы, а не она уже была.
+func EnableFileSystem() (changed bool, err error) { return enable(guidFileSystem) }
+
+// DisableFileSystem возвращает политику, которую включили мы.
+func DisableFileSystem() error { return disable(guidFileSystem) }
+
+// EnableKernelObject включает запись успешных обращений к объектам ядра (в том числе процессам): по ним видно чтение
+// памяти защищённых приложений.
+func EnableKernelObject() (changed bool, err error) { return enable(guidKernelObject) }
+
+func DisableKernelObject() error { return disable(guidKernelObject) }
+
+func KernelObjectEnabled() bool {
+	cur, err := policyFor(guidKernelObject)
+	return err == nil && cur&auditSuccess != 0
 }
 
 // IsEnabled — действует ли аудит успешных обращений к файлам сейчас.

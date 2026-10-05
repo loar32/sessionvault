@@ -23,12 +23,15 @@ const (
 	renderEventXML    = 1
 )
 
-// Read — событие 4663: процесс обратился к объекту файловой системы.
+// Read — событие 4663: процесс обратился к объекту (файлу или процессу).
 type Read struct {
-	Object  string // путь в формате устройства: \Device\HarddiskVolume3\...
-	Process string // путь к exe
+	Type    string // File, Process и т. п.
+	Object  string // для файла путь в формате устройства (\Device\HarddiskVolume3\...), для процесса путь к его exe
+	Process string // путь к exe обратившегося процесса
 	PID     uint32
 	Mask    uint32
+	SID     string // учётка обратившегося процесса
+	User    string
 }
 
 type eventXML struct {
@@ -46,6 +49,12 @@ func parseRead(b []byte) (Read, error) {
 	var r Read
 	for _, d := range e.Data {
 		switch d.Name {
+		case "ObjectType":
+			r.Type = d.Value
+		case "SubjectUserSid":
+			r.SID = d.Value
+		case "SubjectUserName":
+			r.User = d.Value
 		case "ObjectName":
 			r.Object = d.Value
 		case "ProcessName":
