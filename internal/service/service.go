@@ -51,6 +51,9 @@ type Service struct {
 	memWatched   map[uint32]bool      // под mu: процессы, на которые уже ставили аудит
 	exeCache     []string             // под mu: exe защищённых приложений для фильтра обращений к памяти
 	exeCacheAt   time.Time
+	memWindow    time.Time // под mu: начало минуты для лимита записей журнала памяти
+	memWritten   int
+	memSkipped   int
 	memFailed    map[uint32]bool // под mu: процессы, на которые аудит поставить не удалось (в журнал пишется один раз)
 	targets      func() []string // только для тестов: exe защищённых приложений
 	vaultSID     string

@@ -639,7 +639,7 @@ function BrowserTest($app, $title, $exePath, $proc, $originRel, $required) {
     # Бюджет фона: аудит процессов не должен засыпать журнал, пока защищённый браузер работает (его процессы общаются друг с другом).
     $n = Vm { @(Get-WinEvent -FilterHashtable @{ LogName = 'Security'; Id = 4656, 4663; StartTime = (Get-Date).AddMinutes(-3) } -ErrorAction SilentlyContinue | Where-Object { $_.Message -match 'Object Type:\s+Process' }).Count }
     Write-Host "  события аудита процессов за 3 минуты работы ${title}: $n"
-    Check ($n -lt 2000) "аудит процессов не засыпает журнал при работе ${title} ($n событий за 3 минуты)"
+    Check ($n -lt 600) "аудит процессов не засыпает журнал при работе ${title} ($n событий за 3 минуты)"
 
     # Пока браузер работает, обычная учётка не должна дотянуться ни до файлов, ни до памяти его процесса.
     $ac = Vm {
