@@ -91,7 +91,7 @@ func Uninstall(password []byte) (err error) {
 	// Флаг автопоказа окна проверки: после повторной установки окно снова должно показаться. Удаляется один файл, не папка:
 	// путь идёт через профиль пользователя, а службе с правами SYSTEM нельзя рекурсивно чистить то, что он может подменить ссылкой.
 	_ = os.Remove(filepath.Join(usersDir(), cfg.MainUser, `AppData\Local\SessionVault\check-shown`))
-	_ = os.RemoveAll(isolation.BaseDir())
+	removeBaseKeepingExchange()
 	_ = isolation.AllowRemoteLogon(isolation.VaultUser)
 	_ = isolation.DeleteUserProfile(isolation.VaultUser)
 	_ = isolation.DeleteUser(isolation.VaultUser)
@@ -181,4 +181,20 @@ func startService(m *mgr.Mgr) error {
 	}
 	defer func() { _ = s.Close() }()
 	return s.Start()
+}
+
+// В общей папке лежат файлы пользователя: при удалении программы они остаются, пока пользователь сам их не уберёт.
+func removeBaseKeepingExchange() {
+	base := isolation.BaseDir()
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.Name() != filepath.Base(isolation.ExchangeDir()) {
+			_ = os.RemoveAll(filepath.Join(base, e.Name()))
+		}
+	}
+	_ = os.Remove(isolation.ExchangeDir()) // пустую папку убираем
+	_ = os.Remove(base)
 }

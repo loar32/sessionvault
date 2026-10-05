@@ -12,9 +12,12 @@ import (
 // Владелец — Administrators, а не прежний пользователь: владелец всегда может переписать DACL.
 func Protect(root string, owner *windows.SID, allow ...*windows.SID) error {
 	var paths []string
-	err := filepath.WalkDir(root, func(p string, _ fs.DirEntry, err error) error {
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+		if d.Type()&(fs.ModeSymlink|fs.ModeIrregular) != 0 {
+			return nil
 		}
 		paths = append(paths, p)
 		return nil
@@ -97,8 +100,9 @@ func ProtectDir(root string) error {
 	return Protect(root, admins, system, admins)
 }
 
-// Рабочая папка приложения: полный доступ у vault, наследуется на содержимое.
-func ProtectWork(root string) error {
+// Рабочая папка приложения: vault пишет и читает всё, но не запускает файлы и не меняет права; запуск разрешён только
+// в папках execDirs (путь относительно root). Вызывается, пока приложение не запущено.
+func ProtectWork(root string, execDirs []string) error {
 	vault, _, _, err := windows.LookupSID("", VaultUser)
 	if err != nil {
 		return err
@@ -107,5 +111,5 @@ func ProtectWork(root string) error {
 	if err != nil {
 		return err
 	}
-	return Protect(root, admins, vault, system, admins)
+	return protectNoExec(root, execDirs, vault, []*windows.SID{system, admins}, nil, admins)
 }

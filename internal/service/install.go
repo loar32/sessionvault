@@ -160,6 +160,9 @@ func Install(mainUser, telegramExe string) (err error) {
 	if err = isolation.SetupVaultDir(); err != nil {
 		return err
 	}
+	if err = isolation.SetupExchange(mainUser); err != nil {
+		return err
+	}
 	// При повторной установке сохраняем исходные места данных: без них uninstall не вернёт сессии.
 	cfg := Config{MainUser: mainUser, IdleMinutes: defaultIdleMinutes}
 	if old, e := LoadConfig(); e == nil {
