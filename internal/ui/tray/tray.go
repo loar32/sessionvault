@@ -3,6 +3,7 @@ package tray
 
 import (
 	"errors"
+	"os"
 	"runtime"
 	"strings"
 	"sync/atomic"
@@ -73,6 +74,7 @@ const (
 	idRun         = 1001 // и далее по одному на приложение; меньше idExit не бывает: приложений не больше maxMenuApps
 	maxMenuApps   = 16
 	idHello       = 1050
+	idRecovery    = 1051
 	idCheck       = 1060
 	idExchange    = 1061
 	idExit        = 1100
@@ -336,6 +338,17 @@ func runApp(profile string) {
 	}
 }
 
+// Ключу восстановления нужны права администратора (он пишет в закрытую папку хранилищ): окно консоли открывается через UAC
+// и остаётся на экране, пока пользователь не запишет слова.
+func recoveryKey() {
+	exe, err := os.Executable()
+	if err != nil {
+		return
+	}
+	args := `/k ""` + exe + `" recovery create"`
+	_ = windows.ShellExecute(0, windows.StringToUTF16Ptr("runas"), windows.StringToUTF16Ptr("cmd.exe"), windows.StringToUTF16Ptr(args), nil, windows.SW_SHOWNORMAL)
+}
+
 // Для каждого защищённого приложения служба спрашивает мастер-пароль, затем Windows Hello создаёт ключ и подтверждает вход.
 func enableHello() {
 	speedUp()
@@ -401,6 +414,7 @@ func showMenu() {
 	_, _, _ = pAppendMenu.Call(menu, mfSeparator, 0, 0)
 	if len(menuApps) > 0 {
 		_, _, _ = pAppendMenu.Call(menu, mfString, idHello, uintptr(unsafe.Pointer(wstr("Включить вход через Windows Hello"))))
+		_, _, _ = pAppendMenu.Call(menu, mfString, idRecovery, uintptr(unsafe.Pointer(wstr("Создать ключ восстановления…"))))
 	}
 	_, _, _ = pAppendMenu.Call(menu, mfString, idExchange, uintptr(unsafe.Pointer(wstr("Папка обмена с защищёнными приложениями"))))
 	_, _, _ = pAppendMenu.Call(menu, mfString, idCheck, uintptr(unsafe.Pointer(wstr("Проверить защиту"))))
@@ -446,6 +460,8 @@ func wndProc(h, message, wparam, lparam uintptr) uintptr {
 			}
 		case id == idHello:
 			go enableHello()
+		case id == idRecovery:
+			recoveryKey()
 		case id == idCheck:
 			go checkProtection()
 		case id == idExchange:

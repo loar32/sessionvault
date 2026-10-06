@@ -34,6 +34,9 @@ sessionvault uninstall
 sessionvault restore-backup <профиль>
 sessionvault harden [-off]
 sessionvault hello disable [профиль]
+sessionvault recovery create|reset|status
+sessionvault export <приложение> <файл>
+sessionvault import <файл>
 sessionvault run <профиль>
 sessionvault open <ссылка>
 sessionvault status
@@ -48,6 +51,9 @@ const exitMainUserAdmin = 3
 // Окно с результатом закрывается вместе с процессом; в видимых окнах установщика (-pause) ждём Enter, но только
 // когда есть что прочитать: при ошибке и после import-tdata. Иначе тихое удаление повисло бы на пустой паузе.
 var pause bool
+
+// Один читатель на весь процесс: при вводе через pipe несколько вопросов подряд иначе теряли бы буферизованные строки.
+var stdinReader = bufio.NewReader(os.Stdin)
 
 func finish(code int) {
 	if pause && ownConsole && (code != 0 || os.Args[1] == "import-tdata") {
@@ -90,6 +96,13 @@ func main() {
 		err = harden(args)
 	case "hello":
 		err = helloCmd(args)
+	case "recovery":
+		err = recoveryCmd(args)
+	case "export":
+		err = exportCmd(args)
+	case "import":
+		err = importCmd(args)
+		nudgeService(err)
 	case "hello-unlock", "hello-enroll":
 		err = helloHelper(os.Args[1], args)
 	case "open":
@@ -180,7 +193,7 @@ func protect(args []string) error {
 			return true
 		}
 		fmt.Fprint(os.Stderr, "Закройте браузер и введите delete для подтверждения: ")
-		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		line, _ := stdinReader.ReadString('\n')
 		return strings.TrimSpace(line) == "delete"
 	}
 	left, err := service.ProtectBrowser(app, confirm, func() ([]byte, error) { return readPassword(*stdin, true) })
@@ -472,7 +485,7 @@ func checkNewPassword(pw []byte) error {
 
 func readPassword(stdin, confirm bool) ([]byte, error) {
 	if stdin {
-		line, err := bufio.NewReader(os.Stdin).ReadBytes('\n')
+		line, err := stdinReader.ReadBytes('\n')
 		if err != nil && len(line) == 0 {
 			return nil, err
 		}
