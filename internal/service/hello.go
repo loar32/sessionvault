@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -92,13 +93,15 @@ func (s *Service) helperReply(session uint32, mode, keyName string, challenge []
 		return nil, err
 	}
 	defer crypto.Wipe(reply)
-	if !strings.HasPrefix(string(reply), "ok ") {
+	if !bytes.HasPrefix(reply, []byte("ok ")) {
 		return nil, errors.New(strings.TrimSpace(string(reply)))
 	}
+	// Поля разбираются по байтам, без строк Go: строку с секретом занулить нельзя.
 	var out [][]byte
-	for _, f := range strings.Fields(string(reply[3:])) {
-		b, err := hex.DecodeString(f)
-		if err != nil || len(b) == 0 {
+	for _, f := range bytes.Fields(reply[3:]) {
+		b := make([]byte, hex.DecodedLen(len(f)))
+		if _, err := hex.Decode(b, f); err != nil || len(b) == 0 {
+			crypto.Wipe(b)
 			for _, o := range out {
 				crypto.Wipe(o)
 			}
