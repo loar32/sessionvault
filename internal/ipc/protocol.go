@@ -35,7 +35,7 @@ type Request struct {
 
 var errBadRequest = errors.New("неверный запрос")
 
-// Единственные запросы: «status», «list», «check», «open» (ссылка следующей строкой, см. ValidURL), «run <профиль>» и «hello <профиль>». Ни аргументов, ни путей, ни данных в ответе (list отдаёт только имена).
+// Единственные запросы: «status», «list», «check», «open» (ссылка следующей строкой, см. ValidURL), «run <профиль>», «hello <профиль>» и «fido <профиль>». Ни аргументов, ни путей, ни данных в ответе (list отдаёт только имена).
 func Parse(line string) (Request, error) {
 	if len(line) > MaxLine {
 		return Request{}, errBadRequest
@@ -57,8 +57,8 @@ func Parse(line string) (Request, error) {
 		return Request{Cmd: "check"}, nil
 	case len(parts) == 1 && parts[0] == "open":
 		return Request{Cmd: "open"}, nil
-	case len(parts) == 2 && parts[0] == "hello" && profiles.ValidName(parts[1]):
-		return Request{Cmd: "hello", Profile: parts[1]}, nil
+	case len(parts) == 2 && (parts[0] == "hello" || parts[0] == "fido") && profiles.ValidName(parts[1]):
+		return Request{Cmd: parts[0], Profile: parts[1]}, nil
 	}
 	return Request{}, errBadRequest
 }

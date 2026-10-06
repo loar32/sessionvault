@@ -579,3 +579,47 @@ func TestImportDropsHello(t *testing.T) {
 		t.Fatal("слот Hello из чужого файла остался")
 	}
 }
+
+func TestFidoSlot(t *testing.T) {
+	v := newVault(t)
+	dek, _ := v.Create([]byte("pw"))
+	if _, _, ok := v.FidoInfo(); ok {
+		t.Fatal("слот есть без включения")
+	}
+	if _, err := v.UnlockFido([]byte("s")); err == nil {
+		t.Fatal("открыто без слота")
+	}
+	id, salt, secret := []byte("cred-id"), bytes.Repeat([]byte{5}, 32), bytes.Repeat([]byte{6}, 32)
+	if err := v.EnableFido(dek, id, salt, secret); err != nil {
+		t.Fatal(err)
+	}
+	gid, gsalt, ok := v.FidoInfo()
+	if !ok || !bytes.Equal(gid, id) || !bytes.Equal(gsalt, salt) {
+		t.Fatal("FidoInfo не вернул данные слота")
+	}
+	got, err := v.UnlockFido(secret)
+	if err != nil || !bytes.Equal(got, dek) {
+		t.Fatalf("секрет не открыл: %v", err)
+	}
+	if _, err := v.UnlockFido(bytes.Repeat([]byte{7}, 32)); !errors.Is(err, ErrWrongPassword) {
+		t.Fatalf("чужой секрет: %v", err)
+	}
+	// Подмена соли или идентификатора отклоняется проверкой подлинности.
+	m, _ := v.readMeta()
+	m.Fido.Salt = bytes.Repeat([]byte{9}, 32)
+	if err := v.writeMeta(m); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.UnlockFido(secret); err == nil {
+		t.Fatal("слот с подменённой солью принят")
+	}
+	if err := v.DisableFido(); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := v.FidoInfo(); ok {
+		t.Fatal("слот остался после отключения")
+	}
+	if got, err := v.Unlock([]byte("pw")); err != nil || !bytes.Equal(got, dek) {
+		t.Fatal("пароль перестал работать")
+	}
+}

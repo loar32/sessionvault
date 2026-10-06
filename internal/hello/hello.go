@@ -131,6 +131,10 @@ func raiseDialog() {
 	_, _, _ = procSetForegroundWnd.Call(h)
 }
 
+// RaiseDialog и CloseDialog работают с тем же системным окном «Безопасность Windows», которое показывает и ключ FIDO2.
+func RaiseDialog() { raiseDialog() }
+func CloseDialog() { closeDialog() }
+
 // Отмена операции не всегда убирает окно Hello с экрана: закрываем его сами, иначе оно висит, пока пользователь не нажмёт «Отмена».
 func closeDialog() {
 	cls, err := windows.UTF16PtrFromString(dialogClass)

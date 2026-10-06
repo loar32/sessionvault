@@ -50,6 +50,8 @@ type meta struct {
 	Counter uint64 `json:",omitempty"`
 	// Второй способ открыть тот же DEK: ключ из подписи Windows Hello. Пароль остаётся запасным.
 	Hello *helloSlot `json:",omitempty"`
+	// Ещё один способ: секрет hmac-secret ключа FIDO2 (YubiKey). Работает на любом ПК, где есть ключ и его PIN.
+	Fido *fidoSlot `json:",omitempty"`
 	// Третий способ: ключ восстановления с бумаги (24 слова), один на все хранилища.
 	Recovery []byte `json:",omitempty"`
 }
@@ -58,6 +60,20 @@ type helloSlot struct {
 	Name       string // имя ключа Hello у пользователя
 	Challenge  []byte // запрос, который подписывается ключом
 	WrappedDEK []byte
+}
+
+type fidoSlot struct {
+	CredID     []byte // идентификатор учётных данных на ключе
+	Salt       []byte // соль hmac-secret
+	WrappedDEK []byte
+}
+
+// Учётные данные и соль входят в проверку подлинности: слот нельзя перенести в другое хранилище или подменить.
+func (m meta) fidoAAD(credID, salt []byte) []byte {
+	b := append([]byte("sv-fido-v1"), m.aad()...)
+	b = binary.BigEndian.AppendUint32(b, uint32(len(credID)))
+	b = append(b, credID...)
+	return append(b, salt...)
 }
 
 // Имя и challenge, входящие в проверку подлинности: слот нельзя перенести в другое хранилище или подменить запрос.
@@ -246,6 +262,67 @@ func (v Vault) HelloInfo() (name string, challenge []byte, ok bool) {
 		return "", nil, false
 	}
 	return m.Hello.Name, m.Hello.Challenge, true
+}
+
+// FidoInfo — учётные данные и соль, если вход по ключу FIDO2 включён.
+func (v Vault) FidoInfo() (credID, salt []byte, ok bool) {
+	m, err := v.readMeta()
+	if err != nil || m.Fido == nil {
+		return nil, nil, false
+	}
+	return m.Fido.CredID, m.Fido.Salt, true
+}
+
+// EnableFido добавляет слот ключа FIDO2: dek оборачивается ключом из secret (hmac-secret для credID и salt).
+func (v Vault) EnableFido(dek, credID, salt, secret []byte) error {
+	m, err := v.readMeta()
+	if err != nil {
+		return err
+	}
+	kek, err := crypto.DeriveFidoKey(secret)
+	if err != nil {
+		return err
+	}
+	defer crypto.Wipe(kek)
+	w, err := crypto.SealAAD(kek, dek, m.fidoAAD(credID, salt))
+	if err != nil {
+		return err
+	}
+	m.Fido = &fidoSlot{CredID: credID, Salt: salt, WrappedDEK: w}
+	return v.writeMeta(m)
+}
+
+func (v Vault) UnlockFido(secret []byte) ([]byte, error) {
+	m, err := v.readMeta()
+	if err != nil {
+		return nil, err
+	}
+	if m.Fido == nil {
+		return nil, errors.New("вход по ключу FIDO2 не включён")
+	}
+	kek, err := crypto.DeriveFidoKey(secret)
+	if err != nil {
+		return nil, err
+	}
+	defer crypto.Wipe(kek)
+	dek, err := crypto.OpenAAD(kek, m.Fido.WrappedDEK, m.fidoAAD(m.Fido.CredID, m.Fido.Salt))
+	if err != nil {
+		return nil, ErrWrongPassword
+	}
+	return dek, nil
+}
+
+// DisableFido убирает слот ключа FIDO2; пароль, Hello и ключ восстановления продолжают работать.
+func (v Vault) DisableFido() error {
+	m, err := v.readMeta()
+	if err != nil {
+		return err
+	}
+	if m.Fido == nil {
+		return nil
+	}
+	m.Fido = nil
+	return v.writeMeta(m)
 }
 
 // EnableHello добавляет слот Hello: dek оборачивается ключом из secret (подписи challenge).

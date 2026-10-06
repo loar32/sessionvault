@@ -43,6 +43,15 @@ func DeriveHelloKey(secret []byte) ([]byte, error) {
 	return key, nil
 }
 
+// Ключ обёртки из секрета hmac-secret ключа FIDO2: секрет известен только владельцу ключа (с его PIN).
+func DeriveFidoKey(secret []byte) ([]byte, error) {
+	out := make([]byte, KeySize)
+	if _, err := io.ReadFull(hkdf.New(sha256.New, secret, nil, []byte("sv-fido-kek-v1")), out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // Ключ обёртки из ключа восстановления; соль хранилища делает слоты разных хранилищ независимыми.
 func DeriveRecoveryKey(key, salt []byte) ([]byte, error) {
 	out := make([]byte, KeySize)

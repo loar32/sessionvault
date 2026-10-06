@@ -202,6 +202,8 @@ func (s *Service) handle(c *ipc.Conn) {
 		_ = c.WriteLine(s.open(c))
 	case "hello":
 		_ = c.WriteLine(s.enableHello(c, req.Profile))
+	case "fido":
+		_ = c.WriteLine(s.enableFido(c, req.Profile))
 	}
 }
 
@@ -459,6 +461,9 @@ func (s *Service) askPassword(name string, v vault.Vault, session uint32, allowH
 	}()
 
 	if allowHello {
+		if dek, ok := s.tryFido(name, v, session); ok {
+			return s.keep(name, dek)
+		}
 		if dek, ok := s.tryHello(name, v, session); ok {
 			return s.keep(name, dek)
 		}

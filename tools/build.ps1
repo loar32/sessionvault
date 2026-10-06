@@ -8,4 +8,5 @@ go build -ldflags '-H=windowsgui' -o dist\sessionvault.exe .\cmd\sessionvault
 go build -o dist\access-check.exe .\tools\access-check
 go build -o dist\standin.exe .\tools\standin
 go build -o dist\hello-spike.exe .\tools\hello-spike
+go build -o dist\fido-spike.exe .\tools\fido-spike
 Pop-Location
