@@ -38,14 +38,17 @@ func ProtectBrowser(app string, confirm func(path string, size int64) bool, askP
 		return "", fmt.Errorf("конфигурация не прочитана: сначала install: %w", err)
 	}
 	p, ok := profiles.Template(app)
-	if !ok || p.Decoy != "chromium" {
-		return "", fmt.Errorf("%q не браузер: доступны chrome, edge, brave", app)
+	if !ok || (p.Decoy != "chromium" && p.Decoy != "discord") {
+		return "", fmt.Errorf("%q нельзя защитить этой командой: доступны chrome, edge, brave, discord", app)
 	}
-	if _, err := os.Stat(p.Exe); err != nil {
-		return "", fmt.Errorf("%s не найден (%s): поддерживается только установка для всех пользователей (Program Files)", p.Title, p.Exe)
-	}
-	if err := verifyPublisher(p); err != nil {
-		return "", err
+	// У Discord путь появляется только после копирования каталога: оно делается ниже, после проверок хранилища.
+	if p.Exe != "" {
+		if _, err := os.Stat(p.Exe); err != nil {
+			return "", fmt.Errorf("%s не найден (%s): поддерживается только установка для всех пользователей (Program Files)", p.Title, p.Exe)
+		}
+		if err := verifyPublisher(p); err != nil {
+			return "", err
+		}
 	}
 	if _, err := os.Stat(isolation.VaultDir()); err != nil {
 		return "", errors.New("защищённой папки нет: сначала install")
@@ -59,6 +62,17 @@ func ProtectBrowser(app string, confirm func(path string, size int64) bool, askP
 		return "", fmt.Errorf("в %s есть данные без хранилища: разберитесь с ними вручную", v.Dir)
 	}
 
+	if p.Exe == "" {
+		if err := resolveApp(&p, cfg.MainUser); err != nil {
+			return "", err
+		}
+		// Копия появилась только сейчас: при любом отказе дальше убираем её.
+		defer func() {
+			if err != nil {
+				_ = os.RemoveAll(filepath.Join(InstallDir(), "apps", app))
+			}
+		}()
+	}
 	origin := filepath.Join(usersDir(), cfg.MainUser, p.Origin)
 	if err := decoy.NoReparse(origin); err != nil {
 		return "", err

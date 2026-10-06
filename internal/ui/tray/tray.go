@@ -404,7 +404,7 @@ func enableHello() {
 	_, _, _ = pPostMessage.Call(hwnd, wmBalloon, code, 0)
 }
 
-var titles = map[string]string{"telegram": "Telegram", "chrome": "Google Chrome", "edge": "Microsoft Edge", "brave": "Brave"}
+var titles = map[string]string{"telegram": "Telegram", "chrome": "Google Chrome", "edge": "Microsoft Edge", "brave": "Brave", "discord": "Discord"}
 
 func appTitle(name string) string {
 	if t, ok := titles[name]; ok {

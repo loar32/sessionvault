@@ -52,6 +52,15 @@ var layouts = map[string][]file{
 		{"settingss", 300, 900, false},
 		{"usertag", 8, 8, false},
 	},
+	"discord": {
+		{"Local State", 2000, 6000, false},
+		{"Preferences", 800, 2500, false},
+		{`Local Storage\leveldb\000003.log`, 3000, 60000, false},
+		{`Local Storage\leveldb\CURRENT`, 16, 16, false},
+		{`Local Storage\leveldb\MANIFEST-000001`, 60, 200, false},
+		{`Network\Cookies`, 20480, 45056, true},
+		{"settings.json", 300, 700, false},
+	},
 	"chromium": {
 		{"Local State", 20000, 60000, false},
 		{"First Run", 0, 0, false},

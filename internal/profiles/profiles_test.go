@@ -1,6 +1,7 @@
 package profiles
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -52,6 +53,10 @@ func TestLoadRejects(t *testing.T) {
 func TestTemplates(t *testing.T) {
 	for _, name := range TemplateNames() {
 		p, ok := Template(name)
+		// Путь Discord появляется при защите: служба копирует каталог приложения из профиля пользователя.
+		if name == "discord" && p.Exe == "" {
+			p.Exe = `C:\Program Files\SessionVault\apps\discord\Discord.exe`
+		}
 		if !ok || p.Name != name || !filepath.IsAbs(p.Exe) || p.Origin == "" || p.Publisher == "" || p.Decoy == "" {
 			t.Fatalf("шаблон %s неполный: %+v", name, p)
 		}
@@ -138,5 +143,78 @@ func TestExecFiles(t *testing.T) {
 	}
 	if Telegram.ExecFiles != nil {
 		t.Fatal("у Telegram исключений нет")
+	}
+}
+
+func TestSignature(t *testing.T) {
+	RequireSignature = true
+	defer func() { RequireSignature = false }()
+	root := t.TempDir()
+	dir := filepath.Join(root, "profiles")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := Telegram
+	if _, err := Load(dir, "telegram"); err == nil {
+		t.Fatal("профиль без файла принят")
+	}
+	if err := Save(dir, p); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(dir, "telegram")
+	if err != nil || got.Sig == "" {
+		t.Fatalf("подписанный профиль не читается: %v", err)
+	}
+	// Правка файла после подписи отклоняется.
+	path := filepath.Join(dir, "telegram.json")
+	b, _ := os.ReadFile(path)
+	edited := strings.Replace(string(b), "Telegram.exe", "Evil.exe", 1)
+	if edited == string(b) {
+		t.Fatal("тест не изменил профиль")
+	}
+	if err := os.WriteFile(path, []byte(edited), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(dir, "telegram"); !errors.Is(err, ErrUnsigned) {
+		t.Fatalf("изменённый профиль принят: %v", err)
+	}
+	// Подпись, перенесённая с другого профиля, не подходит.
+	other := Telegram
+	other.Name = "other"
+	if err := Save(dir, other); err != nil {
+		t.Fatal(err)
+	}
+	ob, _ := os.ReadFile(filepath.Join(dir, "other.json"))
+	if err := os.WriteFile(path, []byte(strings.Replace(string(ob), `"name": "other"`, `"name": "telegram"`, 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(dir, "telegram"); !errors.Is(err, ErrUnsigned) {
+		t.Fatalf("чужая подпись принята: %v", err)
+	}
+	// trust подписывает файл как есть; Resign подписывает все.
+	if err := Trust(dir, "telegram"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(dir, "telegram"); err != nil {
+		t.Fatalf("после trust профиль не читается: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "legacy.json"), []byte(strings.Replace(string(ob), `"name": "other"`, `"name": "legacy"`, 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(dir, "legacy"); err == nil {
+		t.Fatal("подпись другого профиля принята у legacy")
+	}
+	if err := Resign(dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(dir, "legacy"); err != nil {
+		t.Fatalf("после Resign: %v", err)
+	}
+	// Без ключа профили не читаются, пока их не подпишут.
+	if err := os.Remove(keyPath(dir)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(dir, "legacy"); !errors.Is(err, ErrUnsigned) {
+		t.Fatalf("профиль принят без ключа: %v", err)
 	}
 }
