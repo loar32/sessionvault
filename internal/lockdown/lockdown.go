@@ -32,6 +32,20 @@ var interpreters = []string{
 	`wscript.exe`,
 	`cscript.exe`,
 	`mshta.exe`,
+	// Выполняют код из файла проекта или командной строки, а сеть у них не закрыта правилами по имени: запрещаем запуск.
+	`wbem\WMIC.exe`,
+	`cmstp.exe`,
+	`pcalua.exe`,
+	`scriptrunner.exe`,
+	`wsl.exe`,
+	`bash.exe`,
+}
+
+// Компиляторы и хосты .NET Framework: MSBuild (inline tasks), csc/vbc/jsc, InstallUtil, RegAsm, RegSvcs выполняют код из файлов,
+// которые vault может положить в рабочую папку.
+var dotnetTools = []string{
+	`msbuild.exe`, `csc.exe`, `vbc.exe`, `jsc.exe`, `installutil.exe`, `regasm.exe`, `regsvcs.exe`, `aspnet_compiler.exe`,
+	`Microsoft.Workflow.Compiler.exe`,
 }
 
 // Утилиты Windows, которыми обычно выносят данные; запускать их vault может, но выхода в сеть у них нет.
@@ -70,8 +84,26 @@ func existing(rel []string, withPwsh bool) []string {
 	return out
 }
 
-// Interpreters — интерпретаторы, найденные на этом компьютере.
-func Interpreters() []string { return existing(interpreters, true) }
+// Interpreters — интерпретаторы и сборщики, найденные на этом компьютере.
+func Interpreters() []string {
+	out := existing(interpreters, true)
+	for _, fw := range []string{"Framework", "Framework64"} {
+		m, _ := filepath.Glob(filepath.Join(windir(), "Microsoft.NET", fw, "v*"))
+		for _, dir := range m {
+			for _, t := range dotnetTools {
+				if p := filepath.Join(dir, t); fileExists(p) {
+					out = append(out, p)
+				}
+			}
+		}
+	}
+	return out
+}
+
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
+}
 
 // NetTools — всё, что закрывается правилами брандмауэра для vault.
 func NetTools() []string { return append(Interpreters(), existing(netTools, false)...) }
@@ -221,7 +253,7 @@ func powershell(script string) error {
 
 // ApplyFirewall создаёт правила: исходящая сеть утилит для vault закрыта; sessionvault.exe закрыт для всех
 // (принцип «ноль сети»: даже подменённая программа ничего не отправит). Прежние правила группы заменяются.
-func ApplyFirewall(vault *windows.SID, selfExe string) error {
+func ApplyFirewall(vault *windows.SID, selfExe, scriptDir string) error {
 	var b strings.Builder
 	b.WriteString("$ErrorActionPreference='Stop'\n")
 	fmt.Fprintf(&b, "Remove-NetFirewallRule -Group %s -ErrorAction SilentlyContinue\n", psQuote(Group))
@@ -232,7 +264,34 @@ func ApplyFirewall(vault *windows.SID, selfExe string) error {
 	}
 	fmt.Fprintf(&b, "New-NetFirewallRule -DisplayName 'SessionVault no network' -Group %s -Direction Outbound -Action Block -Profile Any -Program %s | Out-Null\n",
 		psQuote(Group), psQuote(selfExe))
-	return powershell(b.String())
+	return powershellFile(scriptDir, b.String())
+}
+
+// Скрипт с десятками правил не помещается в командную строку (предел 32 КБ для -EncodedCommand), поэтому запускается из файла.
+// scriptDir должен быть закрыт для обычных пользователей: файл исполняется от SYSTEM, подмена между записью и запуском дала бы им права SYSTEM.
+func powershellFile(scriptDir, script string) error {
+	f, err := os.CreateTemp(scriptDir, "lockdown-*.ps1")
+	if err != nil {
+		return err
+	}
+	path := f.Name()
+	defer func() { _ = os.Remove(path) }()
+	// BOM: без него Windows PowerShell читает файл в ANSI, а пути могут быть не ASCII.
+	if _, err := f.WriteString("\ufeff" + script); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	ps := filepath.Join(windir(), `System32\WindowsPowerShell\v1.0\powershell.exe`)
+	out, err := exec.CommandContext(ctx, ps, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("powershell: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 func RemoveFirewall() error {
