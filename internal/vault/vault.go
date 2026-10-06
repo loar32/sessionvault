@@ -520,6 +520,15 @@ func (v Vault) Import(metaJSON, data, secret []byte) (err error) {
 	if _, err := os.Stat(v.path(dataFile)); err == nil {
 		return errors.New("рядом лежит data.enc без vault.json: разберитесь с ним вручную")
 	}
+	// Слот Hello из чужого файла не нужен: он привязан к ключу другого ПК.
+	var m meta
+	if err := json.Unmarshal(metaJSON, &m); err != nil {
+		return err
+	}
+	m.Hello = nil
+	if metaJSON, err = json.Marshal(m); err != nil {
+		return err
+	}
 	defer func() {
 		if err != nil {
 			_ = os.Remove(v.path(metaFile))

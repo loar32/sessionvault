@@ -557,3 +557,25 @@ func TestExportImport(t *testing.T) {
 		t.Fatal("импорт поверх существующего хранилища")
 	}
 }
+
+func TestImportDropsHello(t *testing.T) {
+	v := newVault(t)
+	dek, _ := v.Create([]byte("pw"))
+	if err := v.EnableHello(dek, "k", []byte("c"), []byte("secret")); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Encrypt(dek); err != nil {
+		t.Fatal(err)
+	}
+	raw := []byte(read(t, v.path(metaFile)))
+	if !bytes.Contains(raw, []byte("Hello")) {
+		t.Fatal("в исходном файле нет слота Hello")
+	}
+	dst := Vault{Dir: t.TempDir(), DataName: "tdata"}
+	if err := dst.Import(raw, []byte(read(t, v.path(dataFile))), []byte("pw")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := dst.HelloInfo(); ok {
+		t.Fatal("слот Hello из чужого файла остался")
+	}
+}

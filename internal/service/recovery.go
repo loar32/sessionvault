@@ -40,6 +40,34 @@ func adminVaults() (map[string]vault.Vault, error) {
 	return out, nil
 }
 
+// lockAll занимает running.lock всех хранилищ: пока приложение запущено, оно и служба пишут vault.json сами,
+// и запись слота из другого процесса могла бы затереться (или затереть номер записи).
+func lockAll(vs map[string]vault.Vault, names []string) (release func(), err error) {
+	var rel []func()
+	release = func() {
+		for _, r := range rel {
+			r()
+		}
+	}
+	for _, n := range names {
+		r, err := vs[n].Lock()
+		if err != nil {
+			release()
+			return nil, fmt.Errorf("%s: приложение запущено или не завершено: закройте его и повторите", n)
+		}
+		rel = append(rel, r)
+	}
+	return release, nil
+}
+
+func names(vs map[string]vault.Vault) []string {
+	out := make([]string, 0, len(vs))
+	for n := range vs {
+		out = append(out, n)
+	}
+	return out
+}
+
 // RecoveryCreate выпускает новый ключ восстановления для всех хранилищ; прежний перестаёт работать.
 // Сначала открываются все хранилища (пароль каждого спрашивает ask), и только потом пишутся слоты: ошибка не оставит часть на старом ключе.
 func RecoveryCreate(ask func(name string) ([]byte, error)) (string, error) {
@@ -65,6 +93,11 @@ func RecoveryCreate(ask func(name string) ([]byte, error)) (string, error) {
 		}
 		deks[name] = dek
 	}
+	release, err := lockAll(vs, names(vs))
+	if err != nil {
+		return "", err
+	}
+	defer release()
 	key, err := crypto.NewKey()
 	if err != nil {
 		return "", err
@@ -83,32 +116,38 @@ func RecoveryCreate(ask func(name string) ([]byte, error)) (string, error) {
 }
 
 // RecoveryReset задаёт новый мастер-пароль всем хранилищам, которые открывает ключ восстановления.
-func RecoveryReset(words string, password []byte) (reset []string, err error) {
+func RecoveryReset(words string, password []byte) (reset, skipped []string, err error) {
 	vs, err := adminVaults()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	key, err := recovery.Parse(words)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer crypto.Wipe(key)
+	release, err := lockAll(vs, names(vs))
+	if err != nil {
+		return nil, nil, err
+	}
+	defer release()
 	for name, v := range vs {
 		dek, err := v.UnlockRecovery(key)
 		if err != nil {
+			skipped = append(skipped, name)
 			continue
 		}
 		err = v.SetPassword(dek, password)
 		crypto.Wipe(dek)
 		if err != nil {
-			return reset, fmt.Errorf("%s: %w", name, err)
+			return reset, skipped, fmt.Errorf("%s: %w", name, err)
 		}
 		reset = append(reset, name)
 	}
 	if len(reset) == 0 {
-		return nil, errors.New("ключ восстановления не подошёл ни к одному хранилищу")
+		return nil, nil, errors.New("ключ восстановления не подошёл ни к одному хранилищу")
 	}
-	return reset, nil
+	return reset, skipped, nil
 }
 
 // RecoveryCovered — приложения без слота восстановления: их ключ не откроет.
@@ -143,6 +182,11 @@ func Export(app, path string) error {
 	if !ok {
 		return fmt.Errorf("хранилища %s нет", app)
 	}
+	release, err := lockAll(vs, []string{app})
+	if err != nil {
+		return err
+	}
+	defer release()
 	m, d, err := v.Export()
 	if err != nil {
 		return err
@@ -151,7 +195,17 @@ func Export(app, path string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, b, 0o600)
+	// O_EXCL: существующий файл (и ссылка на него) не перезаписывается: команда идёт от администратора.
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(b); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
+		return err
+	}
+	return f.Close()
 }
 
 // Import восстанавливает приложение из файла Export на новом ПК; secret — мастер-пароль или ключ восстановления.
