@@ -24,7 +24,7 @@ func main() {
 	file := flag.String("file", filepath.Join(base, "vault", "telegram", "work", "tdata", "key_datas"), "защищённый файл")
 	enc := flag.String("enc", filepath.Join(base, "vault", "telegram", "data.enc"), "зашифрованный архив")
 	meta := flag.String("meta", filepath.Join(base, "vault", "telegram", "vault.json"), "метаданные хранилища")
-	pwd := flag.String("pwd", filepath.Join(base, "vault.pwd"), "файл с паролем vault")
+	pwd := flag.String("pwd", filepath.Join(base, "accounts.json"), "файл с паролями учёток приложений")
 	pid := flag.Uint("pid", 0, "pid процесса vault")
 	pipe := flag.Bool("pipe", false, "пробы pipe службы")
 	decoy := flag.String("decoy", "", "только прочитать приманку по этому пути (вызывает тревогу службы)")
@@ -38,7 +38,7 @@ func main() {
 	checkReadOpen(*file)
 	checkRead(*enc)
 	checkRead(*meta)
-	checkRead(*pwd)
+	checkReadOpen(*pwd)
 	checkWriteDACL(*dir)
 	if *pid != 0 {
 		checkProcess(uint32(*pid))

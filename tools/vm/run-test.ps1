@@ -165,7 +165,7 @@ function HelloBlock() {
         Start-Sleep 3
         @{ out = ((Out 'rh') -replace '\s+', ' '); user = (Standin).UserName; log = [bool](Get-Content C:\ProgramData\SessionVault\service.log -Tail 40 -Encoding UTF8 | Select-String 'через Windows Hello') }
     }
-    Check ($r.out -match 'ok' -and $r.user -like '*\vault') "Hello открыл хранилище без пароля, приложение от vault ($($r.out))"
+    Check ($r.out -match 'ok' -and $r.user -like '*\sv-*') "Hello открыл хранилище без пароля, приложение от vault ($($r.out))"
     Check $r.log 'служба записала в журнал разблокировку через Windows Hello'
     Vm { Stop-Process -Name standin -Force; WaitFor { (Files) -eq 'data.enc,vault.json' } 60 | Out-Null } | Out-Null
 
@@ -205,7 +205,7 @@ function HelloBlock() {
     Check (Vm { WaitFor { HelloUp } 40 }) 'новый слот: окно Hello показано'
     HelloPin 'rn'
     $r = Vm { Done 'rn' 90 | Out-Null; Start-Sleep 3; @{ out = ((Out 'rn') -replace '\s+', ' '); user = (Standin).UserName } }
-    Check ($r.out -match 'ok' -and $r.user -like '*\vault') 'слот, созданный службой, открывает хранилище'
+    Check ($r.out -match 'ok' -and $r.user -like '*\sv-*') 'слот, созданный службой, открывает хранилище'
     Vm { Stop-Process -Name standin -Force; WaitFor { (Files) -eq 'data.enc,vault.json' } 60 | Out-Null } | Out-Null
     Vm { & $exe hello disable 2>&1 | Out-Null; Restart-Service SessionVault; Start-Sleep 3 } | Out-Null
 }
@@ -221,13 +221,19 @@ $r = Vm {
 } @('C:\sv\standin.exe')
 Check ($r.svc -eq 'Running') "служба запущена ($($r.svc)); $($r.out)"
 Check $r.exe 'бинарник в Program Files'
+$r = Vm { @{ legacy = [bool](Get-LocalUser -Name vault -ErrorAction SilentlyContinue); group = [bool](Get-LocalGroup -Name SessionVaultApps -ErrorAction SilentlyContinue); pwd = (Test-Path C:\ProgramData\SessionVault\vault.pwd) } }
+Check ((-not $r.legacy) -and $r.group -and (-not $r.pwd)) 'после установки нет общей учётки vault, есть группа SessionVaultApps'
+# Обновление на месте: прежняя версия оставила учётку vault и её пароль; служба при старте убирает их.
 $r = Vm {
-    secedit /export /cfg C:\sv\sec.inf /areas USER_RIGHTS | Out-Null
-    $sid = (New-Object Security.Principal.NTAccount('vault')).Translate([Security.Principal.SecurityIdentifier]).Value
-    $t = Get-Content C:\sv\sec.inf
-    @{ net = [bool]($t -match "SeDenyNetworkLogonRight.*(\*$sid|\bvault\b)"); rdp = [bool]($t -match "SeDenyRemoteInteractiveLogonRight.*(\*$sid|\bvault\b)") }
+    net user vault 'Legacy-Pass-1!' /add 2>&1 | Out-Null
+    $created = [bool](Get-LocalUser -Name vault -ErrorAction SilentlyContinue)
+    Set-Content C:\ProgramData\SessionVault\vault.pwd 'legacy'
+    Restart-Service SessionVault
+    $gone = WaitFor { -not (Get-LocalUser -Name vault -ErrorAction SilentlyContinue) } 60
+    $nopwd = WaitFor { -not (Test-Path C:\ProgramData\SessionVault\vault.pwd) } 30
+    @{ created = $created; gone = $gone; pwd = -not $nopwd }
 }
-Check ($r.net -and $r.rdp) 'vault: сетевой и удалённый вход запрещены'
+Check ($r.created -and $r.gone -and -not $r.pwd) 'обновление на месте: служба при старте удалила общую учётку vault и её пароль'
 
 Write-Host '--- 2. tdata переносится в хранилище ---'
 Invoke-Command $a {
@@ -274,9 +280,18 @@ $r = Vm {
     @{ done = $ok; out = (Out 'run1'); user = $p.UserName; session = $p.SessionId; key = (Get-Content "$v\work\tdata\key_datas" -ErrorAction SilentlyContinue); pid = $p.Id }
 }
 Check ($r.out -match 'ok' -and $r.out -match 'EXIT=0') "run вернул ok ($("$($r.out)" -replace '\s+',' '))"
-Check ($r.user -like '*\vault' -and $r.session -ne 0) "приложение от vault в сессии пользователя ($($r.user), сессия $($r.session))"
+Check ($r.user -like '*\sv-*' -and $r.session -ne 0) "приложение от vault в сессии пользователя ($($r.user), сессия $($r.session))"
 Check ($r.key -eq 'secret-session-data') 'данные расшифрованы и совпали'
 $vaultPid = $r.pid
+$r = Vm {
+    secedit /export /cfg C:\sv\sec.inf /areas USER_RIGHTS | Out-Null
+    $sid = (New-Object Security.Principal.NTAccount('sv-telegram')).Translate([Security.Principal.SecurityIdentifier]).Value
+    $t = Get-Content C:\sv\sec.inf
+    @{ net = [bool]($t -match "SeDenyNetworkLogonRight.*(\*$sid|\bsv-telegram\b)"); rdp = [bool]($t -match "SeDenyRemoteInteractiveLogonRight.*(\*$sid|\bsv-telegram\b)")
+       inGroup = [bool](Get-LocalGroupMember -Group SessionVaultApps | Where-Object { $_.Name -like '*\sv-telegram' }); acc = (Test-Path C:\ProgramData\SessionVault\accounts.json) }
+}
+Check ($r.net -and $r.rdp) 'sv-telegram: сетевой и удалённый вход запрещены'
+Check ($r.inGroup -and $r.acc) 'учётка sv-telegram создана при первом запуске, входит в группу SessionVaultApps, пароль сохранён'
 
 Write-Host '--- 5. защита, пока приложение открыто ---'
 $r = Vm { param($p) AsTester 'ac' "C:\sv\access-check.exe -pid $p"; Done 'ac' | Out-Null; Out 'ac' } @($vaultPid)
@@ -293,9 +308,9 @@ Check ($r.report -match '"id":"memory"[^}]*"level":"info"') 'check: пункт �
 Check ($r.alerts -eq 0) "чтение памяти не создало тревог ($($r.alerts))"
 
 $r = Vm { (icacls $v) -join ' ' }
-Check ($r -notmatch 'vault:') 'у vault нет доступа к метаданным профиля (vault.json, data.enc)'
+Check ($r -notmatch 'sv-telegram:' -and $r -notmatch 'SessionVaultApps:') 'у учёток приложений нет доступа к метаданным профиля (vault.json, data.enc)'
 $r = Vm { (icacls "$v\work") -join ' ' }
-Check ($r -match 'vault:') 'у vault есть доступ к рабочей папке'
+Check ($r -match 'sv-telegram:' -and $r -notmatch 'SessionVaultApps:') 'у учётки sv-telegram есть доступ к рабочей папке, у группы и других приложений нет'
 
 Write-Host '--- 5b. запуск файлов из рабочей папки и общей папки запрещён ---'
 $r = Vm {
@@ -321,7 +336,7 @@ $r = Vm {
     $k = 'HKLM:\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\FirewallRules'
     $p = Get-ItemProperty $k
     $mine = @($p.PSObject.Properties | Where-Object { $_.Value -is [string] -and $_.Value -match 'EmbedCtxt=SessionVault' } | ForEach-Object { $_.Value })
-    $vsid = (New-Object Security.Principal.NTAccount('vault')).Translate([Security.Principal.SecurityIdentifier]).Value
+    $vsid = (New-Object Security.Principal.NTAccount('SessionVaultApps')).Translate([Security.Principal.SecurityIdentifier]).Value
     $ps = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
     $msb = 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\MSBuild.exe'
     @{ n = $mine.Count
@@ -330,14 +345,14 @@ $r = Vm {
        curl = @($mine | Where-Object { $_ -match 'curl\.exe' -and $_ -match [regex]::Escape($vsid) }).Count
        selfAll = @($mine | Where-Object { $_ -match 'sessionvault\.exe' -and $_ -notmatch 'LUAuth=' -and $_ -match 'Action=Block' }).Count
        acl = ((icacls $ps) -join ' ')
-       msb = $(if (Test-Path $msb) { (icacls $msb) -join ' ' } else { 'vault:(DENY)(X) нет файла' })
+       msb = $(if (Test-Path $msb) { (icacls $msb) -join ' ' } else { 'SessionVaultApps:(DENY)(X) нет файла' })
        tester = (& $ps -NoProfile -Command '1+1') }
 }
 Check ($r.n -ge 10 -and $r.block -eq $r.n) "правила брандмауэра SessionVault: $($r.n), все исходящие блокирующие и активные"
-Check ($r.forVault -eq ($r.n - 1) -and $r.curl -ge 1) "правила утилит привязаны к учётке vault ($($r.forVault)), curl закрыт"
+Check ($r.forVault -eq ($r.n - 1) -and $r.curl -ge 1) "правила утилит привязаны к группе приложений ($($r.forVault)), curl закрыт"
 Check ($r.selfAll -eq 1) 'sessionvault.exe закрыт для сети для всех пользователей'
-Check ($r.acl -match 'vault:\(DENY\)\(X\)') 'на powershell.exe стоит запрет запуска для vault'
-Check ($r.msb -match 'vault:\(DENY\)\(X\)') 'на MSBuild (компилятор .NET) стоит запрет запуска для vault'
+Check ($r.acl -match 'SessionVaultApps:\(DENY\)\(X\)') 'на powershell.exe стоит запрет запуска для vault'
+Check ($r.msb -match 'SessionVaultApps:\(DENY\)\(X\)') 'на MSBuild (компилятор .NET) стоит запрет запуска для vault'
 Check ($r.tester -eq 2) 'основной учётке и администратору PowerShell по-прежнему доступен'
 $r = Vm { & C:\sv\sessionvault.exe check -json 2>&1 | Out-String }
 Check ($r -match '"id":"lockdown"[^}]*"level":"ok"') 'check: пункт «Сетевой заслон для vault» зелёный'
@@ -507,7 +522,7 @@ $r = Vm {
     Start-Sleep 1
     @{ up = $up; user = (Standin).UserName }
 }
-Check ($r.up -and $r.user -like '*\vault') "пункт меню трея запустил приложение от vault ($($r.user))"
+Check ($r.up -and $r.user -like '*\sv-*') "пункт меню трея запустил приложение от vault ($($r.user))"
 Vm { Stop-Process -Name standin -Force; WaitFor { (Files) -eq 'data.enc,vault.json' } 60 | Out-Null } | Out-Null
 
 Write-Host '--- 13. приманка на прежнем месте tdata ---'
@@ -647,12 +662,12 @@ function BrowserTest($app, $title, $exePath, $proc, $originRel, $required) {
     $r = Vm {
         param($app, $proc)
         Done 'runB' 90 | Out-Null
-        $up = WaitFor { [bool](Get-Process $proc -IncludeUserName -ErrorAction SilentlyContinue | Where-Object { $_.UserName -like '*\vault' }) } 60
+        $up = WaitFor { [bool](Get-Process $proc -IncludeUserName -ErrorAction SilentlyContinue | Where-Object { $_.UserName -like '*\sv-*' }) } 60
         $ud = "C:\ProgramData\SessionVault\vault\$app\work\User Data"
         $ok = WaitFor { Test-Path "$ud\Local State" } 60
         Start-Sleep 5
         $cl = (Get-CimInstance Win32_Process -Filter "Name='$proc.exe'" | Select-Object -First 1).CommandLine
-        $vp = (Get-Process $proc -IncludeUserName -ErrorAction SilentlyContinue | Where-Object { $_.UserName -like '*\vault' } | Select-Object -First 1).Id
+        $vp = (Get-Process $proc -IncludeUserName -ErrorAction SilentlyContinue | Where-Object { $_.UserName -like '*\sv-*' } | Select-Object -First 1).Id
         if ($ok) {
             Set-Content "$ud\marker.txt" 'browser-session-marker'
             # Старый профиль при protect не переносится, поэтому расширение кладём в рабочий: служба найдёт его при следующем запуске.
@@ -696,7 +711,7 @@ function BrowserTest($app, $title, $exePath, $proc, $originRel, $required) {
     $r = Vm {
         param($app, $proc)
         Done 'runB2' 90 | Out-Null
-        $up = WaitFor { [bool](Get-Process $proc -IncludeUserName -ErrorAction SilentlyContinue | Where-Object { $_.UserName -like '*\vault' }) } 60
+        $up = WaitFor { [bool](Get-Process $proc -IncludeUserName -ErrorAction SilentlyContinue | Where-Object { $_.UserName -like '*\sv-*' }) } 60
         Start-Sleep 3
         @{ out = (Out 'runB2'); up = [bool]$up; marker = (Get-Content "C:\ProgramData\SessionVault\vault\$app\work\User Data\marker.txt" -ErrorAction SilentlyContinue) }
     } @($app, $proc)
@@ -776,7 +791,7 @@ Check ($r.prompts -le 1) "12 запросов run подряд дали окон
 $r = Vm {
     AsTester 'ln' "`"$exe`" launch telegram"
     Done 'ln' 30 | Out-Null
-    @{ out = (Out 'ln'); vaultProc = @(Get-Process standin -IncludeUserName -ErrorAction SilentlyContinue | Where-Object { $_.UserName -like '*\vault' }).Count }
+    @{ out = (Out 'ln'); vaultProc = @(Get-Process standin -IncludeUserName -ErrorAction SilentlyContinue | Where-Object { $_.UserName -like '*\sv-*' }).Count }
 }
 Check ($r.out -notmatch 'EXIT=0' -and $r.vaultProc -eq 0) "launch из обычной учётки не запускает приложение ($("$($r.out)" -replace '\s+',' '))"
 
@@ -1094,11 +1109,14 @@ Check ($r.left -eq 0) "удаление убрало правила брандм
 Check ($r.deny -notmatch '\(DENY\)') 'удаление сняло запрет запуска с интерпретаторов'
 $r = Vm {
     @{ custom = (Get-Content 'C:\Users\tester\AppData\Roaming\CustomApp\data.txt' -ErrorAction SilentlyContinue)
-       discord = (Test-Path 'C:\Users\tester\AppData\Roaming\discord\First Run')
-       apps = (Test-Path (Join-Path (Split-Path $exe) 'apps')) }
+       discord = (WaitFor { Test-Path 'C:\Users\tester\AppData\Roaming\discord\First Run' } 30)
+       roam = ((Get-ChildItem 'C:\Users\tester\AppData\Roaming' -Force -Name) -join ',')
+       dfiles = ((Get-ChildItem 'C:\Users\tester\AppData\Roaming\discord' -Force -Recurse -Name -ErrorAction SilentlyContinue) -join ',') }
 }
 Check ($r.custom -eq 'custom-secret') 'удаление вернуло данные собственного приложения (add) на прежнее место'
-Check $r.discord 'удаление вернуло данные Discord на прежнее место'
+Check $r.discord "удаление вернуло данные Discord на прежнее место (Roaming: $($r.roam); discord: $($r.dfiles))"
+$r = Vm { @{ users = @(Get-LocalUser | Where-Object { $_.Name -like 'sv-*' -or $_.Name -eq 'vault' }).Count; group = [bool](Get-LocalGroup -Name SessionVaultApps -ErrorAction SilentlyContinue) } }
+Check ($r.users -eq 0 -and -not $r.group) "удаление убрало учётки приложений и группу SessionVaultApps (учёток осталось $($r.users))"
 
 $r = Vm {
     $keys = @(

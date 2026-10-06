@@ -137,26 +137,8 @@ func IsAdminUser(name string) (bool, error) {
 	return false, nil
 }
 
-func SavePassword(password string) error {
-	if err := os.WriteFile(passwordFile(), []byte(password), 0o600); err != nil {
-		return err
-	}
-	admins, system, err := adminsAndSystem()
-	if err != nil {
-		return err
-	}
-	return Protect(passwordFile(), admins, system)
-}
-
-func LoadPassword() (string, error) {
-	b, err := os.ReadFile(passwordFile())
-	return string(b), err
-}
-
-func PasswordSaved() bool {
-	_, err := os.Stat(passwordFile())
-	return err == nil
-}
+// RemoveLegacyPassword удаляет пароль общей учётки vault, оставшийся от версий до v0.19.
+func RemoveLegacyPassword() { _ = os.Remove(legacyPasswordFile()) }
 
 func adminsAndSystem() (admins, system *windows.SID, err error) {
 	if admins, err = windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid); err != nil {

@@ -39,26 +39,25 @@ const (
 )
 
 type Service struct {
-	cfg          Config
-	idleAfter    time.Duration
-	exe          string
-	log          *log.Logger
-	job          windows.Handle       // под mu: после тревоги заменяется новым
-	memWatchAt   time.Time            // под mu: когда в последний раз ставили аудит на процессы приложений
-	memSeen      map[string]time.Time // под mu: недавние обращения к памяти (процесс+права), чтобы не писать повторы
-	memReads     int                  // под mu: записано обращений с запуска службы
-	memLast      string               // под mu: последнее обращение
-	memWatched   map[uint32]bool      // под mu: процессы, на которые уже ставили аудит
-	exeCache     []string             // под mu: exe защищённых приложений для фильтра обращений к памяти
-	exeCacheAt   time.Time
-	memWindow    time.Time // под mu: начало минуты для лимита записей журнала памяти
-	memWritten   int
-	memSkipped   int
-	memFailed    map[uint32]bool // под mu: процессы, на которые аудит поставить не удалось (в журнал пишется один раз)
-	targets      func() []string // только для тестов: exe защищённых приложений
-	vaultSID     string
-	vaultSIDOnce sync.Once
-	cmdL         *ipc.Listener
+	cfg        Config
+	idleAfter  time.Duration
+	exe        string
+	log        *log.Logger
+	job        windows.Handle       // под mu: после тревоги заменяется новым
+	memWatchAt time.Time            // под mu: когда в последний раз ставили аудит на процессы приложений
+	memSeen    map[string]time.Time // под mu: недавние обращения к памяти (процесс+права), чтобы не писать повторы
+	memReads   int                  // под mu: записано обращений с запуска службы
+	memLast    string               // под mu: последнее обращение
+	memWatched map[uint32]bool      // под mu: процессы, на которые уже ставили аудит
+	exeCache   []string             // под mu: exe защищённых приложений для фильтра обращений к памяти
+	exeCacheAt time.Time
+	memWindow  time.Time // под mu: начало минуты для лимита записей журнала памяти
+	memWritten int
+	memSkipped int
+	memFailed  map[uint32]bool // под mu: процессы, на которые аудит поставить не удалось (в журнал пишется один раз)
+	targets    func() []string // только для тестов: exe защищённых приложений
+	appSIDs    map[string]bool
+	cmdL       *ipc.Listener
 
 	allow     allowlist
 	stopAudit func()
@@ -335,7 +334,12 @@ func (s *Service) start(p profiles.Profile, v vault.Vault, dek []byte, session u
 		unlock()
 		return "", err
 	}
-	if err := isolation.ProtectWork(isolation.WorkPath(p.Name), execApproved(p)); err != nil {
+	account, err := isolation.EnsureAppAccount(p.Name)
+	if err != nil {
+		unlock()
+		return "", errors.Join(err, v.Encrypt(dek))
+	}
+	if err := isolation.ProtectWork(isolation.WorkPath(p.Name), account, execApproved(p)); err != nil {
 		unlock()
 		return "", errors.Join(err, v.Encrypt(dek))
 	}

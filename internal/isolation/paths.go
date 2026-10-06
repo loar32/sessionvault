@@ -6,7 +6,8 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-const VaultUser = "vault"
+// Общая учётка приложений до v0.19: при обновлении заменяется учётками sv-<имя> и удаляется.
+const LegacyVaultUser = "vault"
 
 // ProgramData, если задан, подменяет системный каталог: только для тестов, которые не должны трогать настоящий.
 var ProgramData string
@@ -32,11 +33,11 @@ func VaultDir() string { return filepath.Join(BaseDir(), "vault") }
 // Каталог профиля: метаданные хранилища, доступ только админам и SYSTEM.
 func DataPath(profile string) string { return filepath.Join(VaultDir(), profile) }
 
-// Рабочая папка приложения (-workdir): единственное место, куда у vault есть доступ.
+// Рабочая папка приложения (-workdir): единственное место, куда есть доступ у его учётки.
 func WorkPath(profile string) string { return filepath.Join(DataPath(profile), "work") }
 
 func ProfilesDir() string { return filepath.Join(BaseDir(), "profiles") }
 
 func ConfigPath() string { return filepath.Join(BaseDir(), "config.json") }
 
-func passwordFile() string { return filepath.Join(BaseDir(), "vault.pwd") }
+func legacyPasswordFile() string { return filepath.Join(BaseDir(), "vault.pwd") }
