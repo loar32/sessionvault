@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/loar32/sessionvault/internal/crypto"
+	"github.com/loar32/sessionvault/internal/recovery"
 )
 
 func newVault(t *testing.T) Vault {
@@ -459,5 +460,100 @@ func TestPackSkipsJunction(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(v.dataDir(), "link")); err == nil {
 		t.Fatal("ссылка попала в архив")
+	}
+}
+
+func TestRecoveryAndPassword(t *testing.T) {
+	v := newVault(t)
+	dek, err := v.Create([]byte("pw"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Encrypt(dek); err != nil {
+		t.Fatal(err)
+	}
+	key := bytes.Repeat([]byte{9}, 32)
+	if _, err := v.UnlockRecovery(key); err == nil {
+		t.Fatal("ключ принят без слота")
+	}
+	if err := v.SetRecovery(dek, key); err != nil {
+		t.Fatal(err)
+	}
+	got, err := v.UnlockRecovery(key)
+	if err != nil || !bytes.Equal(got, dek) {
+		t.Fatalf("ключ восстановления не открыл: %v", err)
+	}
+	if _, err := v.UnlockRecovery(bytes.Repeat([]byte{8}, 32)); !errors.Is(err, ErrWrongPassword) {
+		t.Fatalf("чужой ключ: %v", err)
+	}
+	words, _ := recovery.Words(key)
+	if got, err := v.Unlock([]byte(words)); err != nil || !bytes.Equal(got, dek) {
+		t.Fatalf("Unlock со словами: %v", err)
+	}
+	if err := v.SetPassword(dek, []byte("новый пароль")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.Unlock([]byte("pw")); !errors.Is(err, ErrWrongPassword) {
+		t.Fatal("старый пароль всё ещё работает")
+	}
+	if got, err := v.Unlock([]byte("новый пароль")); err != nil || !bytes.Equal(got, dek) {
+		t.Fatalf("новый пароль: %v", err)
+	}
+	if _, err := v.UnlockRecovery(key); err != nil {
+		t.Fatalf("слот восстановления сломан сменой пароля: %v", err)
+	}
+	// Слот нельзя перенести в другое хранилище.
+	other := newVault(t)
+	odek, _ := other.Create([]byte("pw"))
+	m, _ := v.readMeta()
+	om, _ := other.readMeta()
+	om.Recovery = m.Recovery
+	if err := other.writeMeta(om); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := other.UnlockRecovery(key); err == nil {
+		t.Fatal("слот из другого хранилища принят")
+	}
+	crypto.Wipe(odek)
+}
+
+func TestExportImport(t *testing.T) {
+	v := newVault(t)
+	dek, _ := v.Create([]byte("pw"))
+	if err := v.EnableHello(dek, "k", []byte("c"), []byte("secret")); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Encrypt(dek); err != nil {
+		t.Fatal(err)
+	}
+	m, d, err := v.Export()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(m, []byte("Hello")) {
+		t.Fatal("слот Hello попал в экспорт")
+	}
+	dst := Vault{Dir: t.TempDir(), DataName: "tdata"}
+	if err := dst.Import(m, d, []byte("не тот")); err == nil || dst.Exists() {
+		t.Fatalf("импорт с неверным паролем: %v", err)
+	}
+	if _, err := os.Stat(dst.path(dataFile)); !os.IsNotExist(err) {
+		t.Fatal("после неудачного импорта остался data.enc")
+	}
+	if err := dst.Import(m, d, []byte("pw")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := dst.Unlock([]byte("pw"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dst.Decrypt(got); err != nil {
+		t.Fatal(err)
+	}
+	if read(t, filepath.Join(dst.dataDir(), "key_datas")) != "секрет" {
+		t.Fatal("данные после импорта не совпали")
+	}
+	if err := dst.Import(m, d, []byte("pw")); err == nil {
+		t.Fatal("импорт поверх существующего хранилища")
 	}
 }

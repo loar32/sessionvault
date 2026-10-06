@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/loar32/sessionvault/internal/crypto"
+	"github.com/loar32/sessionvault/internal/recovery"
 	"golang.org/x/sys/windows"
 )
 
@@ -49,6 +50,8 @@ type meta struct {
 	Counter uint64 `json:",omitempty"`
 	// Второй способ открыть тот же DEK: ключ из подписи Windows Hello. Пароль остаётся запасным.
 	Hello *helloSlot `json:",omitempty"`
+	// Третий способ: ключ восстановления с бумаги (24 слова), один на все хранилища.
+	Recovery []byte `json:",omitempty"`
 }
 
 type helloSlot struct {
@@ -140,7 +143,14 @@ func (v Vault) Create(password []byte) ([]byte, error) {
 	return dek, nil
 }
 
+// Вместо пароля принимает и ключ восстановления (24 слова): так он работает везде, где спрашивают пароль.
 func (v Vault) Unlock(password []byte) ([]byte, error) {
+	if key, err := recovery.Parse(string(password)); err == nil {
+		defer crypto.Wipe(key)
+		if dek, err := v.UnlockRecovery(key); err == nil {
+			return dek, nil
+		}
+	}
 	m, err := v.readMeta()
 	if err != nil {
 		return nil, err
@@ -167,6 +177,66 @@ func (v Vault) Unlock(password []byte) ([]byte, error) {
 		return nil, ErrWrongPassword
 	}
 	return dek, nil
+}
+
+// Ключ не выводится через Argon2: он случайный, 256 бит. Соль хранилища и AAD привязывают слот к этому vault.json.
+func (m meta) recoveryAAD() []byte { return append([]byte("sv-recovery-v1"), m.aad()...) }
+
+// SetRecovery обёртывает dek ключом восстановления; прежний слот заменяется.
+func (v Vault) SetRecovery(dek, key []byte) error {
+	m, err := v.readMeta()
+	if err != nil {
+		return err
+	}
+	kek, err := crypto.DeriveRecoveryKey(key, m.Salt)
+	if err != nil {
+		return err
+	}
+	defer crypto.Wipe(kek)
+	if m.Recovery, err = crypto.SealAAD(kek, dek, m.recoveryAAD()); err != nil {
+		return err
+	}
+	return v.writeMeta(m)
+}
+
+func (v Vault) HasRecovery() bool {
+	m, err := v.readMeta()
+	return err == nil && m.Recovery != nil
+}
+
+func (v Vault) UnlockRecovery(key []byte) ([]byte, error) {
+	m, err := v.readMeta()
+	if err != nil {
+		return nil, err
+	}
+	if m.Recovery == nil {
+		return nil, errors.New("ключ восстановления не создан")
+	}
+	kek, err := crypto.DeriveRecoveryKey(key, m.Salt)
+	if err != nil {
+		return nil, err
+	}
+	defer crypto.Wipe(kek)
+	dek, err := crypto.OpenAAD(kek, m.Recovery, m.recoveryAAD())
+	if err != nil {
+		return nil, ErrWrongPassword
+	}
+	return dek, nil
+}
+
+// SetPassword меняет мастер-пароль. Соль и параметры остаются прежними: от них зависят слоты Hello и восстановления.
+func (v Vault) SetPassword(dek, password []byte) error {
+	m, err := v.readMeta()
+	if err != nil {
+		return err
+	}
+	kek := crypto.DeriveKey(password, m.Salt, m.Params)
+	defer crypto.Wipe(kek)
+	m.Version = metaV2
+	if m.WrappedDEK, err = crypto.SealAAD(kek, dek, m.aad()); err != nil {
+		return err
+	}
+	return v.writeMeta(m)
 }
 
 // HelloInfo — имя ключа Hello и challenge, если вход через Hello включён.
@@ -420,4 +490,60 @@ func (v Vault) RestoreBackup(dek []byte) error {
 		return err
 	}
 	return retry(func() error { return os.Rename(v.path(backupFile), v.path(dataFile)) })
+}
+
+// Export возвращает vault.json без слота Hello (ключ Hello работает только на этом ПК) и data.enc: оба файла уже зашифрованы.
+func (v Vault) Export() (metaJSON, data []byte, err error) {
+	if v.NeedsRecovery() {
+		return nil, nil, errors.New("есть открытые данные: сначала закройте приложение")
+	}
+	m, err := v.readMeta()
+	if err != nil {
+		return nil, nil, err
+	}
+	m.Hello = nil
+	if metaJSON, err = json.Marshal(m); err != nil {
+		return nil, nil, err
+	}
+	if data, err = os.ReadFile(v.path(dataFile)); err != nil {
+		return nil, nil, err
+	}
+	return metaJSON, data, nil
+}
+
+// Import кладёт файлы из Export на место и проверяет, что secret (пароль или ключ восстановления) их открывает;
+// иначе всё убирается. Существующее хранилище не перезаписывается.
+func (v Vault) Import(metaJSON, data, secret []byte) (err error) {
+	if v.Exists() {
+		return errors.New("хранилище уже есть")
+	}
+	if _, err := os.Stat(v.path(dataFile)); err == nil {
+		return errors.New("рядом лежит data.enc без vault.json: разберитесь с ним вручную")
+	}
+	defer func() {
+		if err != nil {
+			_ = os.Remove(v.path(metaFile))
+			_ = os.Remove(v.path(dataFile))
+		}
+	}()
+	if err := writeAtomic(v.path(dataFile), data); err != nil {
+		return err
+	}
+	if err := writeAtomic(v.path(metaFile), metaJSON); err != nil {
+		return err
+	}
+	if _, err := v.readMeta(); err != nil {
+		return err
+	}
+	dek, err := v.Unlock(secret)
+	if err != nil {
+		return err
+	}
+	defer crypto.Wipe(dek)
+	tar, err := v.openData(dek, data)
+	if err != nil {
+		return err
+	}
+	crypto.Wipe(tar)
+	return nil
 }

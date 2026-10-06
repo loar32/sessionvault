@@ -43,6 +43,15 @@ func DeriveHelloKey(secret []byte) ([]byte, error) {
 	return key, nil
 }
 
+// Ключ обёртки из ключа восстановления; соль хранилища делает слоты разных хранилищ независимыми.
+func DeriveRecoveryKey(key, salt []byte) ([]byte, error) {
+	out := make([]byte, KeySize)
+	if _, err := io.ReadFull(hkdf.New(sha256.New, key, salt, []byte("sv-recovery-kek-v1")), out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func random(n int) ([]byte, error) {
 	b := make([]byte, n)
 	_, err := rand.Read(b)
