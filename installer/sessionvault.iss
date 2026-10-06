@@ -4,7 +4,7 @@
 [Setup]
 AppId={{B6F1E3E2-9A7C-4D55-8B7E-5C2E7F3A9D10}
 AppName=SessionVault
-AppVersion=0.16
+AppVersion=0.16.1
 AppPublisher=SessionVault
 DefaultDirName={autopf}\SessionVault
 DisableProgramGroupPage=yes

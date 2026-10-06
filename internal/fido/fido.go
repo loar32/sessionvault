@@ -290,8 +290,11 @@ func Create() ([]byte, error) {
 	if r != 0 {
 		return nil, hresult("создание учётных данных", r)
 	}
+	if att == nil {
+		return nil, errors.New("ключ не вернул учётные данные")
+	}
 	defer pFreeAttestation.Call(uintptr(unsafe.Pointer(att)))
-	if att == nil || att.CredIDLen == 0 || att.CredID == nil {
+	if att.CredIDLen == 0 || att.CredID == nil {
 		return nil, errors.New("ключ не вернул идентификатор учётных данных")
 	}
 	return append([]byte(nil), unsafe.Slice(att.CredID, att.CredIDLen)...), nil
@@ -338,11 +341,18 @@ func Secret(id, salt []byte) ([]byte, error) {
 	if r != 0 {
 		return nil, hresult("получение секрета", r)
 	}
+	if as == nil {
+		return nil, errors.New("ключ не вернул ответ")
+	}
 	defer pFreeAssertion.Call(uintptr(unsafe.Pointer(as)))
-	if as == nil || as.Version < 3 || as.HmacSecret == nil || as.HmacSecret.FirstLen != 32 || as.HmacSecret.First == nil {
+	if as.Version < 3 || as.HmacSecret == nil || as.HmacSecret.FirstLen != 32 || as.HmacSecret.First == nil {
 		return nil, errors.New("ключ не вернул hmac-secret: он не поддерживает расширение или учётные данные созданы без него")
 	}
-	return append([]byte(nil), unsafe.Slice(as.HmacSecret.First, 32)...), nil
+	// Секрет уходит в наш буфер, а память Windows зануляется до освобождения: иначе он оставался бы в куче процесса.
+	src := unsafe.Slice(as.HmacSecret.First, 32)
+	secret := append([]byte(nil), src...)
+	clear(src)
+	return secret, nil
 }
 
 // Окна Windows принадлежат потоку, который их создал: вызов идёт в одном закреплённом потоке.
