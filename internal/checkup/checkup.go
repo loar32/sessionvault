@@ -234,7 +234,7 @@ func helloItem(in Input) Item {
 }
 
 func lockdownItem(in Input) Item {
-	title := "Сетевой заслон для vault"
+	title := "Сетевой заслон для приложений"
 	if in.LockRules >= in.LockRulesWant && in.LockDenied >= in.LockDeniedWant && in.LockRulesWant > 0 {
 		return Item{"lockdown", title, OK, fmt.Sprintf("правил брандмауэра %d, интерпретаторов под запретом %d", in.LockRules, in.LockDenied), ""}
 	}

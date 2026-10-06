@@ -91,7 +91,7 @@ func trustCmd(args []string) error {
 	if !isolation.IsElevated() {
 		return errors.New("нужен запуск от администратора")
 	}
-	fmt.Fprintf(os.Stderr, "Профиль %s будет подписан как есть: файл %s\\%s.json запускается под vault с доступом к расшифрованным данным.\n",
+	fmt.Fprintf(os.Stderr, "Профиль %s будет подписан как есть: файл %s\\%s.json запускается под учётной записью приложения с доступом к расшифрованным данным.\n",
 		pos[0], isolation.ProfilesDir(), pos[0])
 	if !*yes && !askYes("Вы проверили его содержимое? Введите yes: ") {
 		return errors.New("отменено")
