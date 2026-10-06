@@ -91,8 +91,8 @@ const (
 
 const (
 	emSetLimitText = 0xC5
-	// До 4 байт на символ в UTF-8 укладывается в ipc.MaxPassword.
-	maxPasswordChars = 64
+	// Ключ восстановления (24 слова BIP-39) занимает до 215 символов; пароль длиннее ipc.MaxPassword в байтах отклоняется в submit.
+	maxPasswordChars = 220
 )
 
 var hwndTopmost = ^uintptr(0)
@@ -181,7 +181,7 @@ func Run(profile, pipe string) error {
 		_, _, _ = pSendMessage.Call(hc, wmSetFont, font, 1)
 		return hc
 	}
-	child("STATIC", "Мастер-пароль для «"+profile+"»:", 0, 16, 14, 320, 20, 0)
+	child("STATIC", "Пароль или ключ восстановления, «"+profile+"»:", 0, 16, 14, 320, 20, 0)
 	edit = child("EDIT", "", wsTabStop|wsBorder|esPassword|esAutoHScrl, 16, 36, 320, 24, idEdit)
 	_, _, _ = pSendMessage.Call(edit, emSetLimitText, maxPasswordChars, 0)
 	status = child("STATIC", "", 0, 16, 66, 320, 20, idStatus)
@@ -270,6 +270,11 @@ func submit(hwnd uintptr) {
 	_, _, _ = pGetWindowText.Call(edit, uintptr(unsafe.Pointer(&buf[0])), n+1)
 	pw := []byte(windows.UTF16ToString(buf))
 	clear(buf)
+	if len(pw) > ipc.MaxPassword {
+		crypto.Wipe(pw)
+		setStatus("Слишком длинный пароль")
+		return
+	}
 	_, _, _ = pSetWindowText.Call(edit, uintptr(unsafe.Pointer(wstr(""))))
 	setStatus("Проверка…")
 	err := conn.WriteLine(string(pw))
