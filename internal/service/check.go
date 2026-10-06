@@ -16,8 +16,10 @@ import (
 	"github.com/loar32/sessionvault/internal/hardening"
 	"github.com/loar32/sessionvault/internal/ipc"
 	"github.com/loar32/sessionvault/internal/isolation"
+	"github.com/loar32/sessionvault/internal/lockdown"
 	"github.com/loar32/sessionvault/internal/profiles"
 	"github.com/loar32/sessionvault/internal/vault"
+	"golang.org/x/sys/windows"
 )
 
 var (
@@ -55,6 +57,10 @@ func (s *Service) check() string {
 	ext, scanned := s.extensionsState()
 	memReads, memLast := s.memoryState()
 	in := checkup.Input{MemAudit: audit.MemoryAuditEnabled(), MemReads: memReads, MemLast: memLast, ASRActive: asr.Active(), ASRTotal: len(asr.Rules), ExtScanned: scanned, ExtRisky: ext, MainUserAdmin: admin, MainUserUnknown: adminErr != nil, Audit: audit.IsEnabled(), Hardened: hardening.Applied(), Hello: s.helloEnabled()}
+	in.LockRules, in.LockRulesWant = lockdown.Rules()
+	if sid, _, _, err := windows.LookupSID("", isolation.VaultUser); err == nil {
+		in.LockDenied, in.LockDeniedWant = lockdown.Denied(sid)
+	}
 	b, err := json.Marshal(checkup.Run(in))
 	if err != nil {
 		return ipc.Failed

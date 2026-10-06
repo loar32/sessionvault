@@ -339,6 +339,7 @@ func (s *Service) start(p profiles.Profile, v vault.Vault, dek []byte, session u
 		unlock()
 		return "", errors.Join(err, v.Encrypt(dek))
 	}
+	s.denyInterpreters()
 	s.scanExtensions(p)
 
 	_, proc, thread, err := isolation.StartInSession(session, launchLine(s.exe, p.Name, link), true)

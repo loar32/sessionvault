@@ -48,6 +48,25 @@ func probe(work string) {
 		// Смена прав: vault не должен уметь разрешить себе запуск.
 		rep(where.name+"_chmod", exec.Command("icacls", dst, "/grant", "vault:(RX)").Run() == nil)
 	}
+	// Интерпретаторы vault запускать не может (ACL), обычные программы может: cmd — контроль того, что проба вообще работает.
+	sys := filepath.Join(os.Getenv("SystemRoot"), "System32")
+	for _, n := range []struct {
+		name string
+		path []string
+	}{
+		{"ps", []string{"WindowsPowerShell", "v1.0", "powershell.exe"}},
+		{"wscript", []string{"wscript.exe"}},
+		{"cscript", []string{"cscript.exe"}},
+		{"mshta", []string{"mshta.exe"}},
+		{"cmd", []string{"cmd.exe"}},
+	} {
+		cmd := exec.Command(filepath.Join(append([]string{sys}, n.path...)...), "/c", "exit")
+		err := cmd.Start()
+		if err == nil {
+			_ = cmd.Process.Kill()
+		}
+		rep(n.name+"_start", err == nil)
+	}
 	_ = os.WriteFile(filepath.Join(work, "probe.txt"), []byte(strings.Join(out, "\r\n")+"\r\nEND\r\n"), 0o644)
 }
 

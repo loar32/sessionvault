@@ -176,6 +176,11 @@ func Install(mainUser, telegramExe string) (err error) {
 		return err
 	}
 	st.undo = append(st.undo, func() { _ = os.RemoveAll(InstallDir()) })
+	// Заслон необязателен для работы: ошибка (например, выключенный брандмауэр) только предупреждает, `sessionvault lockdown` повторит.
+	st.undo = append(st.undo, func() { _ = Lockdown(true) })
+	if e := Lockdown(false); e != nil {
+		fmt.Fprintln(os.Stderr, "сетевой заслон включён не полностью:", e)
+	}
 
 	if telegramExe == "" {
 		if telegramExe = findTelegram(mainUser); telegramExe == "" {

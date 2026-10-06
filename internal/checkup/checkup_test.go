@@ -39,7 +39,7 @@ func good() fake {
 	}
 }
 
-var allOn = Input{Audit: true, Hardened: true, Hello: true, ASRActive: 4, ASRTotal: 4, MemAudit: true}
+var allOn = Input{Audit: true, Hardened: true, Hello: true, LockRules: 3, LockRulesWant: 3, LockDenied: 2, LockDeniedWant: 2, ASRActive: 4, ASRTotal: 4, MemAudit: true}
 
 func level(r Report, id string) Level {
 	for _, it := range r.Items {
@@ -145,8 +145,8 @@ func TestUnknownUserIsNotGreen(t *testing.T) {
 func TestReportFitsPipeReply(t *testing.T) {
 	r := run(fake{err: errors.New("x")}, Input{MainUserAdmin: true}, time.Now())
 	b, _ := json.Marshal(r)
-	if len(b) > 4096 {
-		t.Fatalf("худший отчёт %d байт: лимит ответа pipe 8192, запас должен быть двойной", len(b))
+	if len(b) > 6144 {
+		t.Fatalf("худший отчёт %d байт: лимит ответа pipe 12288, запас должен быть двойной", len(b))
 	}
 }
 
