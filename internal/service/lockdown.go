@@ -43,5 +43,5 @@ func Lockdown(off bool) error {
 	if _, err := os.Stat(installedExe()); err != nil {
 		return errors.New("SessionVault не установлен: сначала install")
 	}
-	return errors.Join(lockdown.ApplyFirewall(sid, installedExe()), lockdown.DenyInterpreters(sid))
+	return errors.Join(lockdown.ApplyFirewall(sid, installedExe(), isolation.BaseDir()), lockdown.DenyInterpreters(sid))
 }

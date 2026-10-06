@@ -323,18 +323,21 @@ $r = Vm {
     $mine = @($p.PSObject.Properties | Where-Object { $_.Value -is [string] -and $_.Value -match 'EmbedCtxt=SessionVault' } | ForEach-Object { $_.Value })
     $vsid = (New-Object Security.Principal.NTAccount('vault')).Translate([Security.Principal.SecurityIdentifier]).Value
     $ps = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
+    $msb = 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\MSBuild.exe'
     @{ n = $mine.Count
        block = @($mine | Where-Object { $_ -match 'Action=Block' -and $_ -match 'Dir=Out' -and $_ -match 'Active=TRUE' }).Count
        forVault = @($mine | Where-Object { $_ -match [regex]::Escape($vsid) }).Count
        curl = @($mine | Where-Object { $_ -match 'curl\.exe' -and $_ -match [regex]::Escape($vsid) }).Count
        selfAll = @($mine | Where-Object { $_ -match 'sessionvault\.exe' -and $_ -notmatch 'LUAuth=' -and $_ -match 'Action=Block' }).Count
        acl = ((icacls $ps) -join ' ')
+       msb = $(if (Test-Path $msb) { (icacls $msb) -join ' ' } else { 'vault:(DENY)(X) нет файла' })
        tester = (& $ps -NoProfile -Command '1+1') }
 }
 Check ($r.n -ge 10 -and $r.block -eq $r.n) "правила брандмауэра SessionVault: $($r.n), все исходящие блокирующие и активные"
 Check ($r.forVault -eq ($r.n - 1) -and $r.curl -ge 1) "правила утилит привязаны к учётке vault ($($r.forVault)), curl закрыт"
 Check ($r.selfAll -eq 1) 'sessionvault.exe закрыт для сети для всех пользователей'
 Check ($r.acl -match 'vault:\(DENY\)\(X\)') 'на powershell.exe стоит запрет запуска для vault'
+Check ($r.msb -match 'vault:\(DENY\)\(X\)') 'на MSBuild (компилятор .NET) стоит запрет запуска для vault'
 Check ($r.tester -eq 2) 'основной учётке и администратору PowerShell по-прежнему доступен'
 $r = Vm { & C:\sv\sessionvault.exe check -json 2>&1 | Out-String }
 Check ($r -match '"id":"lockdown"[^}]*"level":"ok"') 'check: пункт «Сетевой заслон для vault» зелёный'
