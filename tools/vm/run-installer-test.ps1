@@ -114,13 +114,13 @@ $r = Vm {
         code = $p.ExitCode; svc = (Get-Service SessionVault).Status.ToString(); exe = (Test-Path $exe)
         copy = (Test-Path "$pf\apps\telegram\Telegram.exe"); profExe = $prof.exe; user = $cfg.main_user
         run = [bool](Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run' -Name SessionVaultTray -ErrorAction SilentlyContinue)
-        vault = [bool](Get-LocalUser vault -ErrorAction SilentlyContinue)
+        vault = [bool](Get-LocalGroup SessionVaultApps -ErrorAction SilentlyContinue)
     }
 }
 Check ($r.code -eq 0 -and $r.svc -eq 'Running') "установщик завершился успешно, служба работает (код $($r.code), $($r.svc))"
 Check ($r.user -eq 'tester') "основная учётка определена сама: $($r.user)"
 Check ($r.copy -and $r.profExe -like '*apps\telegram\Telegram.exe') "Telegram из профиля пользователя скопирован туда, где его может запустить vault ($($r.profExe))"
-Check ($r.run -and $r.vault) 'автозапуск трея и учётка vault созданы'
+Check ($r.run -and $r.vault) 'автозапуск трея и группа SessionVaultApps созданы'
 
 Write-Host '--- 3. import-tdata без пути: исходное место запоминается ---'
 $r = Vm {
@@ -172,7 +172,7 @@ $r = Vm {
     $t = Tg
     @{ up = $up; user = $t.UserName; session = $t.SessionId; key = (Get-Content "$v\work\tdata\key_datas" -ErrorAction SilentlyContinue) }
 }
-Check ($r.up -and $r.user -like '*\vault' -and $r.session -ne 0) "Telegram запущен от vault в сессии пользователя ($($r.user))"
+Check ($r.up -and $r.user -like '*\sv-telegram' -and $r.session -ne 0) "Telegram запущен от sv-telegram в сессии пользователя ($($r.user))"
 Check ($r.key -eq 'secret-session-data') 'сессия расшифрована и на месте'
 $r = Vm { Stop-Process -Name Telegram -Force; @{ ok = (WaitFor { (Files) -eq 'data.enc,vault.json' } 60); files = (Files) } }
 Check $r.ok "после закрытия на диске только шифр (есть: $($r.files))"
@@ -182,7 +182,7 @@ $r = Vm {
     'Wrong-Pass-9' | & $exe uninstall -password-stdin 2>&1 | Out-Null
     $code = $LASTEXITCODE
     Start-Sleep 3
-    @{ code = $code; svc = (Get-Service SessionVault -ErrorAction SilentlyContinue).Status.ToString(); files = (Files); user = [bool](Get-LocalUser vault -ErrorAction SilentlyContinue) }
+    @{ code = $code; svc = (Get-Service SessionVault -ErrorAction SilentlyContinue).Status.ToString(); files = (Files); user = [bool](Get-LocalUser sv-telegram -ErrorAction SilentlyContinue) }
 }
 Check ($r.code -ne 0) "uninstall с неверным паролем завершился ошибкой (код $($r.code))"
 Check ($r.svc -eq 'Running' -and $r.user -and $r.files -eq 'data.enc,vault.json') "служба, учётка и зашифрованные данные на месте ($($r.svc); $($r.files))"
@@ -199,19 +199,19 @@ $r = Vm {
         hash = (Get-FileHash 'C:\Users\tester\AppData\Roaming\Telegram Desktop\tdata\key_datas' -ErrorAction SilentlyContinue).Hash
         cache = (Test-Path 'C:\Users\tester\AppData\Roaming\Telegram Desktop\tdata\emoji\cache')
         svc = [bool](Get-Service SessionVault -ErrorAction SilentlyContinue)
-        user = [bool](Get-LocalUser vault -ErrorAction SilentlyContinue)
+        user = [bool](@(Get-LocalUser | Where-Object { $_.Name -like 'sv-*' -or $_.Name -eq 'vault' }).Count -gt 0)
         # Файлы общей папки при удалении остаются: остальное должно исчезнуть.
         data = [bool](@(Get-ChildItem C:\ProgramData\SessionVault -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'exchange' }).Count)
         run = [bool](Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run' -Name SessionVaultTray -ErrorAction SilentlyContinue)
-        profile = (Test-Path C:\Users\vault)
+        profile = (Test-Path C:\Users\sv-telegram)
         apps = (Test-Path "$pf\apps")
         pol = ((auditpol /get /subcategory:"File System") -join ' ')
     }
 } @($MasterPassword)
 Check ($r.code -eq 0) "uninstall с верным паролем успешен (код $($r.code))"
 Check ($r.hash -eq $hash -and $r.cache) 'tdata вернулась на прежнее место, содержимое то же'
-Check (-not $r.svc -and -not $r.user -and -not $r.data -and -not $r.run) 'служба, учётка vault, ProgramData и автозапуск удалены'
-Check (-not $r.profile -and -not $r.apps) 'профиль vault и копия Telegram убраны'
+Check (-not $r.svc -and -not $r.user -and -not $r.data -and -not $r.run) 'служба, учётки приложений, ProgramData и автозапуск удалены'
+Check (-not $r.profile -and -not $r.apps) 'профиль учётки приложения и копия Telegram убраны'
 Check ($r.pol -eq $pol0) 'политика аудита файловой системы возвращена как была'
 $r = Invoke-Command $a -ArgumentList $tester {
     param($cred)

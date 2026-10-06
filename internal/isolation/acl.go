@@ -100,10 +100,11 @@ func ProtectDir(root string) error {
 	return Protect(root, admins, system, admins)
 }
 
-// Рабочая папка приложения: vault пишет и читает всё, но не запускает файлы и не меняет права; запуск разрешён только
-// файлам, которые одобрил allowExec (им даются лишь чтение и запуск). Вызывается, пока приложение не запущено.
-func ProtectWork(root string, allowExec func(path string) bool) error {
-	vault, _, _, err := windows.LookupSID("", VaultUser)
+// Рабочая папка приложения: его учётка пишет и читает всё, но не запускает файлы и не меняет права; запуск разрешён только
+// файлам, которые одобрил allowExec (им даются лишь чтение и запуск). Другие приложения доступа не имеют.
+// Вызывается, пока приложение не запущено.
+func ProtectWork(root, account string, allowExec func(path string) bool) error {
+	vault, _, _, err := windows.LookupSID("", account)
 	if err != nil {
 		return err
 	}

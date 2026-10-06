@@ -116,13 +116,23 @@ func (s *Service) protectedExes() []string {
 	return exes
 }
 
+// isVaultSID — SID принадлежит учётке защищённого приложения (sv-*); результат по SID запоминается.
 func (s *Service) isVaultSID(sid string) bool {
-	s.vaultSIDOnce.Do(func() {
-		if v, _, _, err := windows.LookupSID("", isolation.VaultUser); err == nil {
-			s.vaultSID = v.String()
-		}
-	})
-	return s.vaultSID != "" && sid == s.vaultSID
+	s.mu.Lock()
+	v, ok := s.appSIDs[sid]
+	s.mu.Unlock()
+	if ok {
+		return v
+	}
+	p, err := windows.StringToSid(sid)
+	v = err == nil && isolation.IsAppAccount(p)
+	s.mu.Lock()
+	if s.appSIDs == nil {
+		s.appSIDs = map[string]bool{}
+	}
+	s.appSIDs[sid] = v
+	s.mu.Unlock()
+	return v
 }
 
 // handleMemory пишет в memory.log обращение чужого процесса к памяти защищённого приложения. Без окон и тревог: журнал

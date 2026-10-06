@@ -136,27 +136,12 @@ func Install(mainUser, telegramExe string) (err error) {
 	if err = isolation.ProtectDir(isolation.BaseDir()); err != nil {
 		return err
 	}
-	if !isolation.PasswordSaved() {
-		var pw string
-		if pw, err = isolation.GeneratePassword(); err != nil {
-			return err
-		}
-		if err = isolation.CreateUser(isolation.VaultUser, pw); err != nil {
-			return err
-		}
-		st.undo = append(st.undo, func() { _ = isolation.DeleteUser(isolation.VaultUser) })
-		if err = isolation.SavePassword(pw); err != nil {
-			return err
-		}
-	} else if !isolation.UserExists(isolation.VaultUser) {
-		return errors.New("пароль vault сохранён, но учётки нет: удали vault.pwd и повтори")
-	}
-	if err = isolation.HideFromLogon(isolation.VaultUser); err != nil {
+	// Учётки приложений создаются при первом запуске каждого приложения; здесь только группа, общая для них, и переход с общей
+	// учётки vault прежних версий.
+	if _, err = isolation.EnsureAppsGroup(); err != nil {
 		return err
 	}
-	if err = isolation.DenyRemoteLogon(isolation.VaultUser); err != nil {
-		return err
-	}
+	migrateLegacyVault()
 	if err = isolation.SetupVaultDir(); err != nil {
 		return err
 	}

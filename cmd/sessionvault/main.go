@@ -469,7 +469,7 @@ func alerts() error {
 	return nil
 }
 
-// Запускается службой от SYSTEM в сессии пользователя: стартует приложение от vault и ждёт его выхода.
+// Запускается службой от SYSTEM в сессии пользователя: стартует приложение под его учёткой и ждёт его выхода.
 func launch(args []string) error {
 	if len(args) < 1 || len(args) > 2 {
 		return errors.New("укажи профиль")
@@ -478,7 +478,8 @@ func launch(args []string) error {
 	if err != nil {
 		return err
 	}
-	pw, err := isolation.LoadPassword()
+	account := isolation.AccountName(p.Name)
+	pw, err := isolation.LoadAccountPassword(account)
 	if err != nil {
 		return err
 	}
@@ -490,7 +491,7 @@ func launch(args []string) error {
 		}
 		cmd += " " + args[1]
 	}
-	_, proc, cleanup, err := isolation.LaunchAsVault(isolation.VaultUser, pw, cmd, work)
+	_, proc, cleanup, err := isolation.LaunchAsVault(account, pw, cmd, work)
 	if err != nil {
 		return err
 	}

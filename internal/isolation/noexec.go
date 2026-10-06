@@ -111,16 +111,16 @@ func protectNoExec(root string, allowExec func(path string) bool, vault *windows
 	return nil
 }
 
-// ExchangeDir — общая папка: основная учётка и vault обмениваются файлами, запустить файл отсюда может только основная.
+// ExchangeDir — общая папка: основная учётка и приложения обмениваются файлами, запустить файл отсюда может только основная.
 func ExchangeDir() string { return filepath.Join(BaseDir(), "exchange") }
 
-// SetupExchange создаёт общую папку. Основная учётка читает и пишет, но не меняет права; vault — так же и без запуска.
+// SetupExchange создаёт общую папку. Основная учётка читает и пишет, но не меняет права; приложения (группа SessionVaultApps) — так же и без запуска.
 func SetupExchange(mainUser string) error {
 	user, _, _, err := windows.LookupSID("", mainUser)
 	if err != nil {
 		return err
 	}
-	vault, _, _, err := windows.LookupSID("", VaultUser)
+	vault, err := EnsureAppsGroup()
 	if err != nil {
 		return err
 	}

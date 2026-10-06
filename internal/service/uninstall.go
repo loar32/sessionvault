@@ -94,11 +94,13 @@ func Uninstall(password []byte) (err error) {
 	// Флаг автопоказа окна проверки: после повторной установки окно снова должно показаться. Удаляется один файл, не папка:
 	// путь идёт через профиль пользователя, а службе с правами SYSTEM нельзя рекурсивно чистить то, что он может подменить ссылкой.
 	_ = os.Remove(filepath.Join(usersDir(), cfg.MainUser, `AppData\Local\SessionVault\check-shown`))
+	// Учётки приложений удаляются до каталога данных: список паролей лежит в нём.
+	for _, a := range isolation.AccountNames() {
+		_ = isolation.DeleteAppAccount(a)
+	}
+	_ = isolation.DeleteAppAccount(isolation.LegacyVaultUser)
+	_ = isolation.DeleteAppsGroup()
 	removeBaseKeepingExchange()
-	_ = isolation.AllowRemoteLogon(isolation.VaultUser)
-	_ = isolation.DeleteUserProfile(isolation.VaultUser)
-	_ = isolation.DeleteUser(isolation.VaultUser)
-	_ = os.RemoveAll(filepath.Join(usersDir(), isolation.VaultUser)) // если штатное удаление профиля не справилось
 	// Сам exe и деинсталлятор не трогаем: ими занимается установщик (Inno удалит файлы и каталог после нас).
 	_ = os.RemoveAll(filepath.Join(InstallDir(), "apps"))
 	return nil
