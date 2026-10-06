@@ -34,6 +34,7 @@ sessionvault uninstall
 sessionvault restore-backup <профиль>
 sessionvault harden [-off]
 sessionvault hello disable [профиль]
+sessionvault fido disable [профиль]
 sessionvault recovery create|reset|status
 sessionvault export <приложение> <файл>
 sessionvault import <файл>
@@ -74,7 +75,7 @@ func main() {
 		pause = true
 	}
 	switch os.Args[1] {
-	case "service", "prompt", "tray", "launch", "alert", "hello-unlock", "hello-enroll":
+	case "service", "prompt", "tray", "launch", "alert", "hello-unlock", "hello-enroll", "fido-unlock", "fido-enroll":
 	default:
 		attachConsole()
 	}
@@ -103,7 +104,9 @@ func main() {
 	case "import":
 		err = importCmd(args)
 		nudgeService(err)
-	case "hello-unlock", "hello-enroll":
+	case "fido":
+		err = fidoCmd(args)
+	case "hello-unlock", "hello-enroll", "fido-unlock", "fido-enroll":
 		err = helloHelper(os.Args[1], args)
 	case "open":
 		err = openLink(args)

@@ -12,6 +12,7 @@ import (
 	"unsafe"
 
 	"github.com/loar32/sessionvault/internal/checkup"
+	"github.com/loar32/sessionvault/internal/fido"
 	"github.com/loar32/sessionvault/internal/hello"
 	"github.com/loar32/sessionvault/internal/ipc"
 	"github.com/loar32/sessionvault/internal/isolation"
@@ -75,6 +76,7 @@ const (
 	maxMenuApps   = 16
 	idHello       = 1050
 	idRecovery    = 1051
+	idFido        = 1052
 	idCheck       = 1060
 	idExchange    = 1061
 	idExit        = 1100
@@ -349,6 +351,33 @@ func recoveryKey() {
 	_ = windows.ShellExecute(0, windows.StringToUTF16Ptr("runas"), windows.StringToUTF16Ptr("cmd.exe"), windows.StringToUTF16Ptr(args), nil, windows.SW_SHOWNORMAL)
 }
 
+// Для каждого защищённого приложения служба спрашивает мастер-пароль, затем ключ FIDO2 создаёт учётные данные:
+// Windows просит PIN ключа и касание (для создания и для первого получения секрета).
+func enableFido() {
+	speedUp()
+	defer speedUp()
+	if !fido.Supported() {
+		_, _, _ = pPostMessage.Call(hwnd, wmBalloon, 8, 0)
+		return
+	}
+	code := uintptr(7)
+	for _, name := range protectedApps() {
+		resp, err := ipc.Call(ipc.CommandPipe, "fido "+name, 6*time.Minute)
+		if err != nil {
+			code = 2
+			break
+		}
+		if resp != ipc.Ok {
+			code = 8
+			if resp == ipc.Busy {
+				code = 3
+			}
+			break
+		}
+	}
+	_, _, _ = pPostMessage.Call(hwnd, wmBalloon, code, 0)
+}
+
 // Для каждого защищённого приложения служба спрашивает мастер-пароль, затем Windows Hello создаёт ключ и подтверждает вход.
 func enableHello() {
 	speedUp()
@@ -414,6 +443,7 @@ func showMenu() {
 	_, _, _ = pAppendMenu.Call(menu, mfSeparator, 0, 0)
 	if len(menuApps) > 0 {
 		_, _, _ = pAppendMenu.Call(menu, mfString, idHello, uintptr(unsafe.Pointer(wstr("Включить вход через Windows Hello"))))
+		_, _, _ = pAppendMenu.Call(menu, mfString, idFido, uintptr(unsafe.Pointer(wstr("Включить вход по ключу FIDO2 (YubiKey)"))))
 		_, _, _ = pAppendMenu.Call(menu, mfString, idRecovery, uintptr(unsafe.Pointer(wstr("Создать ключ восстановления…"))))
 	}
 	_, _, _ = pAppendMenu.Call(menu, mfString, idExchange, uintptr(unsafe.Pointer(wstr("Папка обмена с защищёнными приложениями"))))
@@ -443,7 +473,8 @@ func wndProc(h, message, wparam, lparam uintptr) uintptr {
 	case wmBalloon:
 		texts := map[uintptr]string{1: runMessages[ipc.Failed], 2: "Служба SessionVault недоступна", 3: runMessages[ipc.Busy],
 			4: "Вход через Windows Hello включён", 5: "Не удалось включить Windows Hello",
-			6: "Windows Hello не настроен: добавьте PIN, лицо или отпечаток в Параметрах Windows"}
+			6: "Windows Hello не настроен: добавьте PIN, лицо или отпечаток в Параметрах Windows",
+			7: "Вход по ключу FIDO2 включён", 8: "Не удалось включить вход по ключу FIDO2: нужны Windows 11, ключ с hmac-secret и PIN ключа"}
 		notify(nimModify, texts[wparam])
 		return 0
 	case wmCommand:
@@ -460,6 +491,8 @@ func wndProc(h, message, wparam, lparam uintptr) uintptr {
 			}
 		case id == idHello:
 			go enableHello()
+		case id == idFido:
+			go enableFido()
 		case id == idRecovery:
 			recoveryKey()
 		case id == idCheck:
