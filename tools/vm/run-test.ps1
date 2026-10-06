@@ -897,6 +897,81 @@ $r = Vm {
 Check ($r.off -and $r.out -match 'возвращены') "check -fix -off вернул прежнее: правил в блокировке нет ($($r.out))"
 Check $r.again 'после отката правила включаются снова (для проверки отката при удалении)'
 
+Write-Host '--- 15d. ключ восстановления, смена пароля, перенос ---'
+$newPw = 'Recovery-New-Pass-2'
+$r = Vm {
+    param($pw)
+    $exe = 'C:\sv\sessionvault.exe'
+    $out = (@($pw) * 8) | & $exe recovery create -password-stdin 2>&1 | Out-String
+    $words = ($out -split "`r?`n" | Where-Object { $_ -match '^([a-z]+ ){23}[a-z]+$' } | Select-Object -First 1)
+    $status = & $exe recovery status 2>&1 | Out-String
+    @{ words = $words; status = ($status -replace '\s+', ' '); out = ($out -replace '\s+', ' ') }
+} @($MasterPassword)
+Check ($r.words -and $r.status -match 'открывает' -and $r.status -notmatch 'без ключа') "recovery create выдал 24 слова и покрыл все хранилища ($($r.status) | $($r.out))"
+$words = $r.words
+$r = Vm {
+    param($words, $pw, $new)
+    $exe = 'C:\sv\sessionvault.exe'
+    $bad = (@($words.Replace($words.Split(' ')[0], 'zoo'), $new)) | & $exe recovery reset -password-stdin 2>&1 | Out-String
+    $badCode = $LASTEXITCODE
+    $ok = @($words, $new) | & $exe recovery reset -password-stdin 2>&1 | Out-String
+    $okCode = $LASTEXITCODE
+    $oldPw = (@($pw) * 8) | & $exe recovery create -password-stdin 2>&1 | Out-String
+    $oldCode = $LASTEXITCODE
+    @{ badCode = $badCode; okCode = $okCode; ok = ($ok -replace '\s+', ' '); oldCode = $oldCode }
+} @($words, $MasterPassword, $newPw)
+Check ($r.badCode -ne 0) 'recovery reset с опечаткой в слове отклонён'
+Check ($r.okCode -eq 0) "recovery reset по ключу задал новый пароль ($($r.ok))"
+Check ($r.oldCode -ne 0) 'после смены старый пароль не подходит'
+$r = Vm {
+    param($new, $pw)
+    $exe = 'C:\sv\sessionvault.exe'
+    $out = (@($new) * 8) | & $exe recovery create -password-stdin 2>&1 | Out-String
+    $newWords = ($out -split "`r?`n" | Where-Object { $_ -match '^([a-z]+ ){23}[a-z]+$' } | Select-Object -First 1)
+    @{ code = $LASTEXITCODE; words = $newWords }
+} @($newPw, $MasterPassword)
+Check ($r.code -eq 0 -and $r.words -and $r.words -ne $words) 'новый пароль работает; повторный create выпустил другой ключ'
+$words2 = $r.words
+$r = Vm {
+    param($old)
+    @($old, 'x') | & C:\sv\sessionvault.exe recovery reset -password-stdin 2>&1 | Out-Null
+    $LASTEXITCODE
+} @($words)
+Check ($r -ne 0) 'прежний ключ после повторного create не работает'
+# Перенос: хранилище Brave выгружается, удаляется и восстанавливается одним ключом без пароля; данные вернёт удаление (блок 16).
+$r = Vm {
+    param($words)
+    $exe = 'C:\sv\sessionvault.exe'
+    $x = & $exe export brave C:\sv\brave.svx 2>&1 | Out-String
+    $xc = $LASTEXITCODE
+    $size = (Get-Item C:\sv\brave.svx -ErrorAction SilentlyContinue).Length
+    $plain = [bool](Select-String -Path C:\sv\brave.svx -Pattern 'browser-session-marker' -Quiet)
+    $v = 'C:\ProgramData\SessionVault\vault\brave'
+    & takeown /f $v /r /d y 2>&1 | Out-Null
+    & icacls $v /grant 'Administrators:F' /t 2>&1 | Out-Null
+    Remove-Item $v -Recurse -Force
+    $gone = -not (Test-Path $v)
+    $bad = @('wrong-secret-12345') | & $exe import C:\sv\brave.svx -password-stdin 2>&1 | Out-String
+    $badCode = $LASTEXITCODE
+    $leftAfterBad = Test-Path "$v\data.enc"
+    $i = @($words) | & $exe import C:\sv\brave.svx -password-stdin 2>&1 | Out-String
+    @{ xc = $xc; size = $size; plain = $plain; gone = $gone; badCode = $badCode; leftAfterBad = $leftAfterBad
+       ic = $LASTEXITCODE; imp = ($i -replace '\s+', ' '); back = (Test-Path "$v\data.enc") }
+} @($words2)
+Check ($r.xc -eq 0 -and $r.size -gt 0 -and -not $r.plain) 'export brave: файл есть и открытых данных в нём нет'
+Check ($r.gone -and $r.badCode -ne 0 -and -not $r.leftAfterBad) 'import с неверным секретом отклонён и ничего не оставил'
+Check ($r.ic -eq 0 -and $r.back) "import по ключу восстановления вернул хранилище ($($r.imp))"
+$r = Vm { & C:\sv\sessionvault.exe recovery status 2>&1 | Out-String } 
+Check ($r -match 'открывает' -and $r -notmatch 'без ключа' -and $r -match 'brave') "после импорта слот восстановления перенесён вместе с хранилищем ($($r -replace '\s+', ' '))"
+$r = Vm {
+    param($new, $pw)
+    $words = (@($new) * 8) | & C:\sv\sessionvault.exe recovery create -password-stdin 2>&1 | Out-String
+    $w = ($words -split "`r?`n" | Where-Object { $_ -match '^([a-z]+ ){23}[a-z]+$' } | Select-Object -First 1)
+    @($w, $pw) | & C:\sv\sessionvault.exe recovery reset -password-stdin 2>&1 | Out-Null
+    $LASTEXITCODE
+} @($newPw, $MasterPassword)
+Check ($r -eq 0) 'пароль возвращён к мастер-паролю теста: дальше удаление пройдёт по нему'
+
 Write-Host '--- 16. удаление программы возвращает данные браузеров ---'
 # Путь приманки Edge подменён ссылкой (блок 15): удаление должно отказаться и ничего не увести в чужую папку.
 $r = Vm {
