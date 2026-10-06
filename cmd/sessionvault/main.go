@@ -33,6 +33,7 @@ sessionvault import-tdata [путь-к-tdata]
 sessionvault uninstall
 sessionvault restore-backup <профиль>
 sessionvault harden [-off]
+sessionvault lockdown [-off]
 sessionvault hello disable [профиль]
 sessionvault fido disable [профиль]
 sessionvault recovery create|reset|status
@@ -95,6 +96,8 @@ func main() {
 		err = restoreBackup(args)
 	case "harden":
 		err = harden(args)
+	case "lockdown":
+		err = lockdownCmd(args)
 	case "hello":
 		err = helloCmd(args)
 	case "recovery":
@@ -399,6 +402,23 @@ func alertWindow(args []string) error {
 		return errors.New("нет данных тревоги")
 	}
 	return alert.Run(args[0])
+}
+
+func lockdownCmd(args []string) error {
+	fs := flag.NewFlagSet("lockdown", flag.ContinueOnError)
+	off := fs.Bool("off", false, "снять заслон")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := service.Lockdown(*off); err != nil {
+		return err
+	}
+	if *off {
+		fmt.Println("сетевой заслон снят")
+	} else {
+		fmt.Println("сетевой заслон включён: для учётки vault закрыты сеть системных утилит и запуск интерпретаторов; SessionVault сети не имеет")
+	}
+	return nil
 }
 
 func harden(args []string) error {

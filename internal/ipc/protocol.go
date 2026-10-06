@@ -16,8 +16,8 @@ const (
 	MaxLine     = 64
 	MaxPassword = 256
 	MaxURL      = 2048
-	MaxReply    = 256  // ответ на list: имена профилей через запятую
-	MaxCheck    = 8192 // ответ на check: отчёт JSON одной строкой
+	MaxReply    = 256   // ответ на list: имена профилей через запятую
+	MaxCheck    = 12288 // ответ на check: отчёт JSON одной строкой
 
 	Ok       = "ok"
 	Locked   = "locked"

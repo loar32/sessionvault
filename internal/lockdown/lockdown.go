@@ -1,0 +1,273 @@
+// Package lockdown закрывает защищённым приложениям лазейки через системные утилиты: взломанное приложение работает под
+// учёткой vault и могло бы вынести данные через PowerShell, curl и подобное. Два слоя: правила брандмауэра (исходящая
+// сеть этих утилит для vault и вся сеть самого SessionVault) и запрет запуска скриптовых интерпретаторов для vault (ACL на exe).
+package lockdown
+
+import (
+	"context"
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+	"unicode/utf16"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
+)
+
+// Все правила брандмауэра SessionVault лежат в одной группе: так их находят и удаляют разом.
+const Group = "SessionVault"
+
+const fileExecute = 0x20 // FILE_EXECUTE
+
+// Интерпретаторы: vault не может запустить их вообще (ACL) и, на случай сброса прав обновлением Windows, не может выйти ими в сеть.
+var interpreters = []string{
+	`WindowsPowerShell\v1.0\powershell.exe`,
+	`WindowsPowerShell\v1.0\powershell_ise.exe`,
+	`wscript.exe`,
+	`cscript.exe`,
+	`mshta.exe`,
+}
+
+// Утилиты Windows, которыми обычно выносят данные; запускать их vault может, но выхода в сеть у них нет.
+var netTools = []string{
+	`curl.exe`, `bitsadmin.exe`, `certutil.exe`, `regsvr32.exe`, `rundll32.exe`, `msiexec.exe`,
+	`ftp.exe`, `tftp.exe`, `finger.exe`, `nslookup.exe`, `telnet.exe`,
+	`OpenSSH\ssh.exe`, `OpenSSH\scp.exe`, `OpenSSH\sftp.exe`,
+}
+
+func windir() string {
+	if d, err := windows.GetSystemWindowsDirectory(); err == nil && d != "" {
+		return d
+	}
+	return `C:\Windows`
+}
+
+// existing — пути из списка, которые есть на диске в System32 и SysWOW64, плюс PowerShell 7, если он установлен.
+func existing(rel []string, withPwsh bool) []string {
+	var out []string
+	for _, dir := range []string{"System32", "SysWOW64"} {
+		for _, r := range rel {
+			p := filepath.Join(windir(), dir, r)
+			if _, err := os.Stat(p); err == nil {
+				out = append(out, p)
+			}
+		}
+	}
+	if withPwsh {
+		pf := os.Getenv("ProgramFiles")
+		if pf == "" {
+			pf = `C:\Program Files`
+		}
+		m, _ := filepath.Glob(filepath.Join(pf, `PowerShell\*\pwsh.exe`))
+		out = append(out, m...)
+	}
+	return out
+}
+
+// Interpreters — интерпретаторы, найденные на этом компьютере.
+func Interpreters() []string { return existing(interpreters, true) }
+
+// NetTools — всё, что закрывается правилами брандмауэра для vault.
+func NetTools() []string { return append(Interpreters(), existing(netTools, false)...) }
+
+func openForACL(path string) (windows.Handle, error) {
+	p, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return 0, err
+	}
+	// Backup-семантика и привилегия SeRestore разрешают менять DACL файлов TrustedInstaller, не меняя владельца.
+	return windows.CreateFile(p, windows.READ_CONTROL|windows.WRITE_DAC, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil, windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS, 0)
+}
+
+func denyIndexes(acl *windows.ACL, sid *windows.SID) []uint32 {
+	var idx []uint32
+	for i := uint32(0); i < uint32(acl.AceCount); i++ {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if windows.GetAce(acl, i, &ace) != nil {
+			continue
+		}
+		if ace.Header.AceType == windows.ACCESS_DENIED_ACE_TYPE && ace.Mask&fileExecute != 0 &&
+			windows.EqualSid((*windows.SID)(unsafe.Pointer(&ace.SidStart)), sid) {
+			idx = append(idx, i)
+		}
+	}
+	return idx
+}
+
+// DenyExec запрещает sid запуск файла; повторный вызов ничего не меняет.
+func DenyExec(path string, sid *windows.SID) error {
+	h, err := openForACL(path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = windows.CloseHandle(h) }()
+	sd, err := windows.GetSecurityInfo(h, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		return err
+	}
+	old, _, err := sd.DACL()
+	if err != nil {
+		return err
+	}
+	if old != nil && len(denyIndexes(old, sid)) > 0 {
+		return nil
+	}
+	acl, err := windows.ACLFromEntries([]windows.EXPLICIT_ACCESS{{
+		AccessPermissions: fileExecute,
+		AccessMode:        windows.DENY_ACCESS,
+		Inheritance:       windows.NO_INHERITANCE,
+		Trustee: windows.TRUSTEE{
+			TrusteeForm:  windows.TRUSTEE_IS_SID,
+			TrusteeType:  windows.TRUSTEE_IS_UNKNOWN,
+			TrusteeValue: windows.TrusteeValueFromSID(sid),
+		},
+	}}, old)
+	if err != nil {
+		return err
+	}
+	return windows.SetSecurityInfo(h, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION, nil, nil, acl, nil)
+}
+
+var procDeleteAce = windows.NewLazySystemDLL("advapi32.dll").NewProc("DeleteAce")
+
+// AllowExec снимает запрет, поставленный DenyExec.
+func AllowExec(path string, sid *windows.SID) error {
+	h, err := openForACL(path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = windows.CloseHandle(h) }()
+	sd, err := windows.GetSecurityInfo(h, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		return err
+	}
+	acl, _, err := sd.DACL()
+	if err != nil || acl == nil {
+		return err
+	}
+	idx := denyIndexes(acl, sid)
+	if len(idx) == 0 {
+		return nil
+	}
+	for i := len(idx) - 1; i >= 0; i-- {
+		if r, _, e := procDeleteAce.Call(uintptr(unsafe.Pointer(acl)), uintptr(idx[i])); r == 0 {
+			return e
+		}
+	}
+	return windows.SetSecurityInfo(h, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION, nil, nil, acl, nil)
+}
+
+// IsDenied — у файла есть запрет запуска для sid.
+func IsDenied(path string, sid *windows.SID) bool {
+	h, err := openForACL(path)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = windows.CloseHandle(h) }()
+	sd, err := windows.GetSecurityInfo(h, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		return false
+	}
+	acl, _, err := sd.DACL()
+	return err == nil && acl != nil && len(denyIndexes(acl, sid)) > 0
+}
+
+// DenyInterpreters ставит запрет запуска интерпретаторов для vault. Вызывается при установке и перед каждым запуском
+// приложения: обновление Windows подменяет файлы и сбрасывает права. Возвращает ошибки по файлам, остальные обрабатываются.
+func DenyInterpreters(vault *windows.SID) error {
+	var errs []error
+	for _, p := range Interpreters() {
+		if err := DenyExec(p, vault); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", p, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func AllowInterpreters(vault *windows.SID) error {
+	var errs []error
+	for _, p := range Interpreters() {
+		if err := AllowExec(p, vault); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", p, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func psQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
+
+func powershell(script string) error {
+	enc := utf16.Encode([]rune(script))
+	b := make([]byte, 0, len(enc)*2)
+	for _, u := range enc {
+		b = append(b, byte(u), byte(u>>8))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	ps := filepath.Join(windir(), `System32\WindowsPowerShell\v1.0\powershell.exe`)
+	out, err := exec.CommandContext(ctx, ps, "-NoProfile", "-NonInteractive", "-EncodedCommand", base64.StdEncoding.EncodeToString(b)).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("powershell: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// ApplyFirewall создаёт правила: исходящая сеть утилит для vault закрыта; sessionvault.exe закрыт для всех
+// (принцип «ноль сети»: даже подменённая программа ничего не отправит). Прежние правила группы заменяются.
+func ApplyFirewall(vault *windows.SID, selfExe string) error {
+	var b strings.Builder
+	b.WriteString("$ErrorActionPreference='Stop'\n")
+	fmt.Fprintf(&b, "Remove-NetFirewallRule -Group %s -ErrorAction SilentlyContinue\n", psQuote(Group))
+	fmt.Fprintf(&b, "$u=%s\n", psQuote("D:(A;;CC;;;"+vault.String()+")"))
+	for _, p := range NetTools() {
+		fmt.Fprintf(&b, "New-NetFirewallRule -DisplayName %s -Group %s -Direction Outbound -Action Block -Profile Any -Program %s -LocalUser $u | Out-Null\n",
+			psQuote("SessionVault vault "+strings.TrimPrefix(strings.ToLower(p), strings.ToLower(windir())+`\`)), psQuote(Group), psQuote(p))
+	}
+	fmt.Fprintf(&b, "New-NetFirewallRule -DisplayName 'SessionVault no network' -Group %s -Direction Outbound -Action Block -Profile Any -Program %s | Out-Null\n",
+		psQuote(Group), psQuote(selfExe))
+	return powershell(b.String())
+}
+
+func RemoveFirewall() error {
+	return powershell(fmt.Sprintf("Remove-NetFirewallRule -Group %s -ErrorAction SilentlyContinue", psQuote(Group)))
+}
+
+const rulesKey = `SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\FirewallRules`
+
+// Rules считает правила группы в реестре (там их хранит брандмауэр), без запуска PowerShell; want — сколько их должно быть.
+func Rules() (have, want int) {
+	want = len(NetTools()) + 1
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, rulesKey, registry.QUERY_VALUE)
+	if err != nil {
+		return 0, want
+	}
+	defer func() { _ = k.Close() }()
+	names, err := k.ReadValueNames(0)
+	if err != nil {
+		return 0, want
+	}
+	for _, n := range names {
+		if v, _, err := k.GetStringValue(n); err == nil && strings.Contains(v, "|Active=TRUE|") && strings.Contains(v, "|EmbedCtxt="+Group+"|") {
+			have++
+		}
+	}
+	return have, want
+}
+
+// Denied считает интерпретаторы с запретом запуска для vault.
+func Denied(vault *windows.SID) (have, want int) {
+	for _, p := range Interpreters() {
+		want++
+		if IsDenied(p, vault) {
+			have++
+		}
+	}
+	return have, want
+}

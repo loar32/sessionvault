@@ -57,6 +57,10 @@ type Input struct {
 	MemAudit        bool     // включён аудит объектов ядра: по нему видно чтение памяти приложений
 	MemReads        int      // обращений чужих процессов к памяти защищённых приложений с запуска службы
 	MemLast         string   // последнее обращение
+	LockRules       int      // правил брандмауэра группы SessionVault
+	LockRulesWant   int      // сколько их должно быть
+	LockDenied      int      // интерпретаторов с запретом запуска для vault
+	LockDeniedWant  int      // сколько интерпретаторов есть в системе
 }
 
 // Реестр и BitLocker за интерфейсом: в тестах подменяются.
@@ -96,6 +100,7 @@ func run(sys system, in Input, now time.Time) Report {
 		auditItem(in),
 		hardenItem(in),
 		helloItem(in),
+		lockdownItem(in),
 		extensionsItem(in),
 		memoryItem(in),
 		{ID: "telegram", Title: "Код-пароль Telegram", Level: Info,
@@ -226,6 +231,15 @@ func helloItem(in Input) Item {
 	}
 	return Item{"hello", "Windows Hello", Warn, "не включён ни для одного профиля",
 		"Без Hello мастер-пароль вводится в окне на обычном рабочем столе; включается пунктом меню в трее"}
+}
+
+func lockdownItem(in Input) Item {
+	title := "Сетевой заслон для vault"
+	if in.LockRules >= in.LockRulesWant && in.LockDenied >= in.LockDeniedWant && in.LockRulesWant > 0 {
+		return Item{"lockdown", title, OK, fmt.Sprintf("правил брандмауэра %d, интерпретаторов под запретом %d", in.LockRules, in.LockDenied), ""}
+	}
+	return Item{"lockdown", title, Warn, fmt.Sprintf("правил брандмауэра %d из %d, запрет интерпретаторов %d из %d", in.LockRules, in.LockRulesWant, in.LockDenied, in.LockDeniedWant),
+		"От администратора: sessionvault lockdown (брандмауэр Windows должен быть включён; обновление Windows может сбросить права на интерпретаторы)"}
 }
 
 type winSystem struct{}

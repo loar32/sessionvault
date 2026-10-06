@@ -215,9 +215,9 @@ Write-Host '--- 1. установка службы ---'
 $r = Vm {
     param($tg)
     $env:SESSIONVAULT_SKIP_SIGNATURE = '1'
-    $out = & C:\sv\sessionvault.exe install -user tester -telegram-exe $tg 2>&1
+    $out = & C:\sv\sessionvault.exe install -user tester -telegram-exe $tg 2>&1 | Out-String
     Start-Sleep 3
-    @{ out = ($out -join ' '); svc = (Get-Service SessionVault).Status.ToString(); exe = (Test-Path $exe) }
+    @{ out = (($out -join ' ') -replace '\s+', ' '); svc = [string](Get-Service SessionVault -ErrorAction SilentlyContinue).Status; exe = (Test-Path $exe) }
 } @('C:\sv\standin.exe')
 Check ($r.svc -eq 'Running') "служба запущена ($($r.svc)); $($r.out)"
 Check $r.exe 'бинарник в Program Files'
@@ -313,6 +313,31 @@ foreach ($k in 'work', 'exchange') {
     Check ($r.probe -match "${k}_chmod=no") "vault не может дать себе право запуска в ${k}"
 }
 Check ($r.user -match 'EXIT=0') "основная учётка запускает файл из общей папки ($("$($r.user)" -replace '\s+',' '))"
+foreach ($k in 'ps', 'wscript', 'cscript', 'mshta') {
+    Check ($r.probe -match "${k}_start=no") "vault не может запустить интерпретатор $k (запрет ACL)"
+}
+Check ($r.probe -match 'cmd_start=yes') 'контроль пробы: vault запускает обычные программы (cmd)'
+$r = Vm {
+    $k = 'HKLM:\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\FirewallRules'
+    $p = Get-ItemProperty $k
+    $mine = @($p.PSObject.Properties | Where-Object { $_.Value -is [string] -and $_.Value -match 'EmbedCtxt=SessionVault' } | ForEach-Object { $_.Value })
+    $vsid = (New-Object Security.Principal.NTAccount('vault')).Translate([Security.Principal.SecurityIdentifier]).Value
+    $ps = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
+    @{ n = $mine.Count
+       block = @($mine | Where-Object { $_ -match 'Action=Block' -and $_ -match 'Dir=Out' -and $_ -match 'Active=TRUE' }).Count
+       forVault = @($mine | Where-Object { $_ -match [regex]::Escape($vsid) }).Count
+       curl = @($mine | Where-Object { $_ -match 'curl\.exe' -and $_ -match [regex]::Escape($vsid) }).Count
+       selfAll = @($mine | Where-Object { $_ -match 'sessionvault\.exe' -and $_ -notmatch 'LUAuth=' -and $_ -match 'Action=Block' }).Count
+       acl = ((icacls $ps) -join ' ')
+       tester = (& $ps -NoProfile -Command '1+1') }
+}
+Check ($r.n -ge 10 -and $r.block -eq $r.n) "правила брандмауэра SessionVault: $($r.n), все исходящие блокирующие и активные"
+Check ($r.forVault -eq ($r.n - 1) -and $r.curl -ge 1) "правила утилит привязаны к учётке vault ($($r.forVault)), curl закрыт"
+Check ($r.selfAll -eq 1) 'sessionvault.exe закрыт для сети для всех пользователей'
+Check ($r.acl -match 'vault:\(DENY\)\(X\)') 'на powershell.exe стоит запрет запуска для vault'
+Check ($r.tester -eq 2) 'основной учётке и администратору PowerShell по-прежнему доступен'
+$r = Vm { & C:\sv\sessionvault.exe check -json 2>&1 | Out-String }
+Check ($r -match '"id":"lockdown"[^}]*"level":"ok"') 'check: пункт «Сетевой заслон для vault» зелёный'
 
 Write-Host '--- 6. закрытие приложения: снова только шифр, ключ в службе остаётся ---'
 $r = Vm {
@@ -786,7 +811,7 @@ $r = Vm {
 }
 $rep = try { $r.json | ConvertFrom-Json } catch { $null }
 $ids = if ($rep) { ($rep.items | ForEach-Object { $_.id }) -join ',' } else { '' }
-Check ($rep -and $ids -match 'user,windows,defender,bitlocker,hvci,secureboot,blocklist,asr,audit,harden,hello,extensions,memory,telegram,clickfix') "check -json: отчёт от службы со всеми пунктами ($ids)"
+Check ($rep -and $ids -match 'user,windows,defender,bitlocker,hvci,secureboot,blocklist,asr,audit,harden,hello,lockdown,extensions,memory,telegram,clickfix') "check -json: отчёт от службы со всеми пунктами ($ids)"
 Check ($rep -and ($rep.items | Where-Object { $_.id -eq 'user' }).level -eq 'ok' -and ($rep.items | Where-Object { $_.id -eq 'audit' }).level -eq 'ok') "check: основная учётка не админ, аудит работает"
 Check ($rep -and ($rep.items | Where-Object { $_.id -eq 'hvci' }).level -eq 'warn') "check: выключенная HVCI найдена (жёлтый пункт)"
 Check ($r.saved -and $r.file -notmatch 'items') "check.json создан и недоступен обычной учётке"
@@ -1006,6 +1031,13 @@ Check ($r.code -eq 0 -and -not $r.svc -and $r.base -eq 0) "удаление по
 Check $r.exchange 'файлы общей папки после удаления остались'
 Check ($r.markers.edge -eq 'browser-session-marker' -and $r.markers.chrome -eq 'browser-session-marker' -and $r.markers.brave -eq 'browser-session-marker') 'профили Edge, Chrome и Brave возвращены на прежние места с данными'
 Check ($r.owner -like '*\tester') "владелец вернувшихся данных — основная учётка ($($r.owner))"
+$r = Vm {
+    $k = 'HKLM:\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\FirewallRules'
+    $left = @((Get-ItemProperty $k).PSObject.Properties | Where-Object { $_.Value -is [string] -and $_.Value -match 'EmbedCtxt=SessionVault' }).Count
+    @{ left = $left; deny = ((icacls 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe') -join ' ') }
+}
+Check ($r.left -eq 0) "удаление убрало правила брандмауэра SessionVault (осталось $($r.left))"
+Check ($r.deny -notmatch '\(DENY\)') 'удаление сняло запрет запуска с интерпретаторов'
 
 $r = Vm {
     $keys = @(
