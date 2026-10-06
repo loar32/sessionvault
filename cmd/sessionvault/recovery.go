@@ -29,7 +29,7 @@ func recoveryCmd(args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Println("Ключ восстановления (24 слова). Запишите на бумагу по порядку и спрячьте; на экране он больше не появится.")
+		fmt.Println("Ключ восстановления (24 слова). Запишите на бумагу по порядку и спрячьте; на экране он больше не появится. Закройте это окно, когда запишете.")
 		fmt.Println("Он открывает все защищённые приложения без пароля и Windows Hello. Прежний ключ, если был, больше не работает.")
 		fmt.Println()
 		fmt.Println(words)
@@ -47,11 +47,14 @@ func recoveryCmd(args []string) error {
 			return err
 		}
 		defer crypto.Wipe(pw)
-		names, err := service.RecoveryReset(string(words), pw)
+		names, skipped, err := service.RecoveryReset(string(words), pw)
 		if err != nil {
 			return err
 		}
 		fmt.Println("новый мастер-пароль задан для:", strings.Join(names, ", "))
+		if len(skipped) > 0 {
+			fmt.Println("не изменены (ключ их не открывает, прежний пароль остался):", strings.Join(skipped, ", "))
+		}
 		return nil
 	case "status":
 		with, without, err := service.RecoveryCovered()
