@@ -129,7 +129,7 @@ func RefreshApp(name string) error {
 		return err
 	}
 	if p.Source == "" {
-		return fmt.Errorf("%s не копируется под vault: обновлять нечего", name)
+		return fmt.Errorf("%s не копируется под учётку приложения: обновлять нечего", name)
 	}
 	cfg, err := LoadConfig()
 	if err != nil {
@@ -264,7 +264,7 @@ func AddApp(o AddOptions, confirm func(info string) bool, askPassword func() ([]
 	if o.CopyDir || !inProtectedRoot(o.Exe) {
 		info += "Приложение лежит там, где его может заменить обычная учётка: его копия будет помещена в каталог SessionVault (после обновления приложения: sessionvault refresh " + o.Name + ").\n"
 	}
-	info += "Оно будет запускаться под учёткой vault с доступом к своим расшифрованным данным.\n"
+	info += "Оно будет запускаться под собственной учёткой sv-<имя> с доступом к своим расшифрованным данным.\n"
 	if !confirm(info) {
 		return ErrNotConfirmed
 	}
