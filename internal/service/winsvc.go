@@ -4,6 +4,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/loar32/sessionvault/internal/isolation"
+	"github.com/loar32/sessionvault/internal/profiles"
 	"golang.org/x/sys/windows/svc"
 )
 
@@ -57,6 +59,10 @@ func RunService() error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err
+	}
+	// Первый запуск после обновления до подписи профилей: подписываем то, что лежит в каталоге (его пишет только администратор).
+	if !profiles.HasKey(isolation.ProfilesDir()) {
+		_ = profiles.Resign(isolation.ProfilesDir())
 	}
 	lg, closeLog, err := OpenLog()
 	if err != nil {

@@ -29,8 +29,15 @@ type Profile struct {
 	// всё остальное запускать нельзя.
 	ExecFiles  []string `json:"exec_files,omitempty"`
 	ExecSigner string   `json:"exec_signer,omitempty"`
-	// Раскладка приманки: telegram или chromium.
+	// Раскладка приманки: telegram, chromium или discord.
 	Decoy string `json:"decoy,omitempty"`
+	// Подпись профиля (HMAC); ставится при записи, проверяется при чтении.
+	Sig string `json:"sig,omitempty"`
+	// Каталог установки, из которого скопирован exe (приложение лежит в профиле пользователя, где у vault доступа нет):
+	// `refresh` копирует его заново после обновления приложения.
+	Source string `json:"source,omitempty"`
+	// Профиль добавлен администратором командой add, а не взят из встроенных шаблонов.
+	Custom bool `json:"custom,omitempty"`
 }
 
 // Шаблон, который установщик записывает в ProgramData; службе нужен только файл оттуда.
@@ -43,6 +50,23 @@ var Telegram = Profile{
 	Title:      "Telegram",
 	Origin:     `AppData\Roaming\Telegram Desktop\tdata`,
 	Decoy:      "telegram",
+}
+
+// Discord ставится в профиль пользователя (%LOCALAPPDATA%\Discord\app-<версия>): путь к exe находит служба при защите,
+// каталог копируется под vault. Это Electron: папку данных задаёт --user-data-dir. Токен лежит в Local Storage и зашифрован ключом
+// DPAPI учётки, поэтому профиль новый (вход заново), как у браузеров.
+var Discord = Profile{
+	Name:       "discord",
+	DataDir:    "discord",
+	LaunchArgs: []string{`--user-data-dir={data_path}\discord`},
+	Publisher:  "Discord Inc.",
+	Title:      "Discord",
+	Origin:     `AppData\Roaming\discord`,
+	Decoy:      "discord",
+	Exclude: []string{
+		"Cache", "Code Cache", "GPUCache", "DawnCache", "DawnGraphiteCache", "DawnWebGPUCache", "Crashpad",
+		`Service Worker\CacheStorage`, "blob_storage", "VideoDecodeStats",
+	},
 }
 
 var (
@@ -108,6 +132,8 @@ func Template(name string) (Profile, bool) {
 	case "edge":
 		return chromium(name, "Microsoft Edge", `Microsoft\Edge\Application\msedge.exe`, "Microsoft Corporation",
 			`AppData\Local\Microsoft\Edge\User Data`, true), true
+	case "discord":
+		return Discord, true
 	case "brave":
 		return chromium(name, "Brave", `BraveSoftware\Brave-Browser\Application\brave.exe`, "Brave Software, Inc.",
 			`AppData\Local\BraveSoftware\Brave-Browser\User Data`, false), true
@@ -116,13 +142,27 @@ func Template(name string) (Profile, bool) {
 }
 
 // TemplateNames — имена всех шаблонов.
-func TemplateNames() []string { return []string{"telegram", "chrome", "edge", "brave"} }
+func TemplateNames() []string { return []string{"telegram", "chrome", "edge", "brave", "discord"} }
 
 var validName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
 
 func ValidName(name string) bool { return validName.MatchString(name) }
 
 func Load(dir, name string) (Profile, error) {
+	p, err := load(dir, name)
+	if err != nil {
+		return Profile{}, err
+	}
+	if RequireSignature {
+		if err := p.verify(dir); err != nil {
+			return Profile{}, fmt.Errorf("профиль %q: %w", name, err)
+		}
+	}
+	return p.withDefaults(), nil
+}
+
+// load читает и проверяет профиль без проверки подписи и без дополнений для прежних версий: подпись считается по тому, что в файле.
+func load(dir, name string) (Profile, error) {
 	if !ValidName(name) {
 		return Profile{}, fmt.Errorf("недопустимое имя профиля %q", name)
 	}
@@ -138,7 +178,7 @@ func Load(dir, name string) (Profile, error) {
 	if p.Name != name || !filepath.IsAbs(p.Exe) || !filepath.IsLocal(p.DataDir) || (p.Origin != "" && !filepath.IsLocal(p.Origin)) {
 		return Profile{}, fmt.Errorf("профиль %q повреждён", name)
 	}
-	if p.Decoy != "" && p.Decoy != "telegram" && p.Decoy != "chromium" {
+	if p.Decoy != "" && p.Decoy != "telegram" && p.Decoy != "chromium" && p.Decoy != "discord" {
 		return Profile{}, fmt.Errorf("профиль %q: неизвестная раскладка приманки %q", name, p.Decoy)
 	}
 	for _, x := range p.Exclude {
@@ -151,6 +191,10 @@ func Load(dir, name string) (Profile, error) {
 			return Profile{}, fmt.Errorf("профиль %q: недопустимое имя файла %q", name, x)
 		}
 	}
+	return p, nil
+}
+
+func (p Profile) withDefaults() Profile {
 	// Браузер, защищённый до v0.13, не знает про исключение для Widevine.
 	if p.Decoy == "chromium" && p.ExecFiles == nil {
 		p.ExecFiles, p.ExecSigner = chromiumExecFiles, chromiumExecSigner
@@ -165,10 +209,16 @@ func Load(dir, name string) (Profile, error) {
 	if p.Title == "" {
 		p.Title = p.Name
 	}
-	return p, nil
+	return p
 }
 
+// Save подписывает профиль и записывает его; создаёт ключ подписи при первой записи.
 func Save(dir string, p Profile) error {
+	key, err := loadKey(dir, true)
+	if err != nil {
+		return err
+	}
+	p.Sig = p.signature(key)
 	b, err := json.MarshalIndent(p, "", "  ")
 	if err != nil {
 		return err

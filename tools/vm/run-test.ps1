@@ -803,6 +803,57 @@ $w = New-Object IO.StreamWriter($p); $w.WriteLine('list'); $w.Flush()
 }
 Check ($r -match 'telegram' -and $r -match 'edge' -and $r -notmatch '\\' -and $r -notmatch ':') "list отдаёт только имена профилей ($("$r" -replace '\s+',' '))"
 
+Write-Host '--- 15e. подпись профилей, add, Discord, refresh ---'
+$r = Vm {
+    param($pw)
+    $ls = 'powershell -NoProfile -ExecutionPolicy Bypass -File C:\sv\list.ps1'
+    $sv = 'C:\sv\sessionvault.exe'
+    $pdir = 'C:\ProgramData\SessionVault\profiles'
+    # Профиль с правкой без подписи служба не видит; trust подписывает его как есть.
+    $orig = Get-Content "$pdir\brave.json" -Raw -Encoding UTF8
+    Set-Content "$pdir\brave.json" ($orig -replace '"title": "Brave"', '"title": "Brave2"') -Encoding UTF8
+    AsTester 'ls2' $ls; Done 'ls2' 30 | Out-Null; $tampered = Out 'ls2'
+    $t = & $sv trust -yes brave 2>&1 | Out-String
+    AsTester 'ls3' $ls; Done 'ls3' 30 | Out-Null; $trusted = Out 'ls3'
+    # Собственное приложение: заглушка как «чужое» приложение.
+    New-Item -ItemType Directory -Force 'C:\Users\tester\AppData\Roaming\CustomApp' | Out-Null
+    Set-Content 'C:\Users\tester\AppData\Roaming\CustomApp\data.txt' 'custom-secret'
+    $env:SESSIONVAULT_SKIP_SIGNATURE = '1'
+    $bad1 = & $sv add -yes telegram C:\sv\standin.exe C:\Users\tester\AppData\Roaming\X -arg '-workdir {data_path}' 2>&1 | Out-String; $bad1c = $LASTEXITCODE
+    $bad2 = & $sv add -yes custom C:\sv\standin.exe C:\Users\tester\AppData\Roaming\CustomApp 2>&1 | Out-String; $bad2c = $LASTEXITCODE
+    $bad3 = & $sv add -yes custom C:\sv\standin.exe C:\Windows\Temp\Elsewhere -arg '-workdir {data_path}' 2>&1 | Out-String; $bad3c = $LASTEXITCODE
+    $add = $pw | & $sv add -yes -password-stdin -data data -arg '-workdir {data_path}\data' custom C:\sv\standin.exe C:\Users\tester\AppData\Roaming\CustomApp 2>&1 | Out-String; $addc = $LASTEXITCODE
+    $custom = Get-Content "$pdir\custom.json" -Raw -Encoding UTF8
+    # Discord: подставная установка (в ВМ нет сети), подпись Discord Inc. не проверяется из-за SESSIONVAULT_SKIP_SIGNATURE.
+    $noDiscord = & $sv protect -yes -password-stdin discord 2>&1 | Out-String; $noDiscordc = $LASTEXITCODE
+    $dd = 'C:\Users\tester\AppData\Local\Discord\app-1.0.9001'
+    New-Item -ItemType Directory -Force "$dd\resources" | Out-Null
+    Copy-Item C:\sv\standin.exe "$dd\Discord.exe"
+    Set-Content "$dd\resources\app.asar" 'asar-v1'
+    $dis = $pw | & $sv protect -yes -password-stdin discord 2>&1 | Out-String; $disc = $LASTEXITCODE
+    $apps = Join-Path (Split-Path $exe) 'apps\discord'
+    Set-Content "$dd\resources\app.asar" 'asar-v2'
+    $ref = & $sv refresh discord 2>&1 | Out-String; $refc = $LASTEXITCODE
+    @{ tampered = $tampered; trusted = $trusted; trust = ($t -replace '\s+', ' '); bad1c = $bad1c; bad2c = $bad2c; bad3c = $bad3c; addc = $addc; noDiscordc = $noDiscordc; disc = $disc; refc = $refc
+       bad1 = ($bad1 -replace '\s+', ' '); bad2 = ($bad2 -replace '\s+', ' '); bad3 = ($bad3 -replace '\s+', ' '); add = ($add -replace '\s+', ' ')
+       custom = $custom; cfiles = ((Get-ChildItem C:\ProgramData\SessionVault\vault\custom -Name) -join ',')
+       moved = -not (Test-Path 'C:\Users\tester\AppData\Roaming\CustomApp')
+       noDiscord = ($noDiscord -replace '\s+', ' '); dis = ($dis -replace '\s+', ' '); ref = ($ref -replace '\s+', ' ')
+       dexe = (Test-Path "$apps\Discord.exe"); asar = (Get-Content "$apps\resources\app.asar" -ErrorAction SilentlyContinue)
+       dprofile = (Get-Content "$pdir\discord.json" -Raw -Encoding UTF8); dfiles = ((Get-ChildItem C:\ProgramData\SessionVault\vault\discord -Name | Where-Object { $_ -ne 'running.lock' }) -join ',') }
+} @($MasterPassword)
+Check ($r.tampered -notmatch 'brave' -and $r.tampered -match 'edge') "профиль с правкой без подписи службе не виден ($("$($r.tampered)" -replace '\s+',' '))"
+Check ($r.trusted -match 'brave') "после trust профиль снова виден ($($r.trust))"
+Check ($r.bad1c -ne 0 -and $r.bad1 -match 'protect telegram') "add отказывает для имени встроенного приложения (код $($r.bad1c))"
+Check ($r.bad2c -ne 0 -and $r.bad2 -match 'data_path') "add отказывает без {data_path} в аргументах (код $($r.bad2c))"
+Check ($r.bad3c -ne 0 -and $r.bad3 -match 'C:\\Users\\tester\)') "add отказывает для каталога данных вне профиля основной учётки (код $($r.bad3c))"
+Check ($r.addc -eq 0 -and $r.cfiles -eq 'data.enc,vault.json' -and $r.moved) "add: приложение защищено, данные перенесены под vault ($($r.add); $($r.cfiles))"
+Check ($r.custom -match '"custom": true' -and $r.custom -match '"sig":') 'профиль add помечен как собственный и подписан'
+Check ($r.noDiscordc -ne 0 -and $r.noDiscord -match 'AppData\\Local\\Discord') "protect discord без установленного Discord отказывает и называет каталог (код $($r.noDiscordc))"
+Check ($r.disc -eq 0 -and $r.dexe -and $r.dfiles -eq 'data.enc,vault.json') "protect discord: каталог скопирован под vault, хранилище создано ($($r.dis))"
+Check ($r.dprofile -match '"source":' -and $r.dprofile -match '"sig":') 'профиль Discord записан с источником копии и подписью'
+Check ($r.refc -eq 0 -and ("$($r.asar)" -match 'asar-v2')) "refresh обновил копию Discord ($($r.ref))"
+
 # Проверка защиты: отчёт приходит от службы, check.json для обычной учётки закрыт.
 $r = Vm {
     AsTester 'ck' '"C:\Program Files\SessionVault\sessionvault.exe" check -json'
@@ -1041,6 +1092,13 @@ $r = Vm {
 }
 Check ($r.left -eq 0) "удаление убрало правила брандмауэра SessionVault (осталось $($r.left))"
 Check ($r.deny -notmatch '\(DENY\)') 'удаление сняло запрет запуска с интерпретаторов'
+$r = Vm {
+    @{ custom = (Get-Content 'C:\Users\tester\AppData\Roaming\CustomApp\data.txt' -ErrorAction SilentlyContinue)
+       discord = (Test-Path 'C:\Users\tester\AppData\Roaming\discord\First Run')
+       apps = (Test-Path (Join-Path (Split-Path $exe) 'apps')) }
+}
+Check ($r.custom -eq 'custom-secret') 'удаление вернуло данные собственного приложения (add) на прежнее место'
+Check $r.discord 'удаление вернуло данные Discord на прежнее место'
 
 $r = Vm {
     $keys = @(

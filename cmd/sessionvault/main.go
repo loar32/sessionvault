@@ -28,7 +28,10 @@ import (
 )
 
 const usage = `sessionvault install [-user имя] [-telegram-exe путь]
-sessionvault protect [-yes] [-password-stdin] <telegram|chrome|edge|brave>
+sessionvault protect [-yes] [-password-stdin] <telegram|chrome|edge|brave|discord>
+sessionvault add [-yes] [-copy-dir] [-data имя] -arg "...{data_path}..." имя путь-к-exe каталог-данных
+sessionvault refresh <приложение>
+sessionvault trust [-yes] <профиль>
 sessionvault import-tdata [путь-к-tdata]
 sessionvault uninstall
 sessionvault restore-backup <профиль>
@@ -70,6 +73,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
 	}
+	profiles.RequireSignature = true
 	args := os.Args[2:]
 	if i := slices.Index(args, "-pause"); i >= 0 {
 		args = slices.Delete(args, i, i+1)
@@ -96,6 +100,13 @@ func main() {
 		err = restoreBackup(args)
 	case "harden":
 		err = harden(args)
+	case "add":
+		err = addCmd(args)
+		nudgeService(err)
+	case "refresh":
+		err = refreshCmd(args)
+	case "trust":
+		err = trustCmd(args)
 	case "lockdown":
 		err = lockdownCmd(args)
 	case "hello":
@@ -175,7 +186,7 @@ func protect(args []string) error {
 		return err
 	}
 	if fs.NArg() < 1 {
-		return errors.New("укажи приложение: sessionvault protect telegram|chrome|edge|brave")
+		return errors.New("укажи приложение: sessionvault protect telegram|chrome|edge|brave|discord")
 	}
 	app := fs.Arg(0)
 	rest := fs.Args()[1:]

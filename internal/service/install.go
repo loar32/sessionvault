@@ -198,6 +198,10 @@ func Install(mainUser, telegramExe string) (err error) {
 	if err = profiles.Save(isolation.ProfilesDir(), tg); err != nil {
 		return err
 	}
+	// Профили прежних версий (браузеры, Telegram) не подписаны: установка по явной команде администратора подписывает их все.
+	if e := profiles.Resign(isolation.ProfilesDir()); e != nil {
+		fmt.Fprintln(os.Stderr, "профили подписаны не все:", e)
+	}
 
 	if err = addAutostart(); err != nil {
 		return err

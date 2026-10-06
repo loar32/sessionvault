@@ -236,11 +236,13 @@ func Import(path string, ask func(app string) ([]byte, error)) (string, error) {
 	if _, err := os.Stat(isolation.VaultDir()); err != nil {
 		return "", errors.New("защищённой папки нет: сначала install")
 	}
-	if _, err := os.Stat(p.Exe); err != nil {
-		return "", fmt.Errorf("%s не найден (%s): сначала установите приложение", p.Title, p.Exe)
-	}
-	if err := verifyPublisher(p); err != nil {
-		return "", err
+	if p.Exe != "" {
+		if _, err := os.Stat(p.Exe); err != nil {
+			return "", fmt.Errorf("%s не найден (%s): сначала установите приложение", p.Title, p.Exe)
+		}
+		if err := verifyPublisher(p); err != nil {
+			return "", err
+		}
 	}
 	v := vault.Vault{Dir: isolation.DataPath(b.App), DataName: workDataName, Exclude: p.Exclude}
 	if v.Exists() {
@@ -249,8 +251,14 @@ func Import(path string, ask func(app string) ([]byte, error)) (string, error) {
 	if _, err := os.Stat(isolation.WorkPath(b.App)); err == nil {
 		return "", fmt.Errorf("в %s есть данные без хранилища: разберитесь с ними вручную", v.Dir)
 	}
+	if p.Exe == "" {
+		if err := resolveApp(&p, cfg.MainUser); err != nil {
+			return "", err
+		}
+	}
 	secret, err := ask(b.App)
 	if err != nil {
+		_ = os.RemoveAll(filepath.Join(InstallDir(), "apps", b.App))
 		return "", err
 	}
 	defer crypto.Wipe(secret)
