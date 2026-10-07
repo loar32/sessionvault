@@ -2,6 +2,7 @@ package audit
 
 import (
 	"errors"
+	"github.com/loar32/sessionvault/internal/i18n"
 	"io/fs"
 	"path/filepath"
 	"strings"
@@ -52,7 +53,7 @@ func finalPath(h windows.Handle) (string, error) {
 		return "", err
 	}
 	if int(n) >= len(buf) {
-		return "", errors.New("слишком длинный путь")
+		return "", errors.New(i18n.T("слишком длинный путь"))
 	}
 	return strings.TrimPrefix(windows.UTF16ToString(buf[:n]), `\\?\`), nil
 }
@@ -67,15 +68,15 @@ func OpenDirChecked(path string, access, share uint32) (windows.Handle, error) {
 	}
 	_, attr, err := keyOf(h)
 	if err == nil && attr&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-		err = errors.New("на пути ссылка или junction: " + path)
+		err = errors.New(i18n.T("на пути ссылка или junction: ") + path)
 	}
 	if err == nil && attr&windows.FILE_ATTRIBUTE_DIRECTORY == 0 {
-		err = errors.New("не папка: " + path)
+		err = errors.New(i18n.T("не папка: ") + path)
 	}
 	if err == nil {
 		var real string
 		if real, err = finalPath(h); err == nil && !strings.EqualFold(real, filepath.Clean(path)) && !sameLong(real, path) {
-			err = errors.New("путь ведёт в другое место: " + path + " → " + real)
+			err = errors.New(i18n.T("путь ведёт в другое место: ") + path + " → " + real)
 		}
 	}
 	if err != nil {

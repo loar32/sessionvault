@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"errors"
+	"github.com/loar32/sessionvault/internal/i18n"
 	"io"
 	"runtime"
 	"unsafe"
@@ -102,7 +103,7 @@ func OpenAAD(key, blob, aad []byte) ([]byte, error) {
 		return nil, err
 	}
 	if len(blob) < gcm.NonceSize() {
-		return nil, errors.New("данные слишком короткие")
+		return nil, errors.New(i18n.T("данные слишком короткие"))
 	}
 	return gcm.Open(nil, blob[:gcm.NonceSize()], blob[gcm.NonceSize():], aad)
 }

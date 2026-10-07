@@ -2,6 +2,7 @@ package isolation
 
 import (
 	"fmt"
+	"github.com/loar32/sessionvault/internal/i18n"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -49,7 +50,7 @@ func changeRights(user string, add bool) error {
 	attrs.Length = uint32(unsafe.Sizeof(attrs))
 	var policy windows.Handle
 	if st, _, _ := procLsaOpenPolicy.Call(0, uintptr(unsafe.Pointer(&attrs)), policyCreateAccount|policyLookupNames, uintptr(unsafe.Pointer(&policy))); st != 0 {
-		return fmt.Errorf("LsaOpenPolicy: статус %#x", st)
+		return fmt.Errorf(i18n.T("LsaOpenPolicy: статус %#x"), st)
 	}
 	defer func() { _, _, _ = procLsaClose.Call(uintptr(policy)) }()
 
@@ -68,7 +69,7 @@ func changeRights(user string, add bool) error {
 		st, _, _ = procLsaRemoveAccountRight.Call(uintptr(policy), uintptr(unsafe.Pointer(sid)), 0, uintptr(unsafe.Pointer(&rights[0])), uintptr(len(rights)))
 	}
 	if st != 0 {
-		return fmt.Errorf("LSA права %s: статус %#x", user, st)
+		return fmt.Errorf(i18n.T("LSA права %s: статус %#x"), user, st)
 	}
 	return nil
 }

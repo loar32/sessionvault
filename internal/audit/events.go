@@ -3,6 +3,7 @@ package audit
 import (
 	"encoding/xml"
 	"errors"
+	"github.com/loar32/sessionvault/internal/i18n"
 	"strconv"
 	"strings"
 	"unsafe"
@@ -78,7 +79,7 @@ func parseRead(b []byte) (Read, error) {
 		}
 	}
 	if r.Object == "" {
-		return r, errors.New("в событии нет ObjectName")
+		return r, errors.New(i18n.T("в событии нет ObjectName"))
 	}
 	return r, nil
 }
@@ -86,7 +87,7 @@ func parseRead(b []byte) (Read, error) {
 // NTPath переводит путь с буквой диска в формат устройства, в котором журнал записывает объекты.
 func NTPath(path string) (string, error) {
 	if len(path) < 2 || path[1] != ':' {
-		return "", errors.New("нужен путь с буквой диска")
+		return "", errors.New(i18n.T("нужен путь с буквой диска"))
 	}
 	drive, err := windows.UTF16PtrFromString(path[:2])
 	if err != nil {

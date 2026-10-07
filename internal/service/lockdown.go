@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"github.com/loar32/sessionvault/internal/i18n"
 	"os"
 	"time"
 
@@ -29,7 +30,7 @@ func (s *Service) denyInterpreters() {
 // Lockdown включает (off=false) или снимает сетевой заслон: правила брандмауэра и запрет интерпретаторов для vault.
 func Lockdown(off bool) error {
 	if !isolation.IsElevated() {
-		return errors.New("нужен запуск от администратора")
+		return errors.New(i18n.T("нужен запуск от администратора"))
 	}
 	if err := isolation.EnablePrivileges("SeRestorePrivilege", "SeBackupPrivilege"); err != nil {
 		return err
@@ -49,7 +50,7 @@ func Lockdown(off bool) error {
 		return err
 	}
 	if _, err := os.Stat(installedExe()); err != nil {
-		return errors.New("SessionVault не установлен: сначала install")
+		return errors.New(i18n.T("SessionVault не установлен: сначала install"))
 	}
 	return errors.Join(lockdown.ApplyFirewall(sid, installedExe(), isolation.BaseDir()), lockdown.DenyInterpreters(sid))
 }

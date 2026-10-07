@@ -3,6 +3,7 @@ package tray
 
 import (
 	"errors"
+	"github.com/loar32/sessionvault/internal/i18n"
 	"os"
 	"runtime"
 	"strings"
@@ -81,6 +82,7 @@ const (
 	idClose       = 1020 // и далее по одному на запущенное приложение (до 1035)
 	idCheck       = 1060
 	idExchange    = 1061
+	idWizard      = 1062
 	idExit        = 1100
 	pollEvery     = 2 * time.Second  // частый опрос: после действия пользователя, чтобы иконка не отставала
 	pollIdle      = 10 * time.Second // обычный опрос в простое
@@ -155,7 +157,6 @@ var (
 	taskbarMsg  uintptr
 	menuApps    []string
 	menuRunning []string
-	stateTitles = [4]string{"SessionVault: служба недоступна", "SessionVault: заблокировано", "SessionVault: открыто", "SessionVault: ТРЕВОГА, прочитана приманка"}
 )
 
 func wstr(s string) *uint16 {
@@ -180,7 +181,7 @@ func Run() error {
 		return e
 	}
 	if errors.Is(e, windows.ERROR_ALREADY_EXISTS) {
-		return errors.New("трей уже запущен")
+		return errors.New(i18n.T("трей уже запущен"))
 	}
 	for i, c := range [4]uint32{0xff8a8a8a, 0xff2e9e4f, 0xffe08a1e, 0xffd62b2b} { // серый, зелёный, оранжевый, красный
 		icons[i] = makeIcon(c)
@@ -251,7 +252,7 @@ func makeIcon(argb uint32) uintptr {
 func notify(op uintptr, balloon string) {
 	n := notifyIcon{Size: uint32(unsafe.Sizeof(notifyIcon{})), Hwnd: hwnd, ID: 1,
 		Flags: nifMessage | nifIcon | nifTip, CallbackMessage: wmCallback, Icon: icons[state]}
-	copyUTF16(n.Tip[:], stateTitles[state])
+	copyUTF16(n.Tip[:], stateTitle(state))
 	if balloon != "" {
 		n.Flags |= nifInfo
 		copyUTF16(n.InfoTitle[:], "SessionVault")
@@ -294,7 +295,9 @@ func poll() {
 		// Первый ответ службы после запуска трея: окно проверки при красных пунктах, один раз за учётку.
 		if s != stateDown && !autoChecked {
 			autoChecked = true
-			go checkwin.AutoCheck()
+			if !autoWizard() {
+				go checkwin.AutoCheck()
+			}
 		}
 		delay := pollIdle
 		if time.Now().UnixNano() < fastUntil.Load() {
@@ -307,21 +310,30 @@ func poll() {
 	}
 }
 
-var runMessages = map[string]string{
-	ipc.Busy:   "Уже идёт запуск или ввод пароля",
-	ipc.Failed: "Не удалось запустить приложение",
+func stateTitle(s int) string {
+	return [4]string{i18n.T("SessionVault: служба недоступна"), i18n.T("SessionVault: заблокировано"), i18n.T("SessionVault: открыто"), i18n.T("SessionVault: ТРЕВОГА, прочитана приманка")}[s]
+}
+
+func runMessage(resp string) string {
+	switch resp {
+	case ipc.Busy:
+		return i18n.T("Уже идёт запуск или ввод пароля")
+	case ipc.Failed:
+		return i18n.T("Не удалось запустить приложение")
+	}
+	return ""
 }
 
 var checking atomic.Bool
 
 // Разные причины требуют разных действий: остановленную службу запускают, занятой дают время.
 func serviceItem(err error) checkup.Item {
-	it := checkup.Item{Title: "Служба SessionVault", Level: checkup.Bad, Detail: "не отвечает (занята)", Hint: "Повторите через минуту"}
+	it := checkup.Item{Title: i18n.T("Служба SessionVault"), Level: checkup.Bad, Detail: i18n.T("не отвечает (занята)"), Hint: i18n.T("Повторите через минуту")}
 	switch {
 	case errors.Is(err, windows.ERROR_FILE_NOT_FOUND):
-		it.Detail, it.Hint = "остановлена", "Запустите службу SessionVault (services.msc) или перезагрузите компьютер"
+		it.Detail, it.Hint = i18n.T("остановлена"), i18n.T("Запустите службу SessionVault (services.msc) или перезагрузите компьютер")
 	case errors.Is(err, windows.ERROR_ACCESS_DENIED):
-		it.Detail, it.Hint = "нет доступа", "Запускать трей нужно из основной учётки, для которой установлена защита"
+		it.Detail, it.Hint = i18n.T("нет доступа"), i18n.T("Запускать трей нужно из основной учётки, для которой установлена защита")
 	}
 	return it
 }
@@ -343,9 +355,9 @@ func runApp(profile string) {
 	speedUp()
 	defer speedUp()
 	resp, err := ipc.Call(ipc.CommandPipe, "run "+profile, 3*time.Minute)
-	text := runMessages[resp]
+	text := runMessage(resp)
 	if err != nil {
-		text = "Служба SessionVault недоступна"
+		text = i18n.T("Служба SessionVault недоступна")
 	}
 	if text != "" {
 		code := 1
@@ -474,33 +486,34 @@ func closeApp(profile string) {
 func showMenu() {
 	menu, _, _ := pCreatePopupMenu.Call()
 	defer func() { _, _, _ = pDestroyMenu.Call(menu) }()
-	_, _, _ = pAppendMenu.Call(menu, mfString|mfGrayed, 0, uintptr(unsafe.Pointer(wstr(stateTitles[state]))))
+	_, _, _ = pAppendMenu.Call(menu, mfString|mfGrayed, 0, uintptr(unsafe.Pointer(wstr(stateTitle(state)))))
 	_, _, _ = pAppendMenu.Call(menu, mfSeparator, 0, 0)
 	appsMu.Lock()
 	menuApps, menuRunning = cachedApps, cachedRunning
 	appsMu.Unlock()
 	if len(menuApps) == 0 {
-		_, _, _ = pAppendMenu.Call(menu, mfString|mfGrayed, 0, uintptr(unsafe.Pointer(wstr("Нет защищённых приложений"))))
+		_, _, _ = pAppendMenu.Call(menu, mfString|mfGrayed, 0, uintptr(unsafe.Pointer(wstr(i18n.T("Нет защищённых приложений")))))
 	}
 	for i, name := range menuApps {
-		_, _, _ = pAppendMenu.Call(menu, mfString, uintptr(idRun+i), uintptr(unsafe.Pointer(wstr("Запустить "+appTitle(name)))))
+		_, _, _ = pAppendMenu.Call(menu, mfString, uintptr(idRun+i), uintptr(unsafe.Pointer(wstr(i18n.T("Запустить ")+appTitle(name)))))
 	}
 	for i, name := range menuRunning {
-		_, _, _ = pAppendMenu.Call(menu, mfString, uintptr(idClose+i), uintptr(unsafe.Pointer(wstr("Закрыть "+appTitle(name)+" и зашифровать данные"))))
+		_, _, _ = pAppendMenu.Call(menu, mfString, uintptr(idClose+i), uintptr(unsafe.Pointer(wstr(i18n.T("Закрыть ")+appTitle(name)+i18n.T(" и зашифровать данные")))))
 	}
 	_, _, _ = pAppendMenu.Call(menu, mfSeparator, 0, 0)
 	if len(menuApps) > 0 {
-		_, _, _ = pAppendMenu.Call(menu, mfString, idHello, uintptr(unsafe.Pointer(wstr("Включить вход через Windows Hello"))))
-		_, _, _ = pAppendMenu.Call(menu, mfString, idFido, uintptr(unsafe.Pointer(wstr("Включить вход по ключу FIDO2 (YubiKey)"))))
-		_, _, _ = pAppendMenu.Call(menu, mfString, idRecovery, uintptr(unsafe.Pointer(wstr("Создать ключ восстановления…"))))
+		_, _, _ = pAppendMenu.Call(menu, mfString, idHello, uintptr(unsafe.Pointer(wstr(i18n.T("Включить вход через Windows Hello")))))
+		_, _, _ = pAppendMenu.Call(menu, mfString, idFido, uintptr(unsafe.Pointer(wstr(i18n.T("Включить вход по ключу FIDO2 (YubiKey)")))))
+		_, _, _ = pAppendMenu.Call(menu, mfString, idRecovery, uintptr(unsafe.Pointer(wstr(i18n.T("Создать ключ восстановления…")))))
 	}
-	_, _, _ = pAppendMenu.Call(menu, mfString, idExchange, uintptr(unsafe.Pointer(wstr("Папка обмена с защищёнными приложениями"))))
-	checkLabel, checkFlags := "Проверить защиту", uintptr(mfString)
+	_, _, _ = pAppendMenu.Call(menu, mfString, idExchange, uintptr(unsafe.Pointer(wstr(i18n.T("Папка обмена с защищёнными приложениями")))))
+	checkLabel, checkFlags := i18n.T("Проверить защиту"), uintptr(mfString)
 	if checking.Load() {
-		checkLabel, checkFlags = "Проверка защиты…", mfString|mfGrayed
+		checkLabel, checkFlags = i18n.T("Проверка защиты…"), mfString|mfGrayed
 	}
 	_, _, _ = pAppendMenu.Call(menu, checkFlags, idCheck, uintptr(unsafe.Pointer(wstr(checkLabel))))
-	_, _, _ = pAppendMenu.Call(menu, mfString, idExit, uintptr(unsafe.Pointer(wstr("Выход"))))
+	_, _, _ = pAppendMenu.Call(menu, mfString, idWizard, uintptr(unsafe.Pointer(wstr(i18n.T("Мастер первой настройки…")))))
+	_, _, _ = pAppendMenu.Call(menu, mfString, idExit, uintptr(unsafe.Pointer(wstr(i18n.T("Выход")))))
 	var p point
 	_, _, _ = pGetCursorPos.Call(uintptr(unsafe.Pointer(&p)))
 	// Без переднего плана меню не закрывается кликом вне него.
@@ -523,11 +536,11 @@ func wndProc(h, message, wparam, lparam uintptr) uintptr {
 		}
 		return 0
 	case wmBalloon:
-		texts := map[uintptr]string{1: runMessages[ipc.Failed], 2: "Служба SessionVault недоступна", 3: runMessages[ipc.Busy],
-			4: "Вход через Windows Hello включён", 5: "Не удалось включить Windows Hello",
-			6: "Windows Hello не настроен: добавьте PIN, лицо или отпечаток в Параметрах Windows",
-			7: "Вход по ключу FIDO2 включён", 8: "Не удалось включить вход по ключу FIDO2: нужны Windows 11, ключ с hmac-secret и PIN ключа",
-			9: "Не удалось закрыть приложение"}
+		texts := map[uintptr]string{1: runMessage(ipc.Failed), 2: i18n.T("Служба SessionVault недоступна"), 3: runMessage(ipc.Busy),
+			4: i18n.T("Вход через Windows Hello включён"), 5: i18n.T("Не удалось включить Windows Hello"),
+			6: i18n.T("Windows Hello не настроен: добавьте PIN, лицо или отпечаток в Параметрах Windows"),
+			7: i18n.T("Вход по ключу FIDO2 включён"), 8: i18n.T("Не удалось включить вход по ключу FIDO2: нужны Windows 11, ключ с hmac-secret и PIN ключа"),
+			9: i18n.T("Не удалось закрыть приложение")}
 		notify(nimModify, texts[wparam])
 		return 0
 	case wmCommand:
@@ -554,6 +567,8 @@ func wndProc(h, message, wparam, lparam uintptr) uintptr {
 			recoveryKey()
 		case id == idCheck:
 			go checkProtection()
+		case id == idWizard:
+			go showWizard()
 		case id == idExchange:
 			_ = windows.ShellExecute(0, windows.StringToUTF16Ptr("open"), windows.StringToUTF16Ptr(isolation.ExchangeDir()), nil, nil, windows.SW_SHOWNORMAL)
 		case id == idExit:

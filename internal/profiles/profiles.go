@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/loar32/sessionvault/internal/i18n"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -155,7 +156,7 @@ func Load(dir, name string) (Profile, error) {
 	}
 	if RequireSignature {
 		if err := p.verify(dir); err != nil {
-			return Profile{}, fmt.Errorf("профиль %q: %w", name, err)
+			return Profile{}, fmt.Errorf(i18n.T("профиль %q: %w"), name, err)
 		}
 	}
 	return p.withDefaults(), nil
@@ -164,31 +165,31 @@ func Load(dir, name string) (Profile, error) {
 // load читает и проверяет профиль без проверки подписи и без дополнений для прежних версий: подпись считается по тому, что в файле.
 func load(dir, name string) (Profile, error) {
 	if !ValidName(name) {
-		return Profile{}, fmt.Errorf("недопустимое имя профиля %q", name)
+		return Profile{}, fmt.Errorf(i18n.T("недопустимое имя профиля %q"), name)
 	}
 	b, err := os.ReadFile(filepath.Join(dir, name+".json"))
 	b = bytes.TrimPrefix(b, []byte{0xEF, 0xBB, 0xBF}) // BOM, который добавляют некоторые редакторы и PowerShell
 	if err != nil {
-		return Profile{}, fmt.Errorf("неизвестный профиль %q", name)
+		return Profile{}, fmt.Errorf(i18n.T("неизвестный профиль %q"), name)
 	}
 	var p Profile
 	if err := json.Unmarshal(b, &p); err != nil {
-		return Profile{}, fmt.Errorf("профиль %q повреждён: %w", name, err)
+		return Profile{}, fmt.Errorf(i18n.T("профиль %q повреждён: %w"), name, err)
 	}
 	if p.Name != name || !filepath.IsAbs(p.Exe) || !filepath.IsLocal(p.DataDir) || (p.Origin != "" && !filepath.IsLocal(p.Origin)) {
-		return Profile{}, fmt.Errorf("профиль %q повреждён", name)
+		return Profile{}, fmt.Errorf(i18n.T("профиль %q повреждён"), name)
 	}
 	if p.Decoy != "" && p.Decoy != "telegram" && p.Decoy != "chromium" && p.Decoy != "discord" && p.Decoy != "generic" {
-		return Profile{}, fmt.Errorf("профиль %q: неизвестная раскладка приманки %q", name, p.Decoy)
+		return Profile{}, fmt.Errorf(i18n.T("профиль %q: неизвестная раскладка приманки %q"), name, p.Decoy)
 	}
 	for _, x := range p.Exclude {
 		if !filepath.IsLocal(x) {
-			return Profile{}, fmt.Errorf("профиль %q: недопустимый путь исключения %q", name, x)
+			return Profile{}, fmt.Errorf(i18n.T("профиль %q: недопустимый путь исключения %q"), name, x)
 		}
 	}
 	for _, x := range p.ExecFiles {
 		if x == "" || filepath.Base(x) != x {
-			return Profile{}, fmt.Errorf("профиль %q: недопустимое имя файла %q", name, x)
+			return Profile{}, fmt.Errorf(i18n.T("профиль %q: недопустимое имя файла %q"), name, x)
 		}
 	}
 	return p, nil

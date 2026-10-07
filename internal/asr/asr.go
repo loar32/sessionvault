@@ -5,6 +5,7 @@ package asr
 import (
 	"errors"
 	"fmt"
+	"github.com/loar32/sessionvault/internal/i18n"
 	"regexp"
 	"strconv"
 	"strings"
@@ -124,14 +125,14 @@ func apply(sys system, prev State) (State, error) {
 		st[masterName] = previous(sys, policyKey, master)
 	}
 	if err := sys.setDword(policyKey, master, 1); err != nil {
-		return st, fmt.Errorf("включение политики ASR: %w", err)
+		return st, fmt.Errorf(i18n.T("включение политики ASR: %w"), err)
 	}
 	for _, r := range Rules {
 		if _, ok := st[r.ID]; !ok {
 			st[r.ID] = previous(sys, rulesKey, r.ID)
 		}
 		if err := sys.setString(rulesKey, r.ID, block); err != nil {
-			return st, fmt.Errorf("правило %s: %w", r.Title, err)
+			return st, fmt.Errorf(i18n.T("правило %s: %w"), r.Title, err)
 		}
 	}
 	return st, nil
@@ -166,7 +167,7 @@ func revert(sys system, st State) error {
 		case old == "":
 			err = sys.remove(key, value)
 		case !validOld.MatchString(old):
-			err = fmt.Errorf("недопустимое прежнее значение %q", old)
+			err = fmt.Errorf(i18n.T("недопустимое прежнее значение %q"), old)
 		case dword:
 			n, _ := strconv.ParseUint(old, 10, 32)
 			err = sys.setDword(key, value, uint32(n))

@@ -6,6 +6,7 @@ package hello
 import (
 	"errors"
 	"fmt"
+	"github.com/loar32/sessionvault/internal/i18n"
 	"runtime"
 	"syscall"
 	"time"
@@ -167,12 +168,12 @@ func await(op com, timeout time.Duration) error {
 		case 3:
 			var code int32
 			_, _ = info.call(8, uintptr(unsafe.Pointer(&code)))
-			return fmt.Errorf("операция Hello завершилась ошибкой 0x%08X", uint32(code))
+			return fmt.Errorf(i18n.T("операция Hello завершилась ошибкой 0x%08X"), uint32(code))
 		}
 		if time.Now().After(deadline) {
 			_, _ = info.call(9) // Cancel
 			closeDialog()
-			return errors.New("время ожидания Windows Hello вышло")
+			return errors.New(i18n.T("время ожидания Windows Hello вышло"))
 		}
 		raiseDialog()
 		time.Sleep(250 * time.Millisecond)
@@ -254,7 +255,7 @@ func statusError(status int32) error {
 	case 4:
 		return ErrCancelled // UserPrefersPassword
 	}
-	return fmt.Errorf("статус Windows Hello %d", status)
+	return fmt.Errorf(i18n.T("статус Windows Hello %d"), status)
 }
 
 // Create создаёт (или заменяет) ключ Hello с этим именем; пользователь подтверждает жестом.

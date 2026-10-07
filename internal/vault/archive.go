@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"github.com/loar32/sessionvault/internal/i18n"
 	"io"
 	"io/fs"
 	"os"
@@ -111,7 +112,7 @@ func unpackDir(data []byte, root string) error {
 			return err
 		}
 		if !filepath.IsLocal(h.Name) {
-			return fmt.Errorf("недопустимый путь в архиве: %q", h.Name)
+			return fmt.Errorf(i18n.T("недопустимый путь в архиве: %q"), h.Name)
 		}
 		dst := filepath.Join(root, filepath.FromSlash(h.Name))
 		switch h.Typeflag {
@@ -120,7 +121,7 @@ func unpackDir(data []byte, root string) error {
 		case tar.TypeReg:
 			err = writeFile(dst, tr)
 		default:
-			err = fmt.Errorf("недопустимый тип в архиве: %q", h.Name)
+			err = fmt.Errorf(i18n.T("недопустимый тип в архиве: %q"), h.Name)
 		}
 		if err != nil {
 			return err

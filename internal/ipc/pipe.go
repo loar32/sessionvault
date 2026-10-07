@@ -3,6 +3,7 @@ package ipc
 import (
 	"bytes"
 	"errors"
+	"github.com/loar32/sessionvault/internal/i18n"
 	"sync"
 	"time"
 	"unsafe"
@@ -67,7 +68,7 @@ func (l *Listener) Accept(timeout time.Duration) (*Conn, error) {
 	l.mu.Lock()
 	if l.closed {
 		l.mu.Unlock()
-		return nil, errors.New("listener закрыт")
+		return nil, errors.New(i18n.T("listener закрыт"))
 	}
 	h := l.next
 	l.next = 0
@@ -169,7 +170,7 @@ func (c *Conn) ReadBytes(timeout time.Duration, max int) ([]byte, error) {
 		var n uint32
 		if err := windows.ReadFile(c.h, buf, &n, nil); err != nil || n == 0 {
 			if err == nil {
-				err = errors.New("pipe закрыт")
+				err = errors.New(i18n.T("pipe закрыт"))
 			}
 			return nil, err
 		}

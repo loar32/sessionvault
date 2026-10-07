@@ -12,6 +12,7 @@ import (
 	"unsafe"
 
 	"github.com/loar32/sessionvault/internal/checkup"
+	"github.com/loar32/sessionvault/internal/i18n"
 	"github.com/loar32/sessionvault/internal/ipc"
 	"github.com/loar32/sessionvault/internal/isolation"
 	"golang.org/x/sys/windows"
@@ -20,7 +21,6 @@ import (
 var procMessageBox = windows.NewLazySystemDLL("user32.dll").NewProc("MessageBoxW")
 
 const (
-	Title    = "SessionVault: проверка защиты"
 	mbSetFg  = 0x10000
 	mbTop    = 0x40000
 	mbIconOK = 0x40
@@ -44,7 +44,7 @@ func Fetch() (checkup.Report, error) {
 // Полный отчёт остаётся в `sessionvault check`.
 func Text(r checkup.Report) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Итог: %s\n", checkup.Verdict(r.Overall))
+	fmt.Fprintf(&b, i18n.T("Итог: %s")+"\n", checkup.Verdict(r.Overall))
 	ok, total := 0, 0
 	for _, it := range r.Items {
 		if it.Level != checkup.Info {
@@ -61,9 +61,9 @@ func Text(r checkup.Report) string {
 		}
 	}
 	if ok > 0 {
-		fmt.Fprintf(&b, "\nВ порядке: %d из %d пунктов.\n", ok, total)
+		fmt.Fprintf(&b, "\n"+i18n.T("В порядке: %d из %d пунктов.")+"\n", ok, total)
 	}
-	fmt.Fprintf(&b, "\n%s\n\nПолный отчёт: sessionvault check", checkup.ClickFixText)
+	fmt.Fprintf(&b, "\n%s\n\n"+i18n.T("Полный отчёт: sessionvault check"), checkup.ClickFixText())
 	return b.String()
 }
 
@@ -79,14 +79,22 @@ func Show(r checkup.Report) {
 	}
 	body, buttons := Text(r), uintptr(0)
 	if r.Overall != checkup.OK {
-		body += "\n\nОткрыть «Безопасность Windows»?"
+		body += "\n\n" + i18n.T("Открыть «Безопасность Windows»?")
 		buttons = mbYesNo
 	}
 	text, _ := windows.UTF16PtrFromString(body)
-	title, _ := windows.UTF16PtrFromString(Title)
+	title, _ := windows.UTF16PtrFromString(i18n.T("SessionVault: проверка защиты"))
 	ans, _, _ := procMessageBox.Call(0, uintptr(unsafe.Pointer(text)), uintptr(unsafe.Pointer(title)), icon|buttons|mbSetFg|mbTop)
 	if ans == idYes {
 		_ = windows.ShellExecute(0, windows.StringToUTF16Ptr("open"), windows.StringToUTF16Ptr("windowsdefender:"), nil, nil, windows.SW_SHOWNORMAL)
+	}
+}
+
+// MarkShown отмечает, что окно итога после установки уже не нужно (его заменил мастер первой настройки).
+func MarkShown() {
+	flag := flagPath()
+	if os.MkdirAll(filepath.Dir(flag), 0o700) == nil {
+		_ = os.WriteFile(flag, nil, 0o600)
 	}
 }
 

@@ -3,6 +3,7 @@ package isolation
 import (
 	"encoding/base64"
 	"errors"
+	"github.com/loar32/sessionvault/internal/i18n"
 	"strings"
 	"unsafe"
 
@@ -49,7 +50,7 @@ func openPassword(s string) (string, error) {
 	}
 	raw, err := base64.StdEncoding.DecodeString(enc)
 	if err != nil || len(raw) == 0 {
-		return "", errors.New("запись пароля повреждена")
+		return "", errors.New(i18n.T("запись пароля повреждена"))
 	}
 	var out windows.DataBlob
 	if err := windows.CryptUnprotectData(blob(raw), nil, blob([]byte(dpapiEntropyString)), 0, nil, cryptUIForbidden, &out); err != nil {

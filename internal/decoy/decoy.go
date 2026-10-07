@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"github.com/loar32/sessionvault/internal/i18n"
 	"io/fs"
 	"math/big"
 	"os"
@@ -183,7 +184,7 @@ func Known(profile, path string) bool {
 func NoReparse(path string) error {
 	for p := path; ; {
 		if fi, err := os.Lstat(p); err == nil && fi.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 {
-			return errors.New("на пути есть ссылка или junction: " + p)
+			return errors.New(i18n.T("на пути есть ссылка или junction: ") + p)
 		}
 		parent := filepath.Dir(p)
 		if parent == p {

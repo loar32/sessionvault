@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/loar32/sessionvault/internal/i18n"
 	"os"
 	"path/filepath"
 	"strings"
@@ -64,7 +65,7 @@ func EnsureAppsGroup() (*windows.SID, error) {
 	var parm uint32
 	r, _, _ := procNetLocalGroupAdd.Call(0, 1, uintptr(unsafe.Pointer(&info)), uintptr(unsafe.Pointer(&parm)))
 	if r != 0 && r != errAliasExists {
-		return nil, fmt.Errorf("NetLocalGroupAdd: код %d", r)
+		return nil, fmt.Errorf(i18n.T("NetLocalGroupAdd: код %d"), r)
 	}
 	sid, _, _, err := windows.LookupSID("", AppsGroup)
 	return sid, err
@@ -82,7 +83,7 @@ func DeleteAppsGroup() error {
 		return err
 	}
 	if r, _, _ := procNetLocalGroupDel.Call(0, uintptr(unsafe.Pointer(n))); r != 0 {
-		return fmt.Errorf("NetLocalGroupDel: код %d", r)
+		return fmt.Errorf(i18n.T("NetLocalGroupDel: код %d"), r)
 	}
 	return nil
 }
@@ -103,7 +104,7 @@ func addToAppsGroup(account string) error {
 	member := localGroupMember3{DomainAndName: m}
 	r, _, _ := procNetLocalGroupAddMembers.Call(0, uintptr(unsafe.Pointer(g)), 3, uintptr(unsafe.Pointer(&member)), 1)
 	if r != 0 && r != errMemberInAlias {
-		return fmt.Errorf("NetLocalGroupAddMembers: код %d", r)
+		return fmt.Errorf(i18n.T("NetLocalGroupAddMembers: код %d"), r)
 	}
 	return nil
 }
@@ -146,7 +147,7 @@ func saveAccounts(m map[string]string) error {
 	for k, v := range m {
 		s, err := sealPassword(v)
 		if err != nil {
-			return fmt.Errorf("пароль учётки %s не зашифрован: %w", k, err)
+			return fmt.Errorf(i18n.T("пароль учётки %s не зашифрован: %w"), k, err)
 		}
 		sealed[k] = s
 	}
@@ -180,7 +181,7 @@ func LoadAccountPassword(account string) (string, error) {
 	}
 	pw, ok := m[account]
 	if !ok {
-		return "", fmt.Errorf("пароль учётки %s не сохранён", account)
+		return "", fmt.Errorf(i18n.T("пароль учётки %s не сохранён"), account)
 	}
 	return pw, nil
 }
@@ -217,7 +218,7 @@ func EnsureAppAccount(profile string) (string, error) {
 		_ = AllowRemoteLogon(account)
 		_ = DeleteUserProfile(account)
 		if err := DeleteUser(account); err != nil {
-			return "", fmt.Errorf("%s: старая учётка без пароля не удалена: %w", account, err)
+			return "", fmt.Errorf(i18n.T("%s: старая учётка без пароля не удалена: %w"), account, err)
 		}
 	}
 	pw, err := GeneratePassword()

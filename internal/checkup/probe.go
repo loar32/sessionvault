@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/loar32/sessionvault/internal/i18n"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -89,7 +90,7 @@ const (
 // Профили брандмауэра, в которых он выключен (локально или политикой): правила сетевого заслона там не действуют.
 func firewallOff(sys system) []string {
 	var off []string
-	for _, p := range []struct{ key, name string }{{"StandardProfile", "частная"}, {"PublicProfile", "общедоступная"}, {"DomainProfile", "доменная"}} {
+	for _, p := range []struct{ key, name string }{{"StandardProfile", i18n.T("частная")}, {"PublicProfile", i18n.T("общедоступная")}, {"DomainProfile", i18n.T("доменная")}} {
 		v, ok := sys.regInt(firewallKey+p.key, "EnableFirewall")
 		if pv, pok := sys.regInt(fwPolicyKey+p.key, "EnableFirewall"); pok {
 			v, ok = pv, true
@@ -103,30 +104,30 @@ func firewallOff(sys system) []string {
 
 // Журнал безопасности хранит события аудита: сжатый до малого размера, он вытесняет их быстрее. Только справка.
 func journalItem(sys system) Item {
-	const title = "Журнал безопасности Windows"
+	title := i18n.T("Журнал безопасности Windows")
 	size, ok := sys.regInt(eventLogKey, "MaxSize")
 	if pol, pok := sys.regInt(eventLogPolicy, "MaxSize"); pok {
 		size, ok = pol<<10, true // политика задаёт килобайты
 	}
 	switch {
 	case !ok:
-		return Item{"journal", title, Info, "размер по умолчанию", ""}
+		return Item{"journal", title, Info, i18n.T("размер по умолчанию"), ""}
 	case size < minJournal:
-		return Item{"journal", title, Info, fmt.Sprintf("размер %d МБ, меньше стандартных 20 МБ", size>>20),
-			"Журнал заполняется быстрее: Просмотр событий → Журналы Windows → Безопасность → Свойства → максимальный размер"}
+		return Item{"journal", title, Info, fmt.Sprintf(i18n.T("размер %d МБ, меньше стандартных 20 МБ"), size>>20),
+			i18n.T("Журнал заполняется быстрее: Просмотр событий → Журналы Windows → Безопасность → Свойства → максимальный размер")}
 	}
-	return Item{"journal", title, OK, fmt.Sprintf("размер %d МБ", size>>20), ""}
+	return Item{"journal", title, OK, fmt.Sprintf(i18n.T("размер %d МБ"), size>>20), ""}
 }
 
 // Копия приложения под учёткой sv-* не обновляется сама: после обновления приложения её нужно обновить командой refresh.
 func copiesItem(in Input) Item {
-	const title = "Копии приложений"
+	title := i18n.T("Копии приложений")
 	switch {
 	case in.Copies == 0:
-		return Item{"copies", title, Info, "нет приложений с копией в каталоге программы", ""}
+		return Item{"copies", title, Info, i18n.T("нет приложений с копией в каталоге программы"), ""}
 	case len(in.StaleCopies) == 0:
-		return Item{"copies", title, OK, "актуальны", ""}
+		return Item{"copies", title, OK, i18n.T("актуальны"), ""}
 	}
-	return Item{"copies", title, Info, "устарели: " + strings.Join(in.StaleCopies, ", "),
-		"Приложение обновилось, а защищённая копия нет. От администратора: sessionvault refresh <приложение> (приложение должно быть закрыто)"}
+	return Item{"copies", title, Info, i18n.T("устарели: ") + strings.Join(in.StaleCopies, ", "),
+		i18n.T("Приложение обновилось, а защищённая копия нет. От администратора: sessionvault refresh <приложение> (приложение должно быть закрыто)")}
 }

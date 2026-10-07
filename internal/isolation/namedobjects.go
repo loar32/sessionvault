@@ -2,6 +2,7 @@ package isolation
 
 import (
 	"fmt"
+	"github.com/loar32/sessionvault/internal/i18n"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -35,7 +36,7 @@ func setNamedObjectAccess(sid *windows.SID, mode windows.ACCESS_MODE) error {
 	st, _, _ := procNtOpenDirectoryObject.Call(uintptr(unsafe.Pointer(&h)),
 		uintptr(windows.READ_CONTROL|windows.WRITE_DAC|directoryAccess), uintptr(unsafe.Pointer(&oa)))
 	if st != 0 {
-		return fmt.Errorf("NtOpenDirectoryObject: статус %#x", st)
+		return fmt.Errorf(i18n.T("NtOpenDirectoryObject: статус %#x"), st)
 	}
 	defer func() { _ = windows.CloseHandle(h) }()
 	return editObjectACL(h, windows.SE_KERNEL_OBJECT, sid, mode, directoryAccess)

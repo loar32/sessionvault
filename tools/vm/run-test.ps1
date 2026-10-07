@@ -221,6 +221,15 @@ $r = Vm {
 } @('C:\sv\standin.exe')
 Check ($r.svc -eq 'Running') "служба запущена ($($r.svc)); $($r.out)"
 Check $r.exe 'бинарник в Program Files'
+# ВМ на английской Windows: проверки ниже ждут русский текст, поэтому язык задаётся явно (config.json для службы и администратора, файл для сеанса tester).
+Vm {
+    $c = Get-Content C:\ProgramData\SessionVault\config.json -Raw | ConvertFrom-Json
+    $c | Add-Member -NotePropertyName language -NotePropertyValue 'ru' -Force
+    $c | ConvertTo-Json -Depth 5 | Set-Content C:\ProgramData\SessionVault\config.json
+    New-Item -ItemType Directory -Force C:\Users\tester\AppData\Local\SessionVault | Out-Null
+    Set-Content C:\Users\tester\AppData\Local\SessionVault\language 'ru'
+    Restart-Service SessionVault; Start-Sleep 3
+} | Out-Null
 $r = Vm { @{ legacy = [bool](Get-LocalUser -Name vault -ErrorAction SilentlyContinue); group = [bool](Get-LocalGroup -Name SessionVaultApps -ErrorAction SilentlyContinue); pwd = (Test-Path C:\ProgramData\SessionVault\vault.pwd) } }
 Check ((-not $r.legacy) -and $r.group -and (-not $r.pwd)) 'после установки нет общей учётки vault, есть группа SessionVaultApps'
 # Обновление на месте: прежняя версия оставила учётку vault и её пароль; служба при старте убирает их.
@@ -466,7 +475,7 @@ Check $r.icon 'Windows зарегистрировала иконку в обла
 
 # Окно проверки защиты: автопоказ после установки только при красных пунктах, пункт меню трея (команда 1060 окну трея).
 $r = Vm {
-    param($b64)
+    param($b64, $b64w)
     $flag = 'C:\Users\tester\AppData\Local\SessionVault\check-shown'
     $flagged = WaitFor { Test-Path $flag } 90
     $ps1 = @'
@@ -477,24 +486,29 @@ public class W { [DllImport("user32.dll", CharSet=CharSet.Unicode)] public stati
 "@
 $t = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('@@TITLE@@'))
 $auto = [W]::FindWindow([NullString]::Value, $t) -ne [IntPtr]::Zero
+$tw = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('@@WIZ@@'))
+$wh = [W]::FindWindow('SessionVaultWizard', $tw)
+$wiz = $wh -ne [IntPtr]::Zero
+if ($wiz) { [void][W]::PostMessage($wh, 0x10, [IntPtr]0, [IntPtr]0) }
 $tray = [W]::FindWindow('SessionVaultTray', 'SessionVault')
 [void][W]::PostMessage($tray, 0x111, [IntPtr]1060, [IntPtr]0)
 $w = [IntPtr]::Zero
 for ($i = 0; $i -lt 90 -and $w -eq [IntPtr]::Zero; $i++) { $w = [W]::FindWindow([NullString]::Value, $t); Start-Sleep -Seconds 1 }
-Set-Content C:\sv\chk.state "auto=$auto shown=$($w -ne [IntPtr]::Zero)"
+Set-Content C:\sv\chk.state "auto=$auto wiz=$wiz shown=$($w -ne [IntPtr]::Zero)"
 Start-Sleep 8
 if ($w -ne [IntPtr]::Zero) { [void][W]::PostMessage($w, 0x10, [IntPtr]0, [IntPtr]0) }
 '@
-    Set-Content C:\sv\chk.ps1 $ps1.Replace('@@TITLE@@', $b64) -Encoding UTF8
+    Set-Content C:\sv\chk.ps1 $ps1.Replace('@@TITLE@@', $b64).Replace('@@WIZ@@', $b64w) -Encoding UTF8
     Remove-Item C:\sv\chk.state -ErrorAction SilentlyContinue
     AsTester 'chkw' 'powershell -NoProfile -ExecutionPolicy Bypass -File C:\sv\chk.ps1'
     $got = WaitFor { Test-Path C:\sv\chk.state } 120
     @{ flagged = $flagged; state = $(if ($got) { (Get-Content C:\sv\chk.state -Raw).Trim() } else { '' }) }
-} @([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('SessionVault: проверка защиты')))
+} @([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('SessionVault: проверка защиты')), [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('SessionVault: первая настройка')))
 Start-Sleep 2
 & "$PSScriptRoot\screenshot.ps1" -VmName $VmName -Path "$env:TEMP\sv-check-window.png" | Out-Null
 Write-Host "  снимок экрана: $env:TEMP\sv-check-window.png"
 Check $r.flagged 'трей после первого ответа службы поставил флаг check-shown'
+Check ($r.state -match 'wiz=True') "после установки трей сам открыл мастер первой настройки ($($r.state))"
 Check ($r.state -match 'auto=False') "без красных пунктов окно само не появилось ($($r.state))"
 Check ($r.state -match 'shown=True') "пункт меню «Проверить защиту» открыл окно ($($r.state))"
 Vm {
@@ -1056,6 +1070,24 @@ $r = Vm {
 } @(, $asrIds)
 Check ($r.off -and $r.out -match 'возвращены') "check -fix -off вернул прежнее: правил в блокировке нет ($($r.out))"
 Check $r.again 'после отката правила включаются снова (для проверки отката при удалении)'
+
+Write-Host '--- 15f. язык интерфейса: поле language в config.json ---'
+$r = Vm {
+    [Console]::OutputEncoding = [Text.Encoding]::UTF8
+    $cfgPath = 'C:\ProgramData\SessionVault\config.json'
+    $c = Get-Content $cfgPath -Raw | ConvertFrom-Json
+    $c | Add-Member -NotePropertyName language -NotePropertyValue 'en' -Force
+    $c | ConvertTo-Json -Depth 5 | Set-Content $cfgPath
+    $en = (& C:\sv\sessionvault.exe restore-backup 2>&1 | Out-String) -replace '\s+', ' '
+    $c.language = 'ru'
+    $c | ConvertTo-Json -Depth 5 | Set-Content $cfgPath
+    $ru = (& C:\sv\sessionvault.exe restore-backup 2>&1 | Out-String) -replace '\s+', ' '
+    $c.language = 'ru'
+    $c | ConvertTo-Json -Depth 5 | Set-Content $cfgPath
+    @{ en = $en; ru = $ru }
+}
+Check ($r.en -match 'specify the profile') "language=en: ошибка команды по-английски ($($r.en))"
+Check ($r.ru -match 'укажи профиль') "language=ru: ошибка команды по-русски ($($r.ru))"
 
 Write-Host '--- 15d. ключ восстановления, смена пароля, перенос ---'
 $newPw = 'Recovery-New-Pass-2'

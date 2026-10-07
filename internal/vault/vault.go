@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/loar32/sessionvault/internal/i18n"
 	"os"
 	"path/filepath"
 	"sync"
@@ -103,12 +104,12 @@ func (v Vault) readMeta() (meta, error) {
 		return m, err
 	}
 	if m.Version != 1 && m.Version != metaV2 {
-		return m, fmt.Errorf("версия хранилища %d не поддерживается", m.Version)
+		return m, fmt.Errorf(i18n.T("версия хранилища %d не поддерживается"), m.Version)
 	}
 	// Файл читается до проверки пароля: огромные параметры вывода ключа не должны выбить память.
 	if len(m.Salt) != crypto.SaltSize || m.Params.Time < 1 || m.Params.Time > 20 ||
 		m.Params.Threads < 1 || m.Params.Memory < 8*1024 || m.Params.Memory > 1024*1024 {
-		return m, errors.New("vault.json повреждён: недопустимые параметры")
+		return m, errors.New(i18n.T("vault.json повреждён: недопустимые параметры"))
 	}
 	return m, nil
 }
@@ -259,7 +260,7 @@ func (v Vault) UnlockRecovery(key []byte) ([]byte, error) {
 		return nil, err
 	}
 	if m.Recovery == nil {
-		return nil, errors.New("ключ восстановления не создан")
+		return nil, errors.New(i18n.T("ключ восстановления не создан"))
 	}
 	kek, err := crypto.DeriveRecoveryKey(key, m.Salt)
 	if err != nil {
@@ -325,7 +326,7 @@ func (v Vault) UnlockFido(secret []byte) ([]byte, error) {
 		return nil, err
 	}
 	if m.Fido == nil {
-		return nil, errors.New("вход по ключу FIDO2 не включён")
+		return nil, errors.New(i18n.T("вход по ключу FIDO2 не включён"))
 	}
 	kek, err := crypto.DeriveFidoKey(secret)
 	if err != nil {
@@ -371,7 +372,7 @@ func (v Vault) UnlockHello(secret []byte) ([]byte, error) {
 		return nil, err
 	}
 	if m.Hello == nil {
-		return nil, errors.New("вход через Windows Hello не включён")
+		return nil, errors.New(i18n.T("вход через Windows Hello не включён"))
 	}
 	kek, err := crypto.DeriveHelloKey(secret)
 	if err != nil {
@@ -482,7 +483,7 @@ func (v Vault) openData(dek, blob []byte) ([]byte, error) {
 		return crypto.Open(dek, blob)
 	}
 	if m.Version == 1 || len(blob) < headerSize {
-		return nil, errors.New("data.enc не соответствует версии хранилища")
+		return nil, errors.New(i18n.T("data.enc не соответствует версии хранилища"))
 	}
 	n := binary.BigEndian.Uint64(blob[len(dataMagic):headerSize])
 	if n < m.Counter {
@@ -547,7 +548,7 @@ func (v Vault) Lock() (release func(), err error) {
 	}
 	h, err := windows.CreateFile(name, windows.GENERIC_WRITE, 0, nil, windows.OPEN_ALWAYS, windows.FILE_ATTRIBUTE_NORMAL, 0)
 	if err != nil {
-		return nil, errors.New("уже запущено (или не завершено): running.lock занят")
+		return nil, errors.New(i18n.T("уже запущено (или не завершено): running.lock занят"))
 	}
 	return func() { _ = windows.CloseHandle(h) }, nil
 }
@@ -556,7 +557,7 @@ func (v Vault) Lock() (release func(), err error) {
 // (нужен ключ), в отличие от тихой подмены data.enc. Открытой копии быть не должно.
 func (v Vault) RestoreBackup(dek []byte) error {
 	if v.NeedsRecovery() {
-		return errors.New("есть открытые данные: сначала закройте приложение")
+		return errors.New(i18n.T("есть открытые данные: сначала закройте приложение"))
 	}
 	blob, err := os.ReadFile(v.path(backupFile))
 	if err != nil {
@@ -591,7 +592,7 @@ func (v Vault) RestoreBackup(dek []byte) error {
 // Export возвращает vault.json без слота Hello (ключ Hello работает только на этом ПК) и data.enc: оба файла уже зашифрованы.
 func (v Vault) Export() (metaJSON, data []byte, err error) {
 	if v.NeedsRecovery() {
-		return nil, nil, errors.New("есть открытые данные: сначала закройте приложение")
+		return nil, nil, errors.New(i18n.T("есть открытые данные: сначала закройте приложение"))
 	}
 	m, err := v.readMeta()
 	if err != nil {
@@ -611,10 +612,10 @@ func (v Vault) Export() (metaJSON, data []byte, err error) {
 // иначе всё убирается. Существующее хранилище не перезаписывается.
 func (v Vault) Import(metaJSON, data, secret []byte) (err error) {
 	if v.Exists() {
-		return errors.New("хранилище уже есть")
+		return errors.New(i18n.T("хранилище уже есть"))
 	}
 	if _, err := os.Stat(v.path(dataFile)); err == nil {
-		return errors.New("рядом лежит data.enc без vault.json: разберитесь с ним вручную")
+		return errors.New(i18n.T("рядом лежит data.enc без vault.json: разберитесь с ним вручную"))
 	}
 	// Слот Hello из чужого файла не нужен: он привязан к ключу другого ПК.
 	var m meta

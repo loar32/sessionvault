@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"github.com/loar32/sessionvault/internal/i18n"
 	"os"
 	"path/filepath"
 	"unsafe"
@@ -17,34 +18,34 @@ import (
 // sv-<имя> и копия приложения удаляются. Остальные приложения и служба не затрагиваются.
 func Unprotect(name string, password []byte) error {
 	if !isolation.IsElevated() {
-		return errors.New("нужен запуск от администратора")
+		return errors.New(i18n.T("нужен запуск от администратора"))
 	}
 	if !profiles.ValidName(name) {
-		return fmt.Errorf("недопустимое имя приложения %q", name)
+		return fmt.Errorf(i18n.T("недопустимое имя приложения %q"), name)
 	}
 	if err := isolation.EnablePrivileges("SeTakeOwnershipPrivilege", "SeRestorePrivilege", "SeBackupPrivilege"); err != nil {
 		return err
 	}
 	cfg, err := LoadConfig()
 	if err != nil {
-		return fmt.Errorf("конфигурация не прочитана: %w", err)
+		return fmt.Errorf(i18n.T("конфигурация не прочитана: %w"), err)
 	}
 	user, _, _, err := windows.LookupSID("", cfg.MainUser)
 	if err != nil {
-		return fmt.Errorf("учётка %q не найдена: %w", cfg.MainUser, err)
+		return fmt.Errorf(i18n.T("учётка %q не найдена: %w"), cfg.MainUser, err)
 	}
 	p, err := profiles.Load(isolation.ProfilesDir(), name)
 	if err != nil {
-		return fmt.Errorf("приложение %s не защищено: %w", name, err)
+		return fmt.Errorf(i18n.T("приложение %s не защищено: %w"), name, err)
 	}
 	v := vault.Vault{Dir: isolation.DataPath(name), DataName: workDataName, Exclude: p.Exclude}
 	if !v.Exists() {
-		return fmt.Errorf("хранилища %s нет", name)
+		return fmt.Errorf(i18n.T("хранилища %s нет"), name)
 	}
 	// Запущенное приложение держит running.lock; пока оно открыто, данные возвращать нельзя.
 	release, err := v.Lock()
 	if err != nil {
-		return fmt.Errorf("%s запущено или не завершено: закройте его и повторите", name)
+		return fmt.Errorf(i18n.T("%s запущено или не завершено: закройте его и повторите"), name)
 	}
 	release()
 	if err := restoreProfile(cfg, user, name, v, password); err != nil {

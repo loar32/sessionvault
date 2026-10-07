@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	_ "embed"
 	"errors"
+	"github.com/loar32/sessionvault/internal/i18n"
 	"strings"
 )
 
@@ -23,7 +24,7 @@ var ErrInvalid = errors.New("ключ восстановления введён 
 // Words превращает 32 случайных байта в 24 слова.
 func Words(key []byte) (string, error) {
 	if len(key) != KeySize {
-		return "", errors.New("ключ восстановления должен быть 32 байта")
+		return "", errors.New(i18n.T("ключ восстановления должен быть 32 байта"))
 	}
 	sum := sha256.Sum256(key)
 	bits := append(append([]byte{}, key...), sum[0])

@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	"github.com/loar32/sessionvault/internal/i18n"
 	"os"
 	"path/filepath"
 	"sort"
@@ -41,7 +42,7 @@ func (s *Service) startCheck() {
 	}
 	s.log.Println("проверка защиты выполнена, отчёт в check.json")
 	// WMI после загрузки системы отвечает не сразу: один повтор через минуту, если BitLocker не определился.
-	if strings.Contains(lastCheckText(), "состояние определить не удалось") {
+	if strings.Contains(lastCheckText(), i18n.T("состояние определить не удалось")) {
 		time.AfterFunc(time.Minute, s.refreshCheck)
 	}
 }

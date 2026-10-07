@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/loar32/sessionvault/internal/i18n"
 	"os"
 	"path/filepath"
 	"sort"
@@ -17,7 +18,7 @@ import (
 
 func adminVaults() (map[string]vault.Vault, error) {
 	if !isolation.IsElevated() {
-		return nil, errors.New("нужен запуск от администратора")
+		return nil, errors.New(i18n.T("нужен запуск от администратора"))
 	}
 	if err := isolation.EnablePrivileges("SeTakeOwnershipPrivilege", "SeRestorePrivilege", "SeBackupPrivilege"); err != nil {
 		return nil, err
@@ -36,7 +37,7 @@ func adminVaults() (map[string]vault.Vault, error) {
 		}
 	}
 	if len(out) == 0 {
-		return nil, errors.New("защищённых приложений нет")
+		return nil, errors.New(i18n.T("защищённых приложений нет"))
 	}
 	return out, nil
 }
@@ -54,7 +55,7 @@ func lockAll(vs map[string]vault.Vault, names []string) (release func(), err err
 		r, err := vs[n].Lock()
 		if err != nil {
 			release()
-			return nil, fmt.Errorf("%s: приложение запущено или не завершено: закройте его и повторите", n)
+			return nil, fmt.Errorf(i18n.T("%s: приложение запущено или не завершено: закройте его и повторите"), n)
 		}
 		rel = append(rel, r)
 	}
@@ -124,7 +125,7 @@ func RecoveryCreate(ask func(name string) ([]byte, error)) (string, error) {
 			err = fmt.Errorf("%s: %w", name, err)
 			for _, done := range changed {
 				if e := vs[done].RestoreMeta(saved[done]); e != nil {
-					err = errors.Join(err, fmt.Errorf("%s: прежний vault.json не возвращён: %w", done, e))
+					err = errors.Join(err, fmt.Errorf(i18n.T("%s: прежний vault.json не возвращён: %w"), done, e))
 				}
 			}
 			return "", err
@@ -167,7 +168,7 @@ func RecoveryRevoke(app string) error {
 	}
 	v, ok := vs[app]
 	if !ok {
-		return fmt.Errorf("хранилища %s нет", app)
+		return fmt.Errorf(i18n.T("хранилища %s нет"), app)
 	}
 	release, err := lockAll(vs, []string{app})
 	if err != nil {
@@ -207,7 +208,7 @@ func RecoveryReset(words string, password []byte) (reset, skipped []string, err 
 		reset = append(reset, name)
 	}
 	if len(reset) == 0 {
-		return nil, nil, errors.New("ключ восстановления не подошёл ни к одному хранилищу")
+		return nil, nil, errors.New(i18n.T("ключ восстановления не подошёл ни к одному хранилищу"))
 	}
 	return reset, skipped, nil
 }
@@ -251,7 +252,7 @@ func Export(app, path string) error {
 	}
 	v, ok := vs[app]
 	if !ok {
-		return fmt.Errorf("хранилища %s нет", app)
+		return fmt.Errorf(i18n.T("хранилища %s нет"), app)
 	}
 	release, err := lockAll(vs, []string{app})
 	if err != nil {
@@ -289,7 +290,7 @@ func Export(app, path string) error {
 // Прежние данные приложения на этом ПК не трогаются: если они там есть, разберитесь с ними вручную.
 func Import(path string, ask func(app string) ([]byte, error), custom CustomImport) (string, error) {
 	if !isolation.IsElevated() {
-		return "", errors.New("нужен запуск от администратора")
+		return "", errors.New(i18n.T("нужен запуск от администратора"))
 	}
 	if err := isolation.EnablePrivileges("SeTakeOwnershipPrivilege", "SeRestorePrivilege", "SeBackupPrivilege"); err != nil {
 		return "", err
@@ -300,13 +301,13 @@ func Import(path string, ask func(app string) ([]byte, error), custom CustomImpo
 	}
 	var b bundle
 	if err := json.Unmarshal(raw, &b); err != nil {
-		return "", errors.New("файл не похож на экспорт SessionVault")
+		return "", errors.New(i18n.T("файл не похож на экспорт SessionVault"))
 	}
 	p, ok := profiles.Template(b.App)
 	customApp := false
 	if !ok {
 		if b.Profile == nil {
-			return "", fmt.Errorf("неизвестное приложение %q", b.App)
+			return "", fmt.Errorf(i18n.T("неизвестное приложение %q"), b.App)
 		}
 		var err error
 		if p, err = customProfile(b, custom); err != nil {
@@ -316,14 +317,14 @@ func Import(path string, ask func(app string) ([]byte, error), custom CustomImpo
 	}
 	cfg, err := LoadConfig()
 	if err != nil {
-		return "", fmt.Errorf("конфигурация не прочитана: сначала install: %w", err)
+		return "", fmt.Errorf(i18n.T("конфигурация не прочитана: сначала install: %w"), err)
 	}
 	if _, err := os.Stat(isolation.VaultDir()); err != nil {
-		return "", errors.New("защищённой папки нет: сначала install")
+		return "", errors.New(i18n.T("защищённой папки нет: сначала install"))
 	}
 	if p.Exe != "" && !customApp {
 		if _, err := os.Stat(p.Exe); err != nil {
-			return "", fmt.Errorf("%s не найден (%s): сначала установите приложение", p.Title, p.Exe)
+			return "", fmt.Errorf(i18n.T("%s не найден (%s): сначала установите приложение"), p.Title, p.Exe)
 		}
 		if err := verifyPublisher(p); err != nil {
 			return "", err
@@ -331,10 +332,10 @@ func Import(path string, ask func(app string) ([]byte, error), custom CustomImpo
 	}
 	v := vault.Vault{Dir: isolation.DataPath(b.App), DataName: workDataName, Exclude: p.Exclude}
 	if v.Exists() {
-		return "", fmt.Errorf("%s уже защищён на этом ПК", p.Title)
+		return "", fmt.Errorf(i18n.T("%s уже защищён на этом ПК"), p.Title)
 	}
 	if _, err := os.Stat(isolation.WorkPath(b.App)); err == nil {
-		return "", fmt.Errorf("в %s есть данные без хранилища: разберитесь с ними вручную", v.Dir)
+		return "", fmt.Errorf(i18n.T("в %s есть данные без хранилища: разберитесь с ними вручную"), v.Dir)
 	}
 	if customApp {
 		if err := placeExe(&p, custom.Exe, custom.CopyDir); err != nil {

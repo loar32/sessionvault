@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"github.com/loar32/sessionvault/internal/i18n"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -149,7 +150,7 @@ func placeExe(p *profiles.Profile, exe string, copyDir bool) error {
 // Приложение должно быть закрыто.
 func RefreshApp(name string) error {
 	if !isolation.IsElevated() {
-		return errors.New("нужен запуск от администратора")
+		return errors.New(i18n.T("нужен запуск от администратора"))
 	}
 	if err := isolation.EnablePrivileges("SeTakeOwnershipPrivilege", "SeRestorePrivilege", "SeBackupPrivilege"); err != nil {
 		return err
@@ -159,7 +160,7 @@ func RefreshApp(name string) error {
 		return err
 	}
 	if p.Source == "" {
-		return fmt.Errorf("%s не копируется под учётку приложения: обновлять нечего", name)
+		return fmt.Errorf(i18n.T("%s не копируется под учётку приложения: обновлять нечего"), name)
 	}
 	cfg, err := LoadConfig()
 	if err != nil {
@@ -168,7 +169,7 @@ func RefreshApp(name string) error {
 	v := vault.Vault{Dir: isolation.DataPath(name), DataName: workDataName}
 	release, err := v.Lock()
 	if err != nil {
-		return errors.New("приложение запущено: закройте его и повторите")
+		return errors.New(i18n.T("приложение запущено: закройте его и повторите"))
 	}
 	defer release()
 	src, rel := p.Source, strings.TrimPrefix(p.Exe, filepath.Join(InstallDir(), "apps", name)+`\`)
@@ -216,42 +217,42 @@ func under(path, root string) bool {
 // confirm показывает администратору, что именно будет запускаться, и спрашивает разрешение; askPassword — мастер-пароль.
 func AddApp(o AddOptions, confirm func(info string) bool, askPassword func() ([]byte, error)) error {
 	if !isolation.IsElevated() {
-		return errors.New("нужен запуск от администратора")
+		return errors.New(i18n.T("нужен запуск от администратора"))
 	}
 	if err := isolation.EnablePrivileges("SeTakeOwnershipPrivilege", "SeRestorePrivilege", "SeBackupPrivilege"); err != nil {
 		return err
 	}
 	cfg, err := LoadConfig()
 	if err != nil {
-		return fmt.Errorf("конфигурация не прочитана: сначала install: %w", err)
+		return fmt.Errorf(i18n.T("конфигурация не прочитана: сначала install: %w"), err)
 	}
 	if !profiles.ValidName(o.Name) {
-		return errors.New("имя: от 1 до 32 символов, строчные латинские буквы, цифры и дефис")
+		return errors.New(i18n.T("имя: от 1 до 32 символов, строчные латинские буквы, цифры и дефис"))
 	}
 	if _, ok := profiles.Template(o.Name); ok {
-		return fmt.Errorf("имя %q занято встроенным приложением: используйте sessionvault protect %s", o.Name, o.Name)
+		return fmt.Errorf(i18n.T("имя %q занято встроенным приложением: используйте sessionvault protect %s"), o.Name, o.Name)
 	}
 	if !filepath.IsAbs(o.Exe) || !strings.EqualFold(filepath.Ext(o.Exe), ".exe") {
-		return errors.New("укажите полный путь к .exe")
+		return errors.New(i18n.T("укажите полный путь к .exe"))
 	}
 	if _, err := os.Stat(o.Exe); err != nil {
-		return fmt.Errorf("%s не найден", o.Exe)
+		return fmt.Errorf(i18n.T("%s не найден"), o.Exe)
 	}
 	userDir := filepath.Join(usersDir(), cfg.MainUser)
 	origin := filepath.Clean(o.Origin)
 	if !filepath.IsAbs(origin) || !under(origin, userDir) {
-		return fmt.Errorf("каталог данных должен лежать в профиле основной учётки (%s)", userDir)
+		return fmt.Errorf(i18n.T("каталог данных должен лежать в профиле основной учётки (%s)"), userDir)
 	}
 	rel, err := filepath.Rel(userDir, origin)
 	if err != nil || !filepath.IsLocal(rel) {
-		return errors.New("недопустимый каталог данных")
+		return errors.New(i18n.T("недопустимый каталог данных"))
 	}
 	dataDir := o.DataDir
 	if dataDir == "" {
 		dataDir = filepath.Base(origin)
 	}
 	if !filepath.IsLocal(dataDir) || strings.ContainsAny(dataDir, `\/`) {
-		return errors.New("имя папки данных не должно содержать путь")
+		return errors.New(i18n.T("имя папки данных не должно содержать путь"))
 	}
 	hasData := false
 	for _, a := range o.Args {
@@ -261,17 +262,17 @@ func AddApp(o AddOptions, confirm func(info string) bool, askPassword func() ([]
 		return errors.New(`в аргументах запуска нужен {data_path}: приложение должно писать данные в рабочую папку, а не в профиль vault (например -arg "--user-data-dir={data_path}\data")`)
 	}
 	if _, err := os.Stat(isolation.VaultDir()); err != nil {
-		return errors.New("защищённой папки нет: сначала install")
+		return errors.New(i18n.T("защищённой папки нет: сначала install"))
 	}
 	v := vault.Vault{Dir: isolation.DataPath(o.Name), DataName: workDataName}
 	if v.Exists() {
-		return fmt.Errorf("приложение %s уже защищено", o.Name)
+		return fmt.Errorf(i18n.T("приложение %s уже защищено"), o.Name)
 	}
 	if _, err := os.Stat(isolation.WorkPath(o.Name)); err == nil {
-		return fmt.Errorf("в %s есть данные без хранилища: разберитесь с ними вручную", v.Dir)
+		return fmt.Errorf(i18n.T("в %s есть данные без хранилища: разберитесь с ними вручную"), v.Dir)
 	}
 	if _, err := os.Stat(filepath.Join(isolation.ProfilesDir(), o.Name+".json")); err == nil {
-		return fmt.Errorf("профиль %s уже есть", o.Name)
+		return fmt.Errorf(i18n.T("профиль %s уже есть"), o.Name)
 	}
 	if err := decoy.NoReparse(origin); err != nil {
 		return err
@@ -279,22 +280,22 @@ func AddApp(o AddOptions, confirm func(info string) bool, askPassword func() ([]
 
 	p := profiles.Profile{Name: o.Name, Title: o.Name, DataDir: dataDir, LaunchArgs: o.Args, Origin: rel, Custom: true, Decoy: "generic"}
 	signer, serr := audit.Signer(o.Exe)
-	signerText := "НЕ ПОДПИСАНО"
+	signerText := i18n.T("НЕ ПОДПИСАНО")
 	if serr == nil {
 		p.Publisher, signerText = signer, signer
 	}
-	info := fmt.Sprintf("Приложение: %s\nИздатель (подпись): %s\nДанные: %s -> защищённая рабочая папка\nАргументы: %s\n",
+	info := fmt.Sprintf(i18n.T("Приложение: %s\nИздатель (подпись): %s\nДанные: %s -> защищённая рабочая папка\nАргументы: %s\n"),
 		o.Exe, signerText, origin, strings.Join(o.Args, " "))
 	for _, env := range []string{"OneDrive", "OneDriveConsumer", "OneDriveCommercial"} {
 		if root := os.Getenv(env); root != "" && under(origin, root) {
-			info += "ВНИМАНИЕ: каталог данных внутри OneDrive: он синхронизируется в облако в открытом виде, пока приложение работает.\n"
+			info += i18n.T("ВНИМАНИЕ: каталог данных внутри OneDrive: он синхронизируется в облако в открытом виде, пока приложение работает.\n")
 			break
 		}
 	}
 	if o.CopyDir || !inProtectedRoot(o.Exe) {
-		info += "Приложение лежит там, где его может заменить обычная учётка: его копия будет помещена в каталог SessionVault (после обновления приложения: sessionvault refresh " + o.Name + ").\n"
+		info += i18n.Tf("Приложение лежит там, где его может заменить обычная учётка: его копия будет помещена в каталог SessionVault (после обновления приложения: sessionvault refresh %s).\n", o.Name)
 	}
-	info += "Оно будет запускаться под собственной учёткой sv-<имя> с доступом к своим расшифрованным данным.\n"
+	info += i18n.T("Оно будет запускаться под собственной учёткой sv-<имя> с доступом к своим расшифрованным данным.\n")
 	if !confirm(info) {
 		return ErrNotConfirmed
 	}
@@ -345,7 +346,7 @@ func AddApp(o AddOptions, confirm func(info string) bool, askPassword func() ([]
 		}
 		defer release()
 		if err := os.Rename(origin, work); err != nil {
-			return fmt.Errorf("не удалось перенести данные (закройте приложение и повторите): %w", err)
+			return fmt.Errorf(i18n.T("не удалось перенести данные (закройте приложение и повторите): %w"), err)
 		}
 		moved = true
 	} else {
@@ -373,7 +374,7 @@ func AddApp(o AddOptions, confirm func(info string) bool, askPassword func() ([]
 	}
 	check, err := v.Unlock(pw)
 	if err != nil {
-		return fmt.Errorf("хранилище не открывается после создания: %w", err)
+		return fmt.Errorf(i18n.T("хранилище не открывается после создания: %w"), err)
 	}
 	crypto.Wipe(check)
 	done = true
@@ -419,46 +420,46 @@ func staleCopies(mainUser string) (total int, stale []string) {
 func customProfile(b bundle, c CustomImport) (profiles.Profile, error) {
 	var p profiles.Profile
 	if c.Exe == "" {
-		return p, errors.New("приложение добавлено командой add: укажите, где оно лежит на этом ПК: sessionvault import -exe <путь к .exe> [-copy-dir] <файл>")
+		return p, errors.New(i18n.T("приложение добавлено командой add: укажите, где оно лежит на этом ПК: sessionvault import -exe <путь к .exe> [-copy-dir] <файл>"))
 	}
 	if !profiles.ValidName(b.App) {
-		return p, errors.New("в файле недопустимое имя приложения")
+		return p, errors.New(i18n.T("в файле недопустимое имя приложения"))
 	}
 	if !filepath.IsAbs(c.Exe) || !strings.EqualFold(filepath.Ext(c.Exe), ".exe") {
-		return p, errors.New("укажите полный путь к .exe")
+		return p, errors.New(i18n.T("укажите полный путь к .exe"))
 	}
 	if _, err := os.Stat(c.Exe); err != nil {
-		return p, fmt.Errorf("%s не найден", c.Exe)
+		return p, fmt.Errorf(i18n.T("%s не найден"), c.Exe)
 	}
 	p = *b.Profile
 	p.Name, p.Custom, p.Decoy = b.App, true, "generic"
 	p.Exe, p.Source, p.Sig, p.ExecFiles, p.ExecSigner, p.Exclude = "", "", "", nil, "", nil
 	if p.DataDir == "" || !filepath.IsLocal(p.DataDir) || strings.ContainsAny(p.DataDir, `\/`) {
-		return p, errors.New("в файле недопустимая папка данных")
+		return p, errors.New(i18n.T("в файле недопустимая папка данных"))
 	}
 	if p.Origin == "" || !filepath.IsLocal(p.Origin) {
-		return p, errors.New("в файле недопустимый путь данных")
+		return p, errors.New(i18n.T("в файле недопустимый путь данных"))
 	}
 	hasData := false
 	for _, a := range p.LaunchArgs {
 		hasData = hasData || strings.Contains(a, "{data_path}")
 	}
 	if !hasData {
-		return p, errors.New("в аргументах запуска из файла нет {data_path}")
+		return p, errors.New(i18n.T("в аргументах запуска из файла нет {data_path}"))
 	}
 	signer, err := audit.Signer(c.Exe)
-	signerText := "НЕ ПОДПИСАНО"
+	signerText := i18n.T("НЕ ПОДПИСАНО")
 	switch {
 	case err == nil:
 		signerText = signer
 		if p.Publisher != "" && !strings.EqualFold(p.Publisher, signer) {
-			return p, fmt.Errorf("%s подписан %q, а в файле издатель %q", c.Exe, signer, p.Publisher)
+			return p, fmt.Errorf(i18n.T("%s подписан %q, а в файле издатель %q"), c.Exe, signer, p.Publisher)
 		}
 		p.Publisher = signer
 	case p.Publisher != "":
-		return p, fmt.Errorf("%s не подписан, а в файле издатель %q", c.Exe, p.Publisher)
+		return p, fmt.Errorf(i18n.T("%s не подписан, а в файле издатель %q"), c.Exe, p.Publisher)
 	}
-	info := fmt.Sprintf("Приложение %s из файла экспорта.\nИсполняемый файл на этом ПК: %s\nИздатель (подпись): %s\nДанные: профиль основной учётки\\%s\nАргументы запуска из файла: %s\n",
+	info := fmt.Sprintf(i18n.T("Приложение %s из файла экспорта.\nИсполняемый файл на этом ПК: %s\nИздатель (подпись): %s\nДанные: профиль основной учётки\\%s\nАргументы запуска из файла: %s\n"),
 		b.App, c.Exe, signerText, p.Origin, strings.Join(p.LaunchArgs, " "))
 	if c.Confirm == nil || !c.Confirm(info) {
 		return p, ErrNotConfirmed
