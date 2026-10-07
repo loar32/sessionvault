@@ -246,6 +246,9 @@ type CustomImport struct {
 
 // Export пишет зашифрованное хранилище приложения в один файл для переноса на другой ПК.
 func Export(app, path string) error {
+	if app == "steam" {
+		return errors.New(i18n.T("Steam не переносится экспортом: путь клиента на новом ПК другой, защитите Steam там заново (sessionvault protect steam)"))
+	}
 	vs, err := adminVaults()
 	if err != nil {
 		return err

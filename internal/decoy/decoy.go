@@ -79,6 +79,18 @@ var layouts = map[string][]file{
 		{`Default\History`, 122880, 245760, true},
 		{`Default\Network\Cookies`, 24576, 122880, true},
 	},
+	// Steam: папка config в каталоге клиента и %LOCALAPPDATA%\Steam (htmlcache — встроенный браузер клиента).
+	"steamconfig": {
+		{"config.vdf", 2500, 9000, false},
+		{"loginusers.vdf", 260, 700, false},
+	},
+	"steamlocal": {
+		{`htmlcache\Local State`, 2000, 6000, false},
+		{`htmlcache\Default\Preferences`, 800, 3000, false},
+		{`htmlcache\Default\Login Data`, 40960, 61440, true},
+		{`htmlcache\Default\History`, 122880, 245760, true},
+		{`htmlcache\Default\Network\Cookies`, 20480, 49152, true},
+	},
 }
 
 // ErrKind — неизвестная раскладка приманки.
@@ -194,6 +206,32 @@ func NoReparse(path string) error {
 	}
 }
 
+// Owned — по этому пути лежит наша приманка (запись о ней есть, имена и размеры файлов совпадают).
+func Owned(profile, path string) bool {
+	st, err := load()
+	if err != nil {
+		return false
+	}
+	e, known := st[profile]
+	if _, err := os.Stat(path); err != nil {
+		return false
+	}
+	return known && e.Path == path && ours(path, e)
+}
+
+// Forget снимает запись о приманке, не трогая диск: место займут настоящие данные.
+func Forget(profile string) error {
+	st, err := load()
+	if err != nil {
+		return err
+	}
+	if _, ok := st[profile]; !ok {
+		return nil
+	}
+	delete(st, profile)
+	return save(st)
+}
+
 // Remove убирает нашу приманку перед возвратом настоящих данных; чужую папку не трогает.
 func Remove(profile, path string) error {
 	st, err := load()
@@ -263,6 +301,9 @@ func generate(root string, layout []file) ([]string, map[string]sig, error) {
 		if head, ok := jsonHeads[filepath.Base(f.name)]; ok {
 			buf = jsonBody(head, buf)
 		}
+		if v, ok := vdfParts[filepath.Base(f.name)]; ok {
+			buf = vdfBody(v[0], v[1], buf)
+		}
 		if err := os.WriteFile(p, buf, 0o644); err != nil {
 			return nil, nil, err
 		}
@@ -306,6 +347,25 @@ func jsonBody(head string, rnd []byte) []byte {
 	k := len(out) - len(tail)
 	for i := n; i < k; i++ {
 		out[i] = fill[(i-n)%len(fill)]
+	}
+	copy(out[k:], tail)
+	return out
+}
+
+// config.vdf и loginusers.vdf у Steam — текст в формате VDF: случайные байты выдали бы приманку первому же взгляду.
+var vdfParts = map[string][2]string{
+	"config.vdf":     {"\"InstallConfigStore\"\n{\n\t\"Software\"\n\t{\n\t\t\"Valve\"\n\t\t{\n\t\t\t\"Steam\"\n\t\t\t{\n\t\t\t\t\"ConnectCache\"\n\t\t\t\t{\n\t\t\t\t\t\"", "\"\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n}\n"},
+	"loginusers.vdf": {"\"users\"\n{\n\t\"76561198", "\"\n\t{\n\t}\n}\n"},
+}
+
+// Тело VDF того же размера, что и буфер: начало, случайные шестнадцатеричные символы и закрытие скобок.
+func vdfBody(head, tail string, rnd []byte) []byte {
+	out := make([]byte, len(rnd))
+	n := copy(out, head)
+	k := len(out) - len(tail)
+	const hexDigits = "0123456789abcdef"
+	for i := n; i < k; i++ {
+		out[i] = hexDigits[rnd[i]&15]
 	}
 	copy(out[k:], tail)
 	return out

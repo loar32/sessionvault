@@ -81,6 +81,7 @@ type Service struct {
 	mu          sync.Mutex
 	keys        map[string][]byte // DEK профилей, пока хранилище разблокировано
 	running     map[string]bool
+	placeJobs   map[string]windows.Handle // job запущенных приложений, которые остаются в учётке пользователя (Steam)
 	closing     map[string]bool           // приложение вышло, данные ещё шифруются: новый экземпляр запускать нельзя
 	ext         map[string]extscan.Result // результат последней проверки расширений по профилям браузеров
 	prompting   bool
@@ -171,6 +172,7 @@ func (s *Service) Stop() {
 	s.mu.Lock()
 	_ = windows.CloseHandle(s.job)
 	s.mu.Unlock()
+	s.closeAllPlaceJobs()
 	done := make(chan struct{})
 	go func() { s.wg.Wait(); close(done) }()
 	select {
@@ -348,7 +350,13 @@ func (s *Service) start(p profiles.Profile, v vault.Vault, dek []byte, session u
 	}
 	if v.NeedsRecovery() {
 		s.log.Printf("%s: дошифровываю открытые данные после сбоя", p.Name)
-		if err := v.Encrypt(dek); err != nil {
+		if len(p.Places) > 0 {
+			// Файлы сессии остались на местах (служба упала при открытом клиенте): они свежее архива, берём их.
+			if err := s.sealPlaces(p, v, dek, true); err != nil {
+				unlock()
+				return "", err
+			}
+		} else if err := v.Encrypt(dek); err != nil {
 			unlock()
 			return "", err
 		}
@@ -356,6 +364,9 @@ func (s *Service) start(p profiles.Profile, v vault.Vault, dek []byte, session u
 	if err := v.Decrypt(dek); err != nil {
 		unlock()
 		return "", err
+	}
+	if len(p.Places) > 0 {
+		return s.startPlaces(p, v, dek, unlock, gen)
 	}
 	account, err := isolation.EnsureAppAccount(p.Name)
 	if err != nil {

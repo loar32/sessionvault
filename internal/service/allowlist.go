@@ -2,7 +2,10 @@ package service
 
 import (
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/loar32/sessionvault/internal/audit"
 	"github.com/loar32/sessionvault/internal/isolation"
@@ -53,6 +56,32 @@ func defaultAllow() []Allow {
 	return a
 }
 
+// Steam, запущенный из основной учётки мимо SessionVault (автозапуск, ярлык игры), читает приманку на месте своей сессии.
+// Путь клиента у каждой установки свой и появляется после запуска службы (protect steam), поэтому список читается из
+// профилей и помнится полминуты: событий чтения много.
+type dynAllow struct {
+	mu      sync.Mutex
+	at      time.Time
+	entries []Allow
+}
+
+func (d *dynAllow) get() []Allow {
+	if d == nil {
+		return nil
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.entries == nil || time.Since(d.at) > 30*time.Second {
+		d.entries = []Allow{}
+		for _, p := range placeProfiles() {
+			d.entries = append(d.entries, Allow{Path: p.Exe, Publisher: p.Publisher},
+				Allow{Path: filepath.Join(filepath.Dir(p.Exe), "bin", "cef", "cef.win64", "steamwebhelper.exe"), Publisher: p.Publisher})
+		}
+		d.at = time.Now()
+	}
+	return d.entries
+}
+
 // Каталоги, где нет записи у обычной учётки: exe оттуда нельзя подменить без прав администратора.
 func protectedRoots() []string {
 	return []string{
@@ -67,10 +96,11 @@ type allowlist struct {
 	signer  func(string) (string, error)
 	modules func(pid uint32) ([]string, error) // загруженные в процесс модули; nil — образ не проверяется
 	images  *imageCache
+	dyn     *dynAllow
 }
 
 func newAllowlist(extra []Allow, log func(string, ...any)) allowlist {
-	a := allowlist{entries: defaultAllow(), signer: audit.Signer, modules: audit.LoadedModules, images: &imageCache{}}
+	a := allowlist{entries: defaultAllow(), signer: audit.Signer, modules: audit.LoadedModules, images: &imageCache{}, dyn: &dynAllow{}}
 	for _, e := range extra {
 		if e.Path == "" || (e.Publisher == "" && !within(e.Path, protectedRoots())) {
 			log("белый список: запись %q отклонена (нужен издатель или каталог Windows/Program Files)", e.Path)
@@ -86,7 +116,7 @@ func (a allowlist) allowed(process string, pid uint32) bool {
 	if pid == 4 && process == "System" {
 		return true
 	}
-	for _, e := range a.entries {
+	for _, e := range append(slices.Clone(a.entries), a.dyn.get()...) {
 		if !matchPath(e.Path, process) {
 			continue
 		}

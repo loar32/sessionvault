@@ -51,3 +51,15 @@ func AsUser(tok windows.Token, fn func() error) error {
 	}()
 	return fn()
 }
+
+// StartAsUser запускает программу от имени самого пользователя (токен из UserToken) в его сеансе. Процесс создаётся
+// приостановленным: вызывающий кладёт его в job-объект и только потом возобновляет, чтобы потомки не ушли из job.
+func StartAsUser(tok windows.Token, cmdline, workDir string) (process, thread windows.Handle, err error) {
+	var dup windows.Token
+	if err = windows.DuplicateTokenEx(tok, windows.MAXIMUM_ALLOWED, nil, windows.SecurityImpersonation, windows.TokenPrimary, &dup); err != nil {
+		return
+	}
+	defer func() { _ = dup.Close() }()
+	_, process, thread, err = createAsUser(dup, cmdline, workDir, windows.CREATE_SUSPENDED)
+	return
+}
