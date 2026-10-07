@@ -116,9 +116,18 @@ func restoreProfile(cfg Config, user *windows.SID, name string, v vault.Vault, p
 		return errors.New("неизвестно, куда вернуть данные (не записан исходный путь)")
 	}
 	// Администратор переносит и удаляет файлы по пути из профиля пользователя: ссылка на нём увела бы это в чужую папку.
+	// Папка закрепляется до конца переноса: ни она, ни её родители не переименуются и не станут junction.
 	if err := decoy.NoReparse(origin); err != nil {
 		return err
 	}
+	if err := os.MkdirAll(filepath.Dir(origin), 0o755); err != nil {
+		return err
+	}
+	release, err := isolation.PinParent(origin)
+	if err != nil {
+		return err
+	}
+	defer release()
 	dek, err := v.Unlock(password)
 	if err != nil {
 		return err
@@ -134,6 +143,11 @@ func restoreProfile(cfg Config, user *windows.SID, name string, v vault.Vault, p
 			return err
 		}
 	}
+	// Процессы приложения могли пережить службу: пока данные не перенесены, закрываем их для учётки приложения,
+	// чтобы подмена папки внутри рабочей не увела перенос или смену прав в чужое место.
+	if err := isolation.ProtectDir(isolation.WorkPath(name)); err != nil {
+		return err
+	}
 	src := filepath.Join(isolation.WorkPath(name), p.DataDir)
 	if _, err := os.Stat(src); err != nil {
 		return fmt.Errorf("в хранилище нет %s: %w", p.DataDir, err)
@@ -144,9 +158,6 @@ func restoreProfile(cfg Config, user *windows.SID, name string, v vault.Vault, p
 		if err := os.Rename(origin, aside); err != nil {
 			return err
 		}
-	}
-	if err := os.MkdirAll(filepath.Dir(origin), 0o755); err != nil {
-		return err
 	}
 	if err := os.Rename(src, origin); err != nil {
 		return err

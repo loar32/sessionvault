@@ -81,9 +81,13 @@ func fixASR(yes, off bool) error {
 		return errors.New("нужен запуск от администратора")
 	}
 	if off {
-		if err := service.FixASR(true); err != nil {
+		if err := service.FixASR(true); errors.Is(err, service.ErrNothingToRevert) {
+			fmt.Println(err)
+			return nil
+		} else if err != nil {
 			return err
 		}
+		service.SyncService()
 		fmt.Println("правила ASR возвращены к прежним значениям")
 		return nil
 	}
@@ -105,6 +109,7 @@ func fixASR(yes, off bool) error {
 	if err := service.FixASR(false); err != nil {
 		return err
 	}
-	fmt.Println("готово. Обновить отчёт: sessionvault check из основной учётки.")
+	service.SyncService()
+	fmt.Println("готово. Служба обновит отчёт через несколько секунд (sessionvault check из основной учётки или пункт трея).")
 	return nil
 }

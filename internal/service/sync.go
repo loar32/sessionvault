@@ -43,6 +43,8 @@ func (s *Service) watchSync() {
 			case s.nudge <- struct{}{}:
 			default:
 			}
+			// Администратор что-то изменил (protect, check -fix): отчёт должен это учесть, а не показывать кеш.
+			go s.refreshCheck()
 		}
 	}()
 }

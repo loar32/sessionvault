@@ -26,6 +26,8 @@ const (
 	mbIconOK = 0x40
 	mbIconWn = 0x30
 	mbIconEr = 0x10
+	mbYesNo  = 0x4
+	idYes    = 6
 )
 
 // Fetch берёт свежий отчёт у службы; проверка может идти до 15 с (BitLocker спрашивается у PowerShell).
@@ -65,7 +67,8 @@ func Text(r checkup.Report) string {
 	return b.String()
 }
 
-// Show блокирует вызывающую горутину, пока окно открыто.
+// Show блокирует вызывающую горутину, пока окно открыто. Если есть что улучшить, окно спрашивает, открыть ли «Безопасность Windows»:
+// почти все жёлтые и красные пункты (Defender, HVCI, BitLocker, брандмауэр) включаются там.
 func Show(r checkup.Report) {
 	icon := uintptr(mbIconOK)
 	switch r.Overall {
@@ -74,9 +77,17 @@ func Show(r checkup.Report) {
 	case checkup.Bad:
 		icon = mbIconEr
 	}
-	text, _ := windows.UTF16PtrFromString(Text(r))
+	body, buttons := Text(r), uintptr(0)
+	if r.Overall != checkup.OK {
+		body += "\n\nОткрыть «Безопасность Windows»?"
+		buttons = mbYesNo
+	}
+	text, _ := windows.UTF16PtrFromString(body)
 	title, _ := windows.UTF16PtrFromString(Title)
-	_, _, _ = procMessageBox.Call(0, uintptr(unsafe.Pointer(text)), uintptr(unsafe.Pointer(title)), icon|mbSetFg|mbTop)
+	ans, _, _ := procMessageBox.Call(0, uintptr(unsafe.Pointer(text)), uintptr(unsafe.Pointer(title)), icon|buttons|mbSetFg|mbTop)
+	if ans == idYes {
+		_ = windows.ShellExecute(0, windows.StringToUTF16Ptr("open"), windows.StringToUTF16Ptr("windowsdefender:"), nil, nil, windows.SW_SHOWNORMAL)
+	}
 }
 
 func flagPath() string {

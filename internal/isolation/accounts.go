@@ -123,13 +123,31 @@ func loadAccounts() (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return m, json.Unmarshal(b, &m)
+	if err := json.Unmarshal(b, &m); err != nil {
+		return nil, err
+	}
+	for k, v := range m {
+		pw, err := openPassword(v)
+		if err != nil {
+			return nil, fmt.Errorf("пароль учётки %s: %w", k, err)
+		}
+		m[k] = pw
+	}
+	return m, nil
 }
 
 // saveAccounts пишет временный файл с правами только для SYSTEM и администраторов и переименовывает его: сбой посреди записи
 // не оставит обрезанный файл, из-за которого пропали бы все пароли.
 func saveAccounts(m map[string]string) error {
-	b, err := json.Marshal(m)
+	sealed := make(map[string]string, len(m))
+	for k, v := range m {
+		s, err := sealPassword(v)
+		if err != nil {
+			return fmt.Errorf("пароль учётки %s не зашифрован: %w", k, err)
+		}
+		sealed[k] = s
+	}
+	b, err := json.Marshal(sealed)
 	if err != nil {
 		return err
 	}
@@ -265,8 +283,17 @@ func unhideFromLogon(name string) error {
 
 func usersRoot() string { return KnownDir(windows.FOLDERID_UserProfiles, `C:\Users`) }
 
-// IsAppAccount — SID принадлежит учётке защищённого приложения (по имени sv-*).
+// IsAppAccount — SID принадлежит учётке защищённого приложения: имя sv-* и запись в списке учёток, которые создала программа.
+// Одного префикса мало: обычная учётка, названная sv-что-то, не должна считаться своей.
 func IsAppAccount(sid *windows.SID) bool {
 	name, _, _, err := sid.LookupAccount("")
-	return err == nil && strings.HasPrefix(strings.ToLower(name), AccountPrefix)
+	if err != nil || !strings.HasPrefix(strings.ToLower(name), AccountPrefix) {
+		return false
+	}
+	for _, n := range AccountNames() {
+		if strings.EqualFold(n, name) {
+			return true
+		}
+	}
+	return false
 }

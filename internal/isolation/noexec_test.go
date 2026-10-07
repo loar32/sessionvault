@@ -1,6 +1,8 @@
 package isolation
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -58,5 +60,55 @@ func TestNewFilesInDirNeverExecute(t *testing.T) {
 	}
 	if !strings.Contains(s, "(A;CI;0x1301ff;;;S-1-5-21-1-2-3-1001)") {
 		t.Fatalf("каталогу нужны права без смены DACL: %s", s)
+	}
+}
+
+func TestProtectNoExecWithApprovedFileHeldOpen(t *testing.T) {
+	root := t.TempDir()
+	approved := filepath.Join(root, "ok.dll")
+	if err := os.WriteFile(approved, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tok := windows.GetCurrentProcessToken()
+	u, err := tok.GetTokenUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls int
+	err = protectNoExec(root, func(p string) bool {
+		calls++
+		// Пока файл проверяется, его нельзя ни перезаписать, ни удалить.
+		if f, err := os.OpenFile(p, os.O_WRONLY, 0); err == nil {
+			_ = f.Close()
+			t.Error("файл открылся на запись во время проверки")
+		}
+		return p == approved
+	}, u.User.Sid, []*windows.SID{testSID(t, "S-1-5-18")}, nil, u.User.Sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("проверок: %d", calls)
+	}
+}
+
+func TestCleanExchangeLinks(t *testing.T) {
+	ProgramData = t.TempDir()
+	t.Cleanup(func() { ProgramData = "" })
+	target := t.TempDir()
+	if err := os.WriteFile(filepath.Join(target, "keep.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(ExchangeDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(ExchangeDir(), "link")); err != nil {
+		t.Skip("ссылки недоступны:", err)
+	}
+	if n := CleanExchangeLinks(); n != 1 {
+		t.Fatalf("удалено ссылок: %d", n)
+	}
+	if _, err := os.Stat(filepath.Join(target, "keep.txt")); err != nil {
+		t.Fatal("цель ссылки пострадала:", err)
 	}
 }

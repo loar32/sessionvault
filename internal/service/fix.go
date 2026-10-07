@@ -8,6 +8,9 @@ import (
 	"github.com/loar32/sessionvault/internal/isolation"
 )
 
+// ErrNothingToRevert — `check -fix` ещё не менял правила: откатывать нечего (правила, включённые самим пользователем, не трогаются).
+var ErrNothingToRevert = errors.New("правила ASR не менялись этой программой: возвращать нечего")
+
 // FixASR включает правила ASR в режиме блокировки (или с off возвращает прежние значения); прежние значения лежат
 // в config.json для отката. Правила работают только при включённом Defender, поэтому при отключённом включать нечего.
 func FixASR(off bool) error {
@@ -19,6 +22,9 @@ func FixASR(off bool) error {
 		return errors.New("SessionVault не установлен")
 	}
 	if off {
+		if cfg.ASR == nil {
+			return ErrNothingToRevert
+		}
 		if err := asr.Revert(cfg.ASR); err != nil {
 			return err
 		}

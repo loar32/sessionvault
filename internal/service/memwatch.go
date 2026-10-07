@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-	"unsafe"
 
 	"github.com/loar32/sessionvault/internal/audit"
 	"github.com/loar32/sessionvault/internal/isolation"
@@ -16,69 +15,15 @@ import (
 
 const (
 	memDedup          = time.Minute
-	memWatchEvery     = 5 * time.Second // не чаще: статус опрашивает трей раз в 10 с, а после действия чаще
 	memSeenMax        = 8 * 1024
 	exeCacheTTL       = 30 * time.Second
 	memLinesPerMinute = 60
+	memTimesMax       = 10000
+	memLogParts       = 4 // прежних частей журнала обращений к памяти
+	memKeep           = 24 * time.Hour
 )
 
 func MemoryLogPath() string { return filepath.Join(isolation.BaseDir(), "memory.log") }
-
-// jobPIDList — JOBOBJECT_BASIC_PROCESS_ID_LIST с запасом под потомков браузера.
-type jobPIDList struct {
-	Assigned uint32
-	InList   uint32
-	IDs      [512]uintptr
-}
-
-// jobPIDs — процессы, которые сейчас работают в job-объекте службы (все защищённые приложения и их потомки).
-func jobPIDs(job windows.Handle) []uint32 {
-	var l jobPIDList
-	// Процессов больше, чем влезло в список: берём то, что вернулось (ERROR_MORE_DATA).
-	if err := windows.QueryInformationJobObject(job, 3, uintptr(unsafe.Pointer(&l)), uint32(unsafe.Sizeof(l)), nil); err != nil && err != windows.ERROR_MORE_DATA {
-		return nil
-	}
-	n := min(int(l.InList), len(l.IDs))
-	pids := make([]uint32, 0, n)
-	for _, id := range l.IDs[:n] {
-		pids = append(pids, uint32(id))
-	}
-	return pids
-}
-
-// watchMemory ставит аудит чтения памяти на процессы защищённых приложений. Потомки (процессы браузера) появляются
-// после запуска, поэтому служба вызывает её при запуске приложения и при опросе статуса, но не чаще раза в memWatchEvery:
-// отдельного таймера нет, а без запущенных приложений вызов ничего не стоит.
-func (s *Service) watchMemory() {
-	s.mu.Lock()
-	if len(s.running) == 0 || time.Since(s.memWatchAt) < memWatchEvery {
-		s.mu.Unlock()
-		return
-	}
-	s.memWatchAt = time.Now()
-	job, done, prevFailed := s.job, s.memWatched, s.memFailed
-	s.mu.Unlock()
-	// Процесс, на который аудит уже поставлен, второй раз не трогаем; вышедшие процессы из набора пропадают. Неудача
-	// запоминается лишь до следующего опроса, но пишется в журнал один раз на процесс: процесс мог ещё не дозапуститься.
-	now, failed := map[uint32]bool{}, map[uint32]bool{}
-	for _, pid := range jobPIDs(job) {
-		if done[pid] {
-			now[pid] = true
-			continue
-		}
-		if err := audit.WatchProcess(pid); err != nil {
-			if !prevFailed[pid] {
-				s.log.Printf("аудит процесса %d: %v", pid, err)
-			}
-			failed[pid] = true
-			continue
-		}
-		now[pid] = true
-	}
-	s.mu.Lock()
-	s.memWatched, s.memFailed = now, failed
-	s.mu.Unlock()
-}
 
 func (s *Service) memWorker() {
 	for {
@@ -162,7 +107,10 @@ func (s *Service) handleMemory(r audit.Read) {
 		clear(s.memSeen)
 	}
 	s.memSeen[key] = time.Now()
-	s.memReads++
+	s.memTimes = append(s.memTimes, time.Now())
+	if len(s.memTimes) > memTimesMax {
+		s.memTimes = s.memTimes[len(s.memTimes)-memTimesMax:]
+	}
 	// Лимит записей в минуту: поток уникальных имён не должен вытеснить из ротации журнала нужную запись.
 	if time.Since(s.memWindow) > time.Minute {
 		s.memWindow, s.memWritten = time.Now(), 0
@@ -189,13 +137,21 @@ func (s *Service) handleMemory(r audit.Read) {
 	checkMu.Lock()
 	lastCheck = "" // отчёт должен учесть свежее обращение, а не кеш
 	checkMu.Unlock()
-	rotateLog(MemoryLogPath())
+	rotateLogKeep(MemoryLogPath(), memLogParts)
 	f, err := os.OpenFile(MemoryLogPath(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-	if err != nil {
-		return
+	if err == nil {
+		defer func() { _ = f.Close() }()
+		_, err = f.WriteString(line + "\n")
 	}
-	defer func() { _ = f.Close() }()
-	_, _ = f.WriteString(line + "\n")
+	if err != nil {
+		s.mu.Lock()
+		first := !s.memWriteFailed
+		s.memWriteFailed = true
+		s.mu.Unlock()
+		if first {
+			s.log.Println("memory.log не записывается:", err)
+		}
+	}
 }
 
 func protectedTarget(base string, exes []string) bool {
@@ -233,11 +189,43 @@ func memAccess(mask uint32) string {
 	return strings.Join(parts, ", ")
 }
 
-// memoryState — сколько обращений записано с запуска службы и последнее из них.
+// memoryState — сколько обращений записано за последние сутки и последнее из них.
 func (s *Service) memoryState() (int, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.memReads, s.memLast
+	i := 0
+	for i < len(s.memTimes) && time.Since(s.memTimes[i]) > memKeep {
+		i++
+	}
+	s.memTimes = s.memTimes[i:]
+	return len(s.memTimes), s.memLast
+}
+
+// loadMemoryHistory поднимает из memory.log записи последних суток: служба перезапускается, а журнал остаётся.
+func (s *Service) loadMemoryHistory() {
+	b, err := os.ReadFile(MemoryLogPath())
+	if err != nil {
+		return
+	}
+	var times []time.Time
+	last := ""
+	for _, l := range strings.Split(string(b), "\n") {
+		if len(l) < 19 {
+			continue
+		}
+		t, err := time.ParseInLocation("2006/01/02 15:04:05", l[:19], time.Local)
+		if err != nil || time.Since(t) > memKeep {
+			continue
+		}
+		times = append(times, t)
+		last = truncRunes(l, 200)
+	}
+	if len(times) > memTimesMax {
+		times = times[len(times)-memTimesMax:]
+	}
+	s.mu.Lock()
+	s.memTimes, s.memLast = append(times, s.memTimes...), last
+	s.mu.Unlock()
 }
 
 func truncRunes(s string, n int) string {

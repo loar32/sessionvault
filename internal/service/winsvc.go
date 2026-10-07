@@ -14,6 +14,7 @@ const Name = "SessionVault"
 const (
 	wtsConsoleDisconnect = 2 // WTS_CONSOLE_DISCONNECT: смена пользователя
 	wtsRemoteDisconnect  = 4 // WTS_REMOTE_DISCONNECT
+	wtsSessionLogon      = 5 // WTS_SESSION_LOGON
 	wtsSessionLogoff     = 6 // WTS_SESSION_LOGOFF
 	wtsSessionLock       = 7 // WTS_SESSION_LOCK
 	pbtApmSuspend        = 4 // PBT_APMSUSPEND
@@ -34,6 +35,13 @@ func (h handler) Execute(_ []string, r <-chan svc.ChangeRequest, st chan<- svc.S
 			st <- c.CurrentStatus
 		case svc.SessionChange:
 			switch c.EventType {
+			case wtsSessionLogon:
+				// Приманку создают с правами пользователя, а до его входа это невозможно.
+				select {
+				case h.s.nudge <- struct{}{}:
+				default:
+				}
+				go h.s.purgeACL()
 			case wtsSessionLogoff, wtsSessionLock, wtsConsoleDisconnect, wtsRemoteDisconnect:
 				h.s.lockRequested()
 			}

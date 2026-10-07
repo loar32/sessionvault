@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -33,12 +34,30 @@ const checkCacheTTL = 10 * time.Second
 
 func CheckPath() string { return filepath.Join(isolation.BaseDir(), "check.json") }
 
-// Проверка защиты при старте службы: единственная, остальные — только по команде check.
+// Проверка защиты при старте службы и по сигналу администратора; остальные — только по команде check.
 func (s *Service) startCheck() {
 	if s.check() == ipc.Failed {
 		return
 	}
 	s.log.Println("проверка защиты выполнена, отчёт в check.json")
+	// WMI после загрузки системы отвечает не сразу: один повтор через минуту, если BitLocker не определился.
+	if strings.Contains(lastCheckText(), "состояние определить не удалось") {
+		time.AfterFunc(time.Minute, s.refreshCheck)
+	}
+}
+
+func lastCheckText() string {
+	checkMu.Lock()
+	defer checkMu.Unlock()
+	return lastCheck
+}
+
+// refreshCheck сбрасывает кеш и собирает отчёт заново; частые сигналы сливаются в один запуск PowerShell.
+func (s *Service) refreshCheck() {
+	checkMu.Lock()
+	lastCheck = ""
+	checkMu.Unlock()
+	s.check()
 }
 
 // Собирает отчёт, пишет check.json (читают администраторы) и отдаёт его же одной строкой.
@@ -56,6 +75,7 @@ func (s *Service) check() string {
 	ext, scanned := s.extensionsState()
 	memReads, memLast := s.memoryState()
 	in := checkup.Input{MemAudit: audit.MemoryAuditEnabled(), MemReads: memReads, MemLast: memLast, ASRActive: asr.Active(), ASRTotal: len(asr.Rules), ExtScanned: scanned, ExtRisky: ext, MainUserAdmin: admin, MainUserUnknown: adminErr != nil, Audit: audit.IsEnabled(), Hardened: hardening.Applied(), Hello: s.helloEnabled()}
+	in.Copies, in.StaleCopies = staleCopies(cfg.MainUser)
 	in.LockRules, in.LockRulesWant = lockdown.Rules()
 	if sid, err := isolation.AppsGroupSID(); err == nil {
 		in.LockDenied, in.LockDeniedWant = lockdown.Denied(sid)

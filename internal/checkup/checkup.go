@@ -3,17 +3,11 @@
 package checkup
 
 import (
-	"context"
-	"errors"
 	"fmt"
-	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
-	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 )
 
@@ -55,19 +49,33 @@ type Input struct {
 	ExtScanned      []string // браузеры, у которых расширения проверены при запуске
 	ExtRisky        []string // «Название (браузер)»: доступ к cookies и ко всем сайтам
 	MemAudit        bool     // включён аудит объектов ядра: по нему видно чтение памяти приложений
-	MemReads        int      // обращений чужих процессов к памяти защищённых приложений с запуска службы
+	MemReads        int      // обращений чужих процессов к памяти защищённых приложений за последние сутки
 	MemLast         string   // последнее обращение
 	LockRules       int      // правил брандмауэра группы SessionVault
 	LockRulesWant   int      // сколько их должно быть
 	LockDenied      int      // интерпретаторов с запретом запуска для vault
 	LockDeniedWant  int      // сколько интерпретаторов есть в системе
+	Copies          int      // защищённых приложений, чья копия лежит в каталоге программы (Discord и добавленные через add)
+	StaleCopies     []string // из них устаревшие: само приложение обновилось
 }
 
-// Реестр и BitLocker за интерфейсом: в тестах подменяются.
+// Probe — то, что реестр не показывает и узнаётся только у самой системы (один запуск PowerShell на весь отчёт).
+type Probe struct {
+	Known         bool     // PowerShell ответил: BitLocker определён
+	BitLocker     int      // ProtectionStatus системного тома: 0 выкл., 1 вкл., 2 неизвестно
+	BLRecovery    bool     // у тома есть ключ восстановления (числовой пароль)
+	DefenderKnown bool     // состояние Defender получено
+	DefenderRT    bool     // защита в реальном времени действует сейчас
+	OtherAV       []string // работающие сторонние антивирусы
+	HVCIKnown     bool
+	HVCIRunning   bool // целостность памяти действует сейчас, а не только включена в настройках
+}
+
+// Реестр и запрос к системе за интерфейсом: в тестах подменяются.
 type system interface {
 	regInt(key, value string) (int64, bool)
 	regStr(key, value string) (string, bool)
-	bitlocker() (int, error) // ProtectionStatus системного тома: 0 выкл., 1 вкл., 2 неизвестно
+	probe() Probe
 }
 
 const (
@@ -87,22 +95,25 @@ const (
 func Run(in Input) Report { return run(winSystem{}, in, time.Now()) }
 
 func run(sys system, in Input, now time.Time) Report {
-	def := defenderItem(sys)
+	pr := sys.probe()
+	def := defenderItem(sys, pr)
 	items := []Item{
 		userItem(in),
 		windowsItem(sys),
 		def,
-		bitlockerItem(sys),
-		hvciItem(sys),
+		bitlockerItem(pr),
+		hvciItem(sys, pr),
 		secureBootItem(sys),
 		blocklistItem(sys),
 		asrItem(in, def.Level),
 		auditItem(in),
 		hardenItem(in),
 		helloItem(in),
-		lockdownItem(in),
+		lockdownItem(in, firewallOff(sys)),
 		extensionsItem(in),
 		memoryItem(in),
+		journalItem(sys),
+		copiesItem(in),
 		{ID: "telegram", Title: "Код-пароль Telegram", Level: Info,
 			Detail: "включается в самом Telegram",
 			Hint:   "Настройки → Конфиденциальность → Код-пароль: без него украденные файлы tdata открываются сразу"},
@@ -150,40 +161,61 @@ func windowsItem(sys system) Item {
 	case b < minBuild:
 		return Item{"windows", "Windows", Warn, detail, "Эта сборка больше не получает обновления безопасности: обновите Windows"}
 	case strings.HasPrefix(ed, "Core"):
-		return Item{"windows", "Windows", Warn, detail + " (Home)", "В Home нет AppLocker и части защит; запрет запуска файлов будет через SRP"}
+		return Item{"windows", "Windows", Info, detail + " (Home)", "В Home нет AppLocker и части защит: это ограничение редакции, программа обходится без них"}
 	}
 	return Item{"windows", "Windows", OK, detail, ""}
 }
 
-func defenderItem(sys system) Item {
+func defenderItem(sys system, pr Probe) Item {
 	off := false
 	for _, c := range [][2]string{{defPolicy, "DisableAntiSpyware"}, {defPolicy + `\Real-Time Protection`, "DisableRealtimeMonitoring"}, {defRealtime, "DisableRealtimeMonitoring"}} {
 		if v, ok := sys.regInt(c[0], c[1]); ok && v == 1 {
 			off = true
 		}
 	}
+	if pr.DefenderKnown && !pr.DefenderRT {
+		off = true
+	}
+	if off && len(pr.OtherAV) > 0 {
+		return Item{"defender", "Microsoft Defender", Info, "работает другой антивирус: " + strings.Join(pr.OtherAV, ", "),
+			"Правила ASR действуют только при Defender; у стороннего антивируса есть свои"}
+	}
 	if off {
 		return Item{"defender", "Microsoft Defender", Bad, "отключён или без защиты в реальном времени",
 			"Если нет другого антивируса, включите Defender: Безопасность Windows → Защита от вирусов"}
 	}
-	return Item{"defender", "Microsoft Defender", OK, "не отключён", ""}
+	return Item{"defender", "Microsoft Defender", OK, "защита в реальном времени работает", ""}
 }
 
-func bitlockerItem(sys system) Item {
-	st, err := sys.bitlocker()
+func bitlockerItem(pr Probe) Item {
+	st := pr.BitLocker
 	switch {
-	case err != nil || st == 2:
+	case !pr.Known || st == 2:
 		return Item{"bitlocker", "BitLocker", Warn, "состояние определить не удалось",
 			"Проверьте вручную: Параметры → Конфиденциальность и защита → Шифрование устройства"}
 	case st == 0:
 		return Item{"bitlocker", "BitLocker", Warn, "системный диск не зашифрован",
 			"Без шифрования диска файл подкачки и временные данные читаются с выключенного компьютера"}
 	}
+	if !pr.BLRecovery {
+		return Item{"bitlocker", "BitLocker", Info, "системный диск зашифрован, ключ восстановления не найден",
+			"Сохраните ключ восстановления (Параметры → Шифрование устройства или аккаунт Майкрософт): без него после сбоя TPM диск не открыть"}
+	}
 	return Item{"bitlocker", "BitLocker", OK, "системный диск зашифрован", ""}
 }
 
-func hvciItem(sys system) Item {
+func hvciItem(sys system, pr Probe) Item {
+	configured := false
 	if v, ok := sys.regInt(hvciKey, "Enabled"); ok && v == 1 {
+		configured = true
+	}
+	switch {
+	case pr.HVCIKnown && pr.HVCIRunning:
+		return Item{"hvci", "Целостность памяти (HVCI)", OK, "включена и работает", ""}
+	case pr.HVCIKnown && configured:
+		return Item{"hvci", "Целостность памяти (HVCI)", Warn, "включена в настройках, но не работает",
+			"Нужна перезагрузка, либо несовместимый драйвер мешает запуску: Безопасность Windows → Изоляция ядра"}
+	case configured:
 		return Item{"hvci", "Целостность памяти (HVCI)", OK, "включена", ""}
 	}
 	return Item{"hvci", "Целостность памяти (HVCI)", Warn, "выключена",
@@ -233,8 +265,12 @@ func helloItem(in Input) Item {
 		"Без Hello мастер-пароль вводится в окне на обычном рабочем столе; включается пунктом меню в трее"}
 }
 
-func lockdownItem(in Input) Item {
+func lockdownItem(in Input, fwOff []string) Item {
 	title := "Сетевой заслон для приложений"
+	if len(fwOff) > 0 {
+		return Item{"lockdown", title, Warn, "брандмауэр Windows выключен в профилях: " + strings.Join(fwOff, ", ") + "; правила заслона не действуют",
+			"Включите брандмауэр: Безопасность Windows → Брандмауэр и защита сети"}
+	}
 	if in.LockRules >= in.LockRulesWant && in.LockDenied >= in.LockDeniedWant && in.LockRulesWant > 0 {
 		return Item{"lockdown", title, OK, fmt.Sprintf("правил брандмауэра %d, интерпретаторов под запретом %d", in.LockRules, in.LockDenied), ""}
 	}
@@ -264,33 +300,11 @@ func (winSystem) regStr(key, value string) (string, bool) {
 	return v, err == nil
 }
 
-func (winSystem) bitlocker() (int, error) {
-	dir, err := windows.GetSystemDirectory()
-	if err != nil {
-		return 2, err
-	}
-	drive := filepath.VolumeName(dir)
-	script := `(Get-CimInstance -Namespace root/CIMV2/Security/MicrosoftVolumeEncryption -ClassName Win32_EncryptableVolume -Filter "DriveLetter='` + drive + `'").ProtectionStatus`
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, filepath.Join(dir, `WindowsPowerShell\v1.0\powershell.exe`), "-NoProfile", "-NonInteractive", "-Command", script)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	out, err := cmd.Output()
-	if err != nil {
-		return 2, err
-	}
-	n, err := strconv.Atoi(strings.TrimSpace(string(out)))
-	if err != nil {
-		return 2, errors.New("неожиданный ответ PowerShell")
-	}
-	return n, nil
-}
-
 func asrItem(in Input, defender Level) Item {
 	const title = "Правила ASR (Defender)"
 	switch {
-	case defender == Bad:
-		return Item{"asr", title, Info, "Defender отключён: правила не действуют", ""}
+	case defender != OK:
+		return Item{"asr", title, Info, "Defender не защищает в реальном времени: правила не действуют", ""}
 	case in.ASRTotal > 0 && in.ASRActive >= in.ASRTotal:
 		return Item{"asr", title, OK, fmt.Sprintf("включено %d из %d (блокировка)", in.ASRActive, in.ASRTotal), ""}
 	}
@@ -326,11 +340,14 @@ func memoryItem(in Input) Item {
 		return Item{"memory", title, Info, "аудит объектов Windows не включён, обращения не записываются",
 			"Включит служба при запуске; если политику сбросили, перезапустите службу SessionVault"}
 	case in.MemReads == 0:
-		return Item{"memory", title, OK, "чужих обращений не было с запуска службы", ""}
+		return Item{"memory", title, OK, "чужих обращений за последние сутки не было", ""}
 	}
-	return Item{"memory", title, Info, fmt.Sprintf("обращений с запуска службы: %d, последнее: %s", in.MemReads, in.MemLast),
+	return Item{"memory", title, Info, fmt.Sprintf("обращений за последние сутки: %d, последнее: %s", in.MemReads, in.MemLast),
 		"Журнал memory.log в папке данных SessionVault; если вы сами не запускали отладчик или похожую программу, проверьте, что это за процесс"}
 }
 
 // DefenderOff — Defender отключён политикой или без защиты в реальном времени (те же признаки, что у пункта отчёта).
-func DefenderOff() bool { return defenderItem(winSystem{}).Level == Bad }
+func DefenderOff() bool {
+	sys := winSystem{}
+	return defenderItem(sys, sys.probe()).Level != OK
+}

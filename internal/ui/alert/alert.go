@@ -35,8 +35,20 @@ type Info struct {
 	Time    time.Time `json:"time"`
 }
 
+// Окно получает данные в командной строке (предел 32 КБ, hex вдвое длиннее), а путь процесса может быть любой длины:
+// в окне показывается начало, полный путь остаётся в журнале тревог.
+const maxShown = 1000
+
+func shorten(s string) string {
+	if r := []rune(s); len(r) > maxShown {
+		return string(r[:maxShown]) + "…"
+	}
+	return s
+}
+
 // Encode упаковывает данные в один аргумент командной строки без кавычек и пробелов.
 func Encode(i Info) (string, error) {
+	i.Process, i.Object = shorten(i.Process), shorten(i.Object)
 	b, err := json.Marshal(i)
 	return hex.EncodeToString(b), err
 }

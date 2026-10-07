@@ -26,7 +26,7 @@ func findDiscordDir(user string) (string, error) {
 	}
 	entries, err := os.ReadDir(root)
 	if err != nil {
-		return "", errors.New(`Discord не найден: он ставится в профиль пользователя (AppData\Local\Discord)`)
+		return "", errors.New(`программа Discord не найдена: она ставится в профиль пользователя (AppData\Local\Discord)`)
 	}
 	var dirs []string
 	for _, e := range entries {
@@ -91,6 +91,11 @@ func installCopy(p *profiles.Profile, srcDir, exeRel string) error {
 	if err := decoy.NoReparse(srcDir); err != nil {
 		return err
 	}
+	release, err := isolation.PinParent(srcDir)
+	if err != nil {
+		return err
+	}
+	defer release()
 	if err := copyDir(srcDir, dst); err != nil {
 		_ = os.RemoveAll(dst)
 		return err
@@ -113,6 +118,31 @@ func resolveApp(p *profiles.Profile, user string) error {
 		return err
 	}
 	return installCopy(p, dir, "Discord.exe")
+}
+
+// placeExe выставляет p.Exe: приложение в каталоге Windows или Program Files запускается на месте, иначе (его может заменить
+// обычная учётка) копируется в каталог программы — одним файлом или, с copyDir, целиком вместе с каталогом.
+func placeExe(p *profiles.Profile, exe string, copyDir bool) error {
+	p.Exe = exe
+	appDir := filepath.Join(InstallDir(), "apps", p.Name)
+	switch {
+	case copyDir:
+		return installCopy(p, filepath.Dir(exe), filepath.Base(exe))
+	case !inProtectedRoot(exe):
+		dst := filepath.Join(appDir, filepath.Base(exe))
+		if err := os.MkdirAll(appDir, 0o755); err != nil {
+			return err
+		}
+		if err := copyFile(exe, dst); err != nil {
+			return err
+		}
+		p.Exe, p.Source = dst, filepath.Dir(exe)
+		if err := verifyPublisher(*p); err != nil {
+			_ = os.RemoveAll(appDir)
+			return err
+		}
+	}
+	return nil
 }
 
 // RefreshApp копирует каталог приложения заново (после обновления самого приложения): обновляется только копия под vault.
@@ -247,7 +277,7 @@ func AddApp(o AddOptions, confirm func(info string) bool, askPassword func() ([]
 		return err
 	}
 
-	p := profiles.Profile{Name: o.Name, Title: o.Name, DataDir: dataDir, LaunchArgs: o.Args, Origin: rel, Custom: true}
+	p := profiles.Profile{Name: o.Name, Title: o.Name, DataDir: dataDir, LaunchArgs: o.Args, Origin: rel, Custom: true, Decoy: "generic"}
 	signer, serr := audit.Signer(o.Exe)
 	signerText := "НЕ ПОДПИСАНО"
 	if serr == nil {
@@ -274,26 +304,9 @@ func AddApp(o AddOptions, confirm func(info string) bool, askPassword func() ([]
 	}
 	defer crypto.Wipe(pw)
 
-	p.Exe = o.Exe
 	appDir := filepath.Join(InstallDir(), "apps", o.Name)
-	switch {
-	case o.CopyDir:
-		if err := installCopy(&p, filepath.Dir(o.Exe), filepath.Base(o.Exe)); err != nil {
-			return err
-		}
-	case !inProtectedRoot(o.Exe):
-		dst := filepath.Join(appDir, filepath.Base(o.Exe))
-		if err := os.MkdirAll(appDir, 0o755); err != nil {
-			return err
-		}
-		if err := copyFile(o.Exe, dst); err != nil {
-			return err
-		}
-		p.Exe, p.Source = dst, filepath.Dir(o.Exe)
-		if err := verifyPublisher(p); err != nil {
-			_ = os.RemoveAll(appDir)
-			return err
-		}
+	if err := placeExe(&p, o.Exe, o.CopyDir); err != nil {
+		return err
 	}
 
 	_, statErr := os.Stat(origin)
@@ -326,6 +339,11 @@ func AddApp(o AddOptions, confirm func(info string) bool, askPassword func() ([]
 		return err
 	}
 	if hadData {
+		release, err := isolation.PinParent(origin)
+		if err != nil {
+			return err
+		}
+		defer release()
 		if err := os.Rename(origin, work); err != nil {
 			return fmt.Errorf("не удалось перенести данные (закройте приложение и повторите): %w", err)
 		}
@@ -360,4 +378,90 @@ func AddApp(o AddOptions, confirm func(info string) bool, askPassword func() ([]
 	crypto.Wipe(check)
 	done = true
 	return nil
+}
+
+// staleCopies — приложения, у которых есть копия под vault (Discord и добавленные через add), и среди них те, чьё
+// исходное приложение обновилось. Только чтение: профили и пути исходников.
+func staleCopies(mainUser string) (total int, stale []string) {
+	entries, err := os.ReadDir(isolation.ProfilesDir())
+	if err != nil {
+		return 0, nil
+	}
+	for _, e := range entries {
+		name, ok := strings.CutSuffix(e.Name(), ".json")
+		if !ok {
+			continue
+		}
+		p, err := profiles.Load(isolation.ProfilesDir(), name)
+		if err != nil || p.Source == "" {
+			continue
+		}
+		total++
+		if name == "discord" {
+			if dir, err := findDiscordDir(mainUser); err == nil && !strings.EqualFold(dir, p.Source) {
+				stale = append(stale, name)
+			}
+			continue
+		}
+		src, err1 := os.Stat(filepath.Join(p.Source, filepath.Base(p.Exe)))
+		cp, err2 := os.Stat(p.Exe)
+		if err1 == nil && err2 == nil && src.ModTime().After(cp.ModTime()) {
+			stale = append(stale, name)
+		}
+	}
+	sort.Strings(stale)
+	return total, stale
+}
+
+// customProfile строит профиль собственного приложения из файла экспорта. Файл приходит со стороны, поэтому из него берётся
+// только описание (имя папки данных, аргументы, путь данных): запуск и права задаёт этот ПК, а аргументы и издателя
+// администратор подтверждает глазами.
+func customProfile(b bundle, c CustomImport) (profiles.Profile, error) {
+	var p profiles.Profile
+	if c.Exe == "" {
+		return p, errors.New("приложение добавлено командой add: укажите, где оно лежит на этом ПК: sessionvault import -exe <путь к .exe> [-copy-dir] <файл>")
+	}
+	if !profiles.ValidName(b.App) {
+		return p, errors.New("в файле недопустимое имя приложения")
+	}
+	if !filepath.IsAbs(c.Exe) || !strings.EqualFold(filepath.Ext(c.Exe), ".exe") {
+		return p, errors.New("укажите полный путь к .exe")
+	}
+	if _, err := os.Stat(c.Exe); err != nil {
+		return p, fmt.Errorf("%s не найден", c.Exe)
+	}
+	p = *b.Profile
+	p.Name, p.Custom, p.Decoy = b.App, true, "generic"
+	p.Exe, p.Source, p.Sig, p.ExecFiles, p.ExecSigner = "", "", "", nil, ""
+	if p.DataDir == "" || !filepath.IsLocal(p.DataDir) || strings.ContainsAny(p.DataDir, `\/`) {
+		return p, errors.New("в файле недопустимая папка данных")
+	}
+	if p.Origin == "" || !filepath.IsLocal(p.Origin) {
+		return p, errors.New("в файле недопустимый путь данных")
+	}
+	hasData := false
+	for _, a := range p.LaunchArgs {
+		hasData = hasData || strings.Contains(a, "{data_path}")
+	}
+	if !hasData {
+		return p, errors.New("в аргументах запуска из файла нет {data_path}")
+	}
+	signer, err := audit.Signer(c.Exe)
+	signerText := "НЕ ПОДПИСАНО"
+	switch {
+	case err == nil:
+		signerText = signer
+		if p.Publisher != "" && !strings.EqualFold(p.Publisher, signer) {
+			return p, fmt.Errorf("%s подписан %q, а в файле издатель %q", c.Exe, signer, p.Publisher)
+		}
+		p.Publisher = signer
+	case p.Publisher != "":
+		return p, fmt.Errorf("%s не подписан, а в файле издатель %q", c.Exe, p.Publisher)
+	}
+	info := fmt.Sprintf("Приложение %s из файла экспорта.\nИсполняемый файл на этом ПК: %s\nИздатель (подпись): %s\nДанные: профиль основной учётки\\%s\nАргументы запуска из файла: %s\n",
+		b.App, c.Exe, signerText, p.Origin, strings.Join(p.LaunchArgs, " "))
+	if c.Confirm == nil || !c.Confirm(info) {
+		return p, ErrNotConfirmed
+	}
+	return p, nil
 }

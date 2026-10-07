@@ -623,3 +623,64 @@ func TestFidoSlot(t *testing.T) {
 		t.Fatal("пароль перестал работать")
 	}
 }
+
+// Включение Hello, пока идёт шифрование при закрытии приложения, не должно потеряться из-за записи устаревшего vault.json.
+func TestHelloSurvivesConcurrentEncrypt(t *testing.T) {
+	v := newVault(t)
+	dek, err := v.Create([]byte("pw"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		for range 20 {
+			if err := v.Decrypt(dek); err != nil && !errors.Is(err, os.ErrNotExist) {
+				done <- err
+				return
+			}
+			if err := v.Encrypt(dek); err != nil {
+				done <- err
+				return
+			}
+		}
+		done <- nil
+	}()
+	for range 20 {
+		if err := v.EnableHello(dek, "SessionVault", []byte("challenge"), []byte("secret")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := v.HelloInfo(); !ok {
+		t.Fatal("слот Hello потерян записью устаревшего vault.json")
+	}
+}
+
+func TestRemoveRecoveryAndRestoreMeta(t *testing.T) {
+	v := newVault(t)
+	dek, err := v.Create([]byte("pw"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := v.MetaBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := v.SetRecovery(dek, bytes.Repeat([]byte{7}, 32)); err != nil {
+		t.Fatal(err)
+	}
+	if !v.HasRecovery() {
+		t.Fatal("слот не записан")
+	}
+	if err := v.RestoreMeta(before); err != nil || v.HasRecovery() {
+		t.Fatalf("откат vault.json не убрал слот: %v", err)
+	}
+	if err := v.SetRecovery(dek, bytes.Repeat([]byte{7}, 32)); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.RemoveRecovery(); err != nil || v.HasRecovery() {
+		t.Fatalf("слот не удалён: %v", err)
+	}
+}

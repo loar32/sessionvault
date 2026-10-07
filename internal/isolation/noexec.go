@@ -76,19 +76,43 @@ func noExecACL(isDir, fileExec bool, vault *windows.SID, full []*windows.SID, ex
 // файлу разрешён запуск (nil — никому); новые файлы запуска не получают. Ссылки и junction пропускаются: SYSTEM не
 // должен менять права по чужому указателю.
 func protectNoExec(root string, allowExec func(path string) bool, vault *windows.SID, full []*windows.SID, extra *windows.SID, owner *windows.SID) error {
+	return protectTree(root, allowExec, vault, full, extra, owner, false)
+}
+
+// protectTree — то же; с tolerant файл, права которого сменить не удалось (например, загруженный куст NTUSER.DAT),
+// пропускается, а не обрывает обход.
+func protectTree(root string, allowExec func(path string) bool, vault *windows.SID, full []*windows.SID, extra *windows.SID, owner *windows.SID, tolerant bool) error {
 	type item struct {
 		path      string
 		dir, exec bool
 	}
 	var items []item
+	// Файл, которому разрешён запуск, держится открытым без права записи и удаления от проверки до выдачи прав:
+	// иначе его можно было бы подменить между проверкой подписи и выдачей права на запуск.
+	var pins []windows.Handle
+	defer func() {
+		for _, h := range pins {
+			_ = windows.CloseHandle(h)
+		}
+	}()
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
+			if tolerant && d != nil {
+				return nil
+			}
 			return err
 		}
 		if d.Type()&(fs.ModeSymlink|fs.ModeIrregular) != 0 {
 			return nil
 		}
-		items = append(items, item{p, d.IsDir(), !d.IsDir() && allowExec != nil && allowExec(p)})
+		exec := false
+		if !d.IsDir() && allowExec != nil {
+			if h, err := pinFile(p); err == nil {
+				pins = append(pins, h)
+				exec = allowExec(p)
+			}
+		}
+		items = append(items, item{p, d.IsDir(), exec})
 		return nil
 	})
 	if err != nil {
@@ -104,7 +128,7 @@ func protectNoExec(root string, allowExec func(path string) bool, vault *windows
 		err = windows.SetNamedSecurityInfo(it.path, windows.SE_FILE_OBJECT,
 			windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
 			owner, nil, acl, nil)
-		if err != nil {
+		if err != nil && !tolerant {
 			return err
 		}
 	}
@@ -132,4 +156,46 @@ func SetupExchange(mainUser string) error {
 		return err
 	}
 	return protectNoExec(ExchangeDir(), nil, vault, []*windows.SID{system, admins}, user, admins)
+}
+
+// CleanExchangeLinks убирает из общей папки ссылки и junction: приложение могло оставить их, чтобы пользователь или
+// другое приложение, открыв папку, ушло по ссылке в чужое место. Удаляется сама ссылка, цель не затрагивается.
+func CleanExchangeLinks() (removed int) {
+	_ = filepath.WalkDir(ExchangeDir(), func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.Type()&(fs.ModeSymlink|fs.ModeIrregular) != 0 {
+			if os.Remove(p) == nil {
+				removed++
+			}
+			if d.IsDir() {
+				return fs.SkipDir
+			}
+		}
+		return nil
+	})
+	return removed
+}
+
+// lockProfile закрывает запуск файлов и смену прав в профиле самой учётки приложения (Temp, Downloads и т. п.): иначе
+// взломанное приложение сохранило бы там exe и запустило его. Профиль не нужен приложению для запуска кода: данные и
+// кэш лежат в рабочей папке. Защита дополнительная: сбой не мешает запуску.
+func lockProfile(tok windows.Token) {
+	if EnablePrivileges("SeRestorePrivilege", "SeTakeOwnershipPrivilege") != nil {
+		return
+	}
+	dir, err := tok.GetUserProfileDirectory()
+	if err != nil {
+		return
+	}
+	u, err := tok.GetTokenUser()
+	if err != nil {
+		return
+	}
+	admins, system, err := adminsAndSystem()
+	if err != nil {
+		return
+	}
+	_ = protectTree(dir, nil, u.User.Sid, []*windows.SID{system, admins}, nil, admins, true)
 }

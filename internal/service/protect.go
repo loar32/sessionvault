@@ -94,9 +94,12 @@ func ProtectBrowser(app string, confirm func(path string, size int64) bool, askP
 
 	if hadOld {
 		// Путь проверялся давно: за время вопросов пользователя родительскую папку могли подменить ссылкой.
-		if err := decoy.NoReparse(origin); err != nil {
+		// Закреплённая папка не даёт сделать это снова между проверкой и переносом.
+		release, err := isolation.PinParent(origin)
+		if err != nil {
 			return "", err
 		}
+		defer release()
 		if err := os.Rename(origin, aside); err != nil {
 			return "", fmt.Errorf("не удалось убрать прежний профиль (закройте %s и повторите): %w", p.Title, err)
 		}

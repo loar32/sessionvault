@@ -32,16 +32,17 @@ sessionvault protect [-yes] [-password-stdin] <telegram|chrome|edge|brave|discor
 sessionvault add [-yes] [-copy-dir] [-data имя] -arg "...{data_path}..." имя путь-к-exe каталог-данных
 sessionvault refresh <приложение>
 sessionvault trust [-yes] <профиль>
+sessionvault export <приложение> <файл>
+sessionvault import [-exe путь-к-exe [-copy-dir] [-yes]] [-password-stdin] <файл>
 sessionvault import-tdata [путь-к-tdata]
+sessionvault unprotect [-password-stdin] <приложение>
 sessionvault uninstall
 sessionvault restore-backup <профиль>
 sessionvault harden [-off]
 sessionvault lockdown [-off]
 sessionvault hello disable [профиль]
 sessionvault fido disable [профиль]
-sessionvault recovery create|reset|status
-sessionvault export <приложение> <файл>
-sessionvault import <файл>
+sessionvault recovery create [-file путь]|reset|verify|revoke <приложение>|status
 sessionvault run <профиль>
 sessionvault open <ссылка>
 sessionvault status
@@ -80,7 +81,7 @@ func main() {
 		pause = true
 	}
 	switch os.Args[1] {
-	case "service", "prompt", "tray", "launch", "alert", "hello-unlock", "hello-enroll", "fido-unlock", "fido-enroll":
+	case "service", "prompt", "tray", "launch", "alert", "purge-acl", "hello-unlock", "hello-enroll", "fido-unlock", "fido-enroll":
 	default:
 		attachConsole()
 	}
@@ -96,6 +97,8 @@ func main() {
 		nudgeService(err)
 	case "uninstall":
 		err = uninstall(args)
+	case "unprotect":
+		err = unprotect(args)
 	case "restore-backup":
 		err = restoreBackup(args)
 	case "harden":
@@ -142,6 +145,8 @@ func main() {
 		err = alerts()
 	case "launch":
 		err = launch(args)
+	case "purge-acl":
+		err = isolation.PurgeStaleACL()
 	default:
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
@@ -307,6 +312,30 @@ func importTdata(args []string) error {
 	}
 	ok = true
 	fmt.Println("tdata зашифрована в", v.Dir)
+	return nil
+}
+
+// Снимает защиту с одного приложения: данные возвращаются на прежнее место, учётка и профиль удаляются.
+func unprotect(args []string) error {
+	fs := flag.NewFlagSet("unprotect", flag.ContinueOnError)
+	stdin := fs.Bool("password-stdin", false, "")
+	pos, err := parseMixed(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
+		return errors.New("использование: sessionvault unprotect <приложение>")
+	}
+	fmt.Fprintln(os.Stderr, "Данные", pos[0], "будут расшифрованы и возвращены на прежнее место, его учётка и профиль защиты удалены.")
+	pw, err := readPassword(*stdin, false)
+	if err != nil {
+		return err
+	}
+	defer crypto.Wipe(pw)
+	if err := service.Unprotect(pos[0], pw); err != nil {
+		return err
+	}
+	fmt.Println("готово:", pos[0], "больше не защищён, данные на прежнем месте")
 	return nil
 }
 

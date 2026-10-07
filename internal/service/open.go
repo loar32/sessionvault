@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -80,5 +81,35 @@ func (s *Service) open(c *ipc.Conn) string {
 		return ipc.Failed
 	}
 	_ = windows.CloseHandle(proc)
+	return ipc.Ok
+}
+
+// runningList — имена запущенных защищённых приложений: по ним трей показывает пункты «Закрыть».
+func (s *Service) runningList() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var names []string
+	for n := range s.running {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ",")
+}
+
+// closeApp завершает процессы приложения: данные шифруются, как при обычном выходе. Нужно, например, Discord, который
+// при закрытии окна уходит в трей и держит данные расшифрованными. Закрывать приложение может основная учётка — она его и запускает.
+func (s *Service) closeApp(name string) string {
+	s.mu.Lock()
+	up := s.running[name]
+	s.mu.Unlock()
+	if !up {
+		return ipc.Failed
+	}
+	n, err := isolation.KillAccountProcesses(isolation.AccountName(name))
+	if err != nil || n == 0 {
+		s.log.Printf("закрытие %s: процессов %d, %v", name, n, err)
+		return ipc.Failed
+	}
+	s.log.Printf("%s закрыто по запросу пользователя (процессов: %d)", name, n)
 	return ipc.Ok
 }

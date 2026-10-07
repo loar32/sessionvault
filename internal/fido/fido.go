@@ -50,7 +50,7 @@ const (
 // Timeout — сколько Windows ждёт PIN и касание; по истечении окно закрывается само.
 var Timeout = 60 * time.Second
 
-var ErrNotSupported = errors.New("Windows не поддерживает FIDO2 hmac-secret (нужна Windows 11) или ключ не найден")
+var ErrNotSupported = errors.New("FIDO2 hmac-secret не поддерживается Windows (нужна Windows 11) или ключ не найден")
 
 type rpEntity struct {
 	Version uint32
@@ -293,7 +293,7 @@ func Create() ([]byte, error) {
 	if att == nil {
 		return nil, errors.New("ключ не вернул учётные данные")
 	}
-	defer pFreeAttestation.Call(uintptr(unsafe.Pointer(att)))
+	defer func() { _, _, _ = pFreeAttestation.Call(uintptr(unsafe.Pointer(att))) }()
 	if att.CredIDLen == 0 || att.CredID == nil {
 		return nil, errors.New("ключ не вернул идентификатор учётных данных")
 	}
@@ -344,7 +344,7 @@ func Secret(id, salt []byte) ([]byte, error) {
 	if as == nil {
 		return nil, errors.New("ключ не вернул ответ")
 	}
-	defer pFreeAssertion.Call(uintptr(unsafe.Pointer(as)))
+	defer func() { _, _, _ = pFreeAssertion.Call(uintptr(unsafe.Pointer(as))) }()
 	if as.Version < 3 || as.HmacSecret == nil || as.HmacSecret.FirstLen != 32 || as.HmacSecret.First == nil {
 		return nil, errors.New("ключ не вернул hmac-secret: он не поддерживает расширение или учётные данные созданы без него")
 	}
@@ -386,6 +386,6 @@ wait:
 	case <-done:
 		return errors.New("операция отменена: PIN и касание не получены вовремя")
 	case <-time.After(10 * time.Second):
-		return errors.New("Windows не завершила операцию с ключом вовремя")
+		return errors.New("операция с ключом не завершилась вовремя")
 	}
 }

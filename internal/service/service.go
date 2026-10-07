@@ -39,25 +39,26 @@ const (
 )
 
 type Service struct {
-	cfg        Config
-	idleAfter  time.Duration
-	exe        string
-	log        *log.Logger
-	job        windows.Handle       // под mu: после тревоги заменяется новым
-	memWatchAt time.Time            // под mu: когда в последний раз ставили аудит на процессы приложений
-	memSeen    map[string]time.Time // под mu: недавние обращения к памяти (процесс+права), чтобы не писать повторы
-	memReads   int                  // под mu: записано обращений с запуска службы
-	memLast    string               // под mu: последнее обращение
-	memWatched map[uint32]bool      // под mu: процессы, на которые уже ставили аудит
-	exeCache   []string             // под mu: exe защищённых приложений для фильтра обращений к памяти
-	exeCacheAt time.Time
-	memWindow  time.Time // под mu: начало минуты для лимита записей журнала памяти
-	memWritten int
-	memSkipped int
-	memFailed  map[uint32]bool // под mu: процессы, на которые аудит поставить не удалось (в журнал пишется один раз)
-	targets    func() []string // только для тестов: exe защищённых приложений
-	appSIDs    map[string]bool
-	cmdL       *ipc.Listener
+	cfg            Config
+	idleAfter      time.Duration
+	exe            string
+	log            *log.Logger
+	job            windows.Handle       // под mu: после тревоги заменяется новым
+	port           windows.Handle       // порт завершения job: сообщает о новых и вышедших процессах приложений
+	memSeen        map[string]time.Time // под mu: недавние обращения к памяти (процесс+права), чтобы не писать повторы
+	memTimes       []time.Time          // под mu: время записанных обращений за последние сутки (при старте берутся из memory.log)
+	memWriteFailed bool                 // под mu: об ошибке записи memory.log уже сказано в журнале службы
+	memLast        string               // под mu: последнее обращение
+	memWatched     map[uint32]bool      // под mu: процессы, на которые уже ставили аудит
+	exeCache       []string             // под mu: exe защищённых приложений для фильтра обращений к памяти
+	exeCacheAt     time.Time
+	memWindow      time.Time // под mu: начало минуты для лимита записей журнала памяти
+	memWritten     int
+	memSkipped     int
+	memFailed      map[uint32]bool // под mu: процессы, на которые аудит поставить не удалось (в журнал пишется один раз)
+	targets        func() []string // только для тестов: exe защищённых приложений
+	appSIDs        map[string]bool
+	cmdL           *ipc.Listener
 
 	allow     allowlist
 	stopAudit func()
@@ -65,7 +66,11 @@ type Service struct {
 	nudge     chan struct{} // просьба проверить приманки и аудит раньше срока (событие syncEventName)
 	syncEvent windows.Handle
 	trapMu    sync.Mutex
-	watch     map[string]bool // папки приманок в формате устройства
+	watch     map[string]bool                   // папки приманок в формате устройства
+	mainSID   *windows.SID                      // SID основной учётки: запоминается при первом обращении
+	parents   map[string]bool                   // папки, за изменением которых следим (под trapMu)
+	stopEvt   windows.Handle                    // сигнал остановки для слежения за папками
+	watchKeys map[string]map[audit.FileKey]bool // по профилям: ключи файлов приманки (жёсткая ссылка и переименование их не меняют)
 	events    chan audit.Read
 	memEvents chan audit.Read // обращения к памяти приложений: отдельно от чтения приманки
 	quitOnce  sync.Once
@@ -84,6 +89,7 @@ type Service struct {
 	promptEnd   map[string]time.Time // когда последнее окно пароля профиля закончилось отказом или закрытием
 	idle        *time.Timer
 	lockPending bool // блокировка запрошена событием Windows, но приложение ещё запущено
+	alarmGen    int  // растёт с каждой тревогой: запуск, начавшийся до неё, не должен её пережить
 	wg          sync.WaitGroup
 }
 
@@ -92,7 +98,14 @@ func New(cfg Config, exe string, l *log.Logger) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Service{cfg: cfg, idleAfter: idleDuration(cfg.IdleMinutes), exe: exe, log: l, job: job, keys: map[string][]byte{}, running: map[string]bool{}, quit: make(chan struct{}), nudge: make(chan struct{}, 1), events: make(chan audit.Read, eventQueue), memEvents: make(chan audit.Read, eventQueue), warned: map[string]bool{}}, nil
+	s := &Service{cfg: cfg, idleAfter: idleDuration(cfg.IdleMinutes), exe: exe, log: l, job: job, keys: map[string][]byte{}, running: map[string]bool{}, quit: make(chan struct{}), nudge: make(chan struct{}, 1), events: make(chan audit.Read, eventQueue), memEvents: make(chan audit.Read, eventQueue), warned: map[string]bool{}}
+	if port, err := windows.CreateIoCompletionPort(windows.InvalidHandle, 0, 0, 1); err == nil {
+		s.port = port
+		s.attachJob(job)
+	} else {
+		l.Println("порт завершения job:", err)
+	}
+	return s, nil
 }
 
 func killOnCloseJob() (windows.Handle, error) {
@@ -189,10 +202,13 @@ func (s *Service) handle(c *ipc.Conn) {
 	}
 	switch req.Cmd {
 	case "status":
-		s.watchMemory()
 		_ = c.WriteLine(s.state())
 	case "list":
 		_ = c.WriteLine(s.list())
+	case "running":
+		_ = c.WriteLine(s.runningList())
+	case "close":
+		_ = c.WriteLine(s.closeApp(req.Profile))
 	case "run":
 		_ = c.WriteLine(s.run(c, req.Profile, ""))
 	case "check":
@@ -261,12 +277,18 @@ func (s *Service) run(c *ipc.Conn, name, link string) string {
 	s.running[name] = true
 	s.stopIdle()
 	dek := s.keys[name]
+	gen := s.alarmGen
 	s.mu.Unlock()
 
-	resp, err := s.start(p, v, dek, session, link)
+	resp, err := s.start(p, v, dek, session, link, gen)
 	if err != nil {
 		s.log.Printf("run %s: %v", name, err)
 		s.finish(name)
+		s.mu.Lock()
+		if s.alarmGen != gen && len(s.running) == 0 && !s.prompting {
+			s.lock() // тревога прошла, пока запуск шёл: ключи, которые она не успела стереть, стираем сами
+		}
+		s.mu.Unlock()
 		if errors.Is(err, errBusy) {
 			return ipc.Busy
 		}
@@ -306,7 +328,7 @@ func (s *Service) admit(name string, now time.Time) bool {
 	return true
 }
 
-func (s *Service) start(p profiles.Profile, v vault.Vault, dek []byte, session uint32, link string) (string, error) {
+func (s *Service) start(p profiles.Profile, v vault.Vault, dek []byte, session uint32, link string, gen int) (string, error) {
 	if dek == nil {
 		var err error
 		if dek, err = s.askPassword(p.Name, v, session, true); err != nil {
@@ -344,6 +366,7 @@ func (s *Service) start(p profiles.Profile, v vault.Vault, dek []byte, session u
 		return "", errors.Join(err, v.Encrypt(dek))
 	}
 	s.denyInterpreters()
+	s.cleanExchange()
 	werExclude(p.Exe)
 	s.scanExtensions(p)
 
@@ -359,10 +382,19 @@ func (s *Service) start(p profiles.Profile, v vault.Vault, dek []byte, session u
 		unlock()
 		return "", errors.Join(err, v.Encrypt(dek))
 	}
+	// Счётчик растёт до закрытия job: запуск, попавший в старый job, убит им, а попавший в новый, видит новое число.
+	s.mu.Lock()
+	alarmed := s.alarmGen != gen
+	s.mu.Unlock()
+	if alarmed {
+		_ = windows.TerminateProcess(proc, 1)
+		_ = windows.CloseHandle(proc)
+		_ = windows.CloseHandle(thread)
+		unlock()
+		return "", errors.Join(errors.New("тревога во время запуска"), v.Encrypt(dek))
+	}
 	_, _ = windows.ResumeThread(thread)
 	_ = windows.CloseHandle(thread)
-	// Приложение запущено: потомки появятся позже, их подхватит ближайший опрос статуса.
-	time.AfterFunc(memWatchEvery, s.watchMemory)
 
 	// Быстрый выход помощника — ошибка запуска, а не нормальная работа приложения.
 	if ev, _ := windows.WaitForSingleObject(proc, uint32(launchGrace.Milliseconds())); ev == windows.WAIT_OBJECT_0 {
@@ -384,6 +416,8 @@ func (s *Service) start(p profiles.Profile, v vault.Vault, dek []byte, session u
 		}
 		s.closing[p.Name] = true
 		s.mu.Unlock()
+		// Расширения, поставленные за время работы браузера, видны уже сейчас; процессов приложения нет, подменить каталог некому.
+		s.scanExtensions(p)
 		if err := v.Encrypt(dek); err != nil {
 			s.log.Printf("%s: шифрование после закрытия: %v", p.Name, err)
 		}
@@ -541,13 +575,12 @@ func (s *Service) keep(name string, dek []byte) ([]byte, error) {
 }
 
 func OpenLog() (*log.Logger, func(), error) {
-	rotateLog(isolation.BaseDir() + `\service.log`)
-	f, err := os.OpenFile(isolation.BaseDir()+`\service.log`, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	f, err := openRotating(isolation.BaseDir() + `\service.log`)
 	if err != nil {
 		return nil, nil, err
 	}
 	// Паника службы иначе пропала бы: у службы нет stderr.
-	_ = debug.SetCrashOutput(f, debug.CrashOptions{})
+	_ = debug.SetCrashOutput(f.f, debug.CrashOptions{})
 	return log.New(f, "", log.LstdFlags), func() { _ = f.Close() }, nil
 }
 
