@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/loar32/sessionvault/internal/i18n"
 	"log"
 	"os"
 	"path/filepath"
@@ -124,7 +125,7 @@ func killOnCloseJob() (windows.Handle, error) {
 func (s *Service) Listen() error {
 	sid, _, _, err := windows.LookupSID("", s.cfg.MainUser)
 	if err != nil {
-		return fmt.Errorf("учётка %q не найдена: %w", s.cfg.MainUser, err)
+		return fmt.Errorf(i18n.T("учётка %q не найдена: %w"), s.cfg.MainUser, err)
 	}
 	l, err := ipc.Listen(ipc.CommandPipe, "D:P(A;;GA;;;SY)(A;;0x12019b;;;"+sid.String()+")")
 	if err != nil {
@@ -391,7 +392,7 @@ func (s *Service) start(p profiles.Profile, v vault.Vault, dek []byte, session u
 		_ = windows.CloseHandle(proc)
 		_ = windows.CloseHandle(thread)
 		unlock()
-		return "", errors.Join(errors.New("тревога во время запуска"), v.Encrypt(dek))
+		return "", errors.Join(errors.New(i18n.T("тревога во время запуска")), v.Encrypt(dek))
 	}
 	_, _ = windows.ResumeThread(thread)
 	_ = windows.CloseHandle(thread)
@@ -402,7 +403,7 @@ func (s *Service) start(p profiles.Profile, v vault.Vault, dek []byte, session u
 		_ = windows.GetExitCodeProcess(proc, &code)
 		_ = windows.CloseHandle(proc)
 		unlock()
-		return "", errors.Join(fmt.Errorf("приложение не запустилось (код %d)", code), v.Encrypt(dek))
+		return "", errors.Join(fmt.Errorf(i18n.T("приложение не запустилось (код %d)"), code), v.Encrypt(dek))
 	}
 
 	s.wg.Add(1)
@@ -534,7 +535,7 @@ func (s *Service) askPassword(name string, v vault.Vault, session uint32, allowH
 	}
 	defer c.Close()
 	if cp, err := c.ClientPID(); err != nil || cp != pid {
-		return nil, errors.New("к pipe пароля подключился чужой процесс")
+		return nil, errors.New(i18n.T("к pipe пароля подключился чужой процесс"))
 	}
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		pw, err := c.ReadBytes(passwordWait, ipc.MaxPassword)

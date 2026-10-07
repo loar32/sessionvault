@@ -2,6 +2,7 @@ package audit
 
 import (
 	"errors"
+	"github.com/loar32/sessionvault/internal/i18n"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -49,22 +50,22 @@ func Signer(path string) (string, error) {
 	}
 	prov, _, _ := procProvData.Call(uintptr(data.StateData))
 	if prov == 0 {
-		return "", errors.New("нет данных о подписи")
+		return "", errors.New(i18n.T("нет данных о подписи"))
 	}
 	sgnr, _, _ := procProvSigner.Call(prov, 0, 0, 0)
 	if sgnr == 0 {
-		return "", errors.New("нет подписанта")
+		return "", errors.New(i18n.T("нет подписанта"))
 	}
 	pc, _, _ := procProvCert.Call(sgnr, 0)
 	if pc == 0 {
-		return "", errors.New("нет сертификата подписанта")
+		return "", errors.New(i18n.T("нет сертификата подписанта"))
 	}
 	// Указатель принадлежит состоянию проверки (живёт до CLOSE), а не куче Go; vet не знает, что это не ошибка.
 	cert := (*providerCert)(*(*unsafe.Pointer)(unsafe.Pointer(&pc))).Cert
 	buf := make([]uint16, 256)
 	n, _, _ := procCertName.Call(cert, certNameSimpleDsp, 0, 0, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
 	if n <= 1 {
-		return "", errors.New("в сертификате нет имени")
+		return "", errors.New(i18n.T("в сертификате нет имени"))
 	}
 	return windows.UTF16ToString(buf), nil
 }

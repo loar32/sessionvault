@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"github.com/loar32/sessionvault/internal/i18n"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -28,38 +29,38 @@ const oldProfileSuffix = ".sessionvault-delete"
 // left непуст, если прежний профиль удалить не удалось до конца.
 func ProtectBrowser(app string, confirm func(path string, size int64) bool, askPassword func() ([]byte, error)) (left string, err error) {
 	if !isolation.IsElevated() {
-		return "", errors.New("нужен запуск от администратора")
+		return "", errors.New(i18n.T("нужен запуск от администратора"))
 	}
 	if err := isolation.EnablePrivileges("SeTakeOwnershipPrivilege", "SeRestorePrivilege", "SeBackupPrivilege"); err != nil {
 		return "", err
 	}
 	cfg, err := LoadConfig()
 	if err != nil {
-		return "", fmt.Errorf("конфигурация не прочитана: сначала install: %w", err)
+		return "", fmt.Errorf(i18n.T("конфигурация не прочитана: сначала install: %w"), err)
 	}
 	p, ok := profiles.Template(app)
 	if !ok || (p.Decoy != "chromium" && p.Decoy != "discord") {
-		return "", fmt.Errorf("%q нельзя защитить этой командой: доступны chrome, edge, brave, discord", app)
+		return "", fmt.Errorf(i18n.T("%q нельзя защитить этой командой: доступны chrome, edge, brave, discord"), app)
 	}
 	// У Discord путь появляется только после копирования каталога: оно делается ниже, после проверок хранилища.
 	if p.Exe != "" {
 		if _, err := os.Stat(p.Exe); err != nil {
-			return "", fmt.Errorf("%s не найден (%s): поддерживается только установка для всех пользователей (Program Files)", p.Title, p.Exe)
+			return "", fmt.Errorf(i18n.T("%s не найден (%s): поддерживается только установка для всех пользователей (Program Files)"), p.Title, p.Exe)
 		}
 		if err := verifyPublisher(p); err != nil {
 			return "", err
 		}
 	}
 	if _, err := os.Stat(isolation.VaultDir()); err != nil {
-		return "", errors.New("защищённой папки нет: сначала install")
+		return "", errors.New(i18n.T("защищённой папки нет: сначала install"))
 	}
 	v := vault.Vault{Dir: isolation.DataPath(app), DataName: workDataName, Exclude: p.Exclude}
 	if v.Exists() {
-		return "", fmt.Errorf("%s уже защищён", p.Title)
+		return "", fmt.Errorf(i18n.T("%s уже защищён"), p.Title)
 	}
 	// Данные без vault.json — возможно, единственная копия сессии после сбоя: поверх них ничего не создаём.
 	if _, err := os.Stat(isolation.WorkPath(app)); err == nil {
-		return "", fmt.Errorf("в %s есть данные без хранилища: разберитесь с ними вручную", v.Dir)
+		return "", fmt.Errorf(i18n.T("в %s есть данные без хранилища: разберитесь с ними вручную"), v.Dir)
 	}
 
 	if p.Exe == "" {
@@ -79,7 +80,7 @@ func ProtectBrowser(app string, confirm func(path string, size int64) bool, askP
 	}
 	aside := origin + oldProfileSuffix
 	if _, err := os.Stat(aside); err == nil {
-		return "", fmt.Errorf("остался каталог от прошлой попытки (%s): удалите его вручную", aside)
+		return "", fmt.Errorf(i18n.T("остался каталог от прошлой попытки (%s): удалите его вручную"), aside)
 	}
 	_, statErr := os.Stat(origin)
 	hadOld := statErr == nil
@@ -101,7 +102,7 @@ func ProtectBrowser(app string, confirm func(path string, size int64) bool, askP
 		}
 		defer release()
 		if err := os.Rename(origin, aside); err != nil {
-			return "", fmt.Errorf("не удалось убрать прежний профиль (закройте %s и повторите): %w", p.Title, err)
+			return "", fmt.Errorf(i18n.T("не удалось убрать прежний профиль (закройте %s и повторите): %w"), p.Title, err)
 		}
 	}
 	done := false
@@ -150,7 +151,7 @@ func ProtectBrowser(app string, confirm func(path string, size int64) bool, askP
 	}
 	check, err := v.Unlock(pw)
 	if err != nil {
-		return "", fmt.Errorf("хранилище не открывается после создания: %w", err)
+		return "", fmt.Errorf(i18n.T("хранилище не открывается после создания: %w"), err)
 	}
 	crypto.Wipe(check)
 	done = true

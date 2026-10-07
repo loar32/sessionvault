@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"github.com/loar32/sessionvault/internal/i18n"
 	"io"
 	"os"
 	"path/filepath"
@@ -79,23 +80,23 @@ func verifyPublisher(p profiles.Profile) error {
 	}
 	name, err := audit.Signer(p.Exe)
 	if err != nil {
-		return fmt.Errorf("%s: подпись не проверена: %w", p.Exe, err)
+		return fmt.Errorf(i18n.T("%s: подпись не проверена: %w"), p.Exe, err)
 	}
 	if !strings.EqualFold(name, p.Publisher) {
-		return fmt.Errorf("%s подписан %q, ожидался %q", p.Exe, name, p.Publisher)
+		return fmt.Errorf(i18n.T("%s подписан %q, ожидался %q"), p.Exe, name, p.Publisher)
 	}
 	return nil
 }
 
 func Install(mainUser, telegramExe string) (err error) {
 	if !isolation.IsElevated() {
-		return errors.New("нужен запуск от администратора")
+		return errors.New(i18n.T("нужен запуск от администратора"))
 	}
 	if err := isolation.EnablePrivileges("SeTakeOwnershipPrivilege", "SeRestorePrivilege", "SeBackupPrivilege"); err != nil {
 		return err
 	}
 	if _, _, _, err := windows.LookupSID("", mainUser); err != nil {
-		return fmt.Errorf("учётка %q не найдена: %w", mainUser, err)
+		return fmt.Errorf(i18n.T("учётка %q не найдена: %w"), mainUser, err)
 	}
 	admin, err := isolation.IsAdminUser(mainUser)
 	if err != nil {
@@ -111,7 +112,7 @@ func Install(mainUser, telegramExe string) (err error) {
 	defer func() { _ = m.Disconnect() }()
 	if s, err := m.OpenService(Name); err == nil {
 		_ = s.Close()
-		return errors.New("служба уже установлена")
+		return errors.New(i18n.T("служба уже установлена"))
 	}
 
 	var st steps
@@ -129,7 +130,7 @@ func Install(mainUser, telegramExe string) (err error) {
 	}
 	// Откатываем только созданное в этот запуск: при повторной установке в каталоге могут лежать чужие зашифрованные данные.
 	if existed {
-		fmt.Fprintln(os.Stderr, "каталог данных уже существует: прежние хранилища сохраняются")
+		fmt.Fprintln(os.Stderr, i18n.T("каталог данных уже существует: прежние хранилища сохраняются"))
 	} else {
 		st.undo = append(st.undo, func() { _ = os.RemoveAll(isolation.BaseDir()) })
 	}
@@ -164,13 +165,13 @@ func Install(mainUser, telegramExe string) (err error) {
 	// Заслон необязателен для работы: ошибка (например, выключенный брандмауэр) только предупреждает, `sessionvault lockdown` повторит.
 	st.undo = append(st.undo, func() { _ = Lockdown(true) })
 	if e := Lockdown(false); e != nil {
-		fmt.Fprintln(os.Stderr, "сетевой заслон включён не полностью:", e)
+		fmt.Fprintln(os.Stderr, i18n.T("сетевой заслон включён не полностью:"), e)
 	}
 
 	if telegramExe == "" {
 		if telegramExe = findTelegram(mainUser); telegramExe == "" {
 			telegramExe = profiles.Telegram.Exe
-			fmt.Fprintln(os.Stderr, "Telegram не найден: путь к нему можно поправить в", filepath.Join(isolation.ProfilesDir(), "telegram.json"))
+			fmt.Fprintln(os.Stderr, i18n.T("Telegram не найден: путь к нему можно поправить в"), filepath.Join(isolation.ProfilesDir(), "telegram.json"))
 		}
 	}
 	tg := profiles.Telegram
@@ -185,7 +186,7 @@ func Install(mainUser, telegramExe string) (err error) {
 	}
 	// Профили прежних версий (браузеры, Telegram) не подписаны: установка по явной команде администратора подписывает их все.
 	if e := profiles.Resign(isolation.ProfilesDir()); e != nil {
-		fmt.Fprintln(os.Stderr, "профили подписаны не все:", e)
+		fmt.Fprintln(os.Stderr, i18n.T("профили подписаны не все:"), e)
 	}
 
 	if err = addAutostart(); err != nil {

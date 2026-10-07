@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"github.com/loar32/sessionvault/internal/i18n"
 
 	"github.com/loar32/sessionvault/internal/asr"
 	"github.com/loar32/sessionvault/internal/checkup"
@@ -15,11 +16,11 @@ var ErrNothingToRevert = errors.New("правила ASR не менялись э
 // в config.json для отката. Правила работают только при включённом Defender, поэтому при отключённом включать нечего.
 func FixASR(off bool) error {
 	if !isolation.IsElevated() {
-		return errors.New("нужен запуск от администратора")
+		return errors.New(i18n.T("нужен запуск от администратора"))
 	}
 	cfg, err := LoadConfig()
 	if err != nil {
-		return errors.New("SessionVault не установлен")
+		return errors.New(i18n.T("SessionVault не установлен"))
 	}
 	if off {
 		if cfg.ASR == nil {
@@ -31,7 +32,7 @@ func FixASR(off bool) error {
 		return UpdateConfig(func(c *Config) { c.ASR = nil })
 	}
 	if checkup.DefenderOff() {
-		return errors.New("защитник Windows (Defender) отключён: правила ASR без него не работают")
+		return errors.New(i18n.T("защитник Windows (Defender) отключён: правила ASR без него не работают"))
 	}
 	st, err := asr.Apply(cfg.ASR)
 	// Состояние сохраняется и при ошибке: уже записанные значения должны откатываться.

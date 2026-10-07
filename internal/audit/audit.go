@@ -4,6 +4,7 @@ package audit
 
 import (
 	"errors"
+	"github.com/loar32/sessionvault/internal/i18n"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -161,7 +162,7 @@ func WatchReads(path string) error {
 		return err
 	}
 	if sacl == nil {
-		return errors.New("пустой SACL")
+		return errors.New(i18n.T("пустой SACL"))
 	}
 	// Путь лежит в профиле пользователя: по дескриптору проверенной папки аудит не уйдёт на чужую папку, как бы её ни подменили.
 	// Для передачи правила вложенным файлам дескриптору нужны ещё READ_CONTROL и WRITE_DAC: без них Windows отвечает «доступ запрещён».

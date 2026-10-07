@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"github.com/loar32/sessionvault/internal/i18n"
 	"runtime"
 	"time"
 	"unsafe"
@@ -235,7 +236,7 @@ func newClientData(typ string) (*clientData, []byte, error) {
 func hresult(name string, r uintptr) error {
 	switch uint32(r) {
 	case ntUserCancelled:
-		return errors.New("операция отменена или не завершена вовремя")
+		return errors.New(i18n.T("операция отменена или не завершена вовремя"))
 	case nteNotSupported:
 		return ErrNotSupported
 	}
@@ -291,11 +292,11 @@ func Create() ([]byte, error) {
 		return nil, hresult("создание учётных данных", r)
 	}
 	if att == nil {
-		return nil, errors.New("ключ не вернул учётные данные")
+		return nil, errors.New(i18n.T("ключ не вернул учётные данные"))
 	}
 	defer func() { _, _, _ = pFreeAttestation.Call(uintptr(unsafe.Pointer(att))) }()
 	if att.CredIDLen == 0 || att.CredID == nil {
-		return nil, errors.New("ключ не вернул идентификатор учётных данных")
+		return nil, errors.New(i18n.T("ключ не вернул идентификатор учётных данных"))
 	}
 	return append([]byte(nil), unsafe.Slice(att.CredID, att.CredIDLen)...), nil
 }
@@ -306,7 +307,7 @@ func Secret(id, salt []byte) ([]byte, error) {
 		return nil, ErrNotSupported
 	}
 	if len(id) == 0 || len(salt) != 32 {
-		return nil, errors.New("неверные учётные данные или соль")
+		return nil, errors.New(i18n.T("неверные учётные данные или соль"))
 	}
 	cd, js, err := newClientData("webauthn.get")
 	if err != nil {
@@ -342,11 +343,11 @@ func Secret(id, salt []byte) ([]byte, error) {
 		return nil, hresult("получение секрета", r)
 	}
 	if as == nil {
-		return nil, errors.New("ключ не вернул ответ")
+		return nil, errors.New(i18n.T("ключ не вернул ответ"))
 	}
 	defer func() { _, _, _ = pFreeAssertion.Call(uintptr(unsafe.Pointer(as))) }()
 	if as.Version < 3 || as.HmacSecret == nil || as.HmacSecret.FirstLen != 32 || as.HmacSecret.First == nil {
-		return nil, errors.New("ключ не вернул hmac-secret: он не поддерживает расширение или учётные данные созданы без него")
+		return nil, errors.New(i18n.T("ключ не вернул hmac-secret: он не поддерживает расширение или учётные данные созданы без него"))
 	}
 	// Секрет уходит в наш буфер, а память Windows зануляется до освобождения: иначе он оставался бы в куче процесса.
 	src := unsafe.Slice(as.HmacSecret.First, 32)
@@ -384,8 +385,8 @@ wait:
 	hello.CloseDialog()
 	select {
 	case <-done:
-		return errors.New("операция отменена: PIN и касание не получены вовремя")
+		return errors.New(i18n.T("операция отменена: PIN и касание не получены вовремя"))
 	case <-time.After(10 * time.Second):
-		return errors.New("операция с ключом не завершилась вовремя")
+		return errors.New(i18n.T("операция с ключом не завершилась вовремя"))
 	}
 }

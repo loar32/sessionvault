@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/loar32/sessionvault/internal/i18n"
 	"os"
 	"strings"
 	"time"
@@ -68,7 +69,7 @@ func (s *Service) helperReply(session uint32, mode, keyName string, challenge []
 	for c == nil {
 		left := time.Until(deadline)
 		if left <= 0 {
-			return nil, errors.New("помощник Hello не подключился")
+			return nil, errors.New(i18n.T("помощник Hello не подключился"))
 		}
 		conn, err := l.Accept(left)
 		if err != nil {
@@ -105,12 +106,12 @@ func (s *Service) helperReply(session uint32, mode, keyName string, challenge []
 			for _, o := range out {
 				crypto.Wipe(o)
 			}
-			return nil, errors.New("помощник вернул неверный ответ")
+			return nil, errors.New(i18n.T("помощник вернул неверный ответ"))
 		}
 		out = append(out, b)
 	}
 	if len(out) == 0 {
-		return nil, errors.New("помощник вернул неверный ответ")
+		return nil, errors.New(i18n.T("помощник вернул неверный ответ"))
 	}
 	return out, nil
 }
@@ -190,7 +191,7 @@ func (s *Service) enableHello(c *ipc.Conn, name string) string {
 // Ключ Hello в профиле пользователя не удаляется: это может сделать только его владелец, а ключ общий для профилей.
 func DisableHello(profile string) error {
 	if !isolation.IsElevated() {
-		return errors.New("нужен запуск от администратора")
+		return errors.New(i18n.T("нужен запуск от администратора"))
 	}
 	var names []string
 	if profile != "" {
@@ -208,7 +209,7 @@ func DisableHello(profile string) error {
 	}
 	for _, n := range names {
 		if !profiles.ValidName(n) {
-			return fmt.Errorf("недопустимое имя профиля %q", n)
+			return fmt.Errorf(i18n.T("недопустимое имя профиля %q"), n)
 		}
 		v := vault.Vault{Dir: isolation.DataPath(n), DataName: workDataName}
 		if !v.Exists() {

@@ -2,6 +2,7 @@ package isolation
 
 import (
 	"errors"
+	"github.com/loar32/sessionvault/internal/i18n"
 	"path/filepath"
 
 	"github.com/loar32/sessionvault/internal/audit"
@@ -34,7 +35,7 @@ func pinFile(path string) (windows.Handle, error) {
 	var fi windows.ByHandleFileInformation
 	if err := windows.GetFileInformationByHandle(h, &fi); err != nil || fi.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
 		_ = windows.CloseHandle(h)
-		return 0, errors.New("не обычный файл: " + path)
+		return 0, errors.New(i18n.T("не обычный файл: ") + path)
 	}
 	return h, nil
 }

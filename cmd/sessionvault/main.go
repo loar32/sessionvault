@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/loar32/sessionvault/internal/i18n"
 	"os"
 	"path/filepath"
 	"slices"
@@ -27,7 +28,31 @@ import (
 	"golang.org/x/term"
 )
 
-const usage = `sessionvault install [-user имя] [-telegram-exe путь]
+const usageEN = `sessionvault install [-user name] [-telegram-exe path]
+sessionvault protect [-yes] [-password-stdin] <telegram|chrome|edge|brave|discord>
+sessionvault add [-yes] [-copy-dir] [-data name] -arg "...{data_path}..." name path-to-exe data-folder
+sessionvault refresh <app>
+sessionvault trust [-yes] <profile>
+sessionvault export <app> <file>
+sessionvault import [-exe path-to-exe [-copy-dir] [-yes]] [-password-stdin] <file>
+sessionvault import-tdata [path-to-tdata]
+sessionvault unprotect [-password-stdin] <app>
+sessionvault uninstall
+sessionvault restore-backup <profile>
+sessionvault harden [-off]
+sessionvault lockdown [-off]
+sessionvault hello disable [profile]
+sessionvault fido disable [profile]
+sessionvault recovery create [-file path]|reset|verify|revoke <app>|status
+sessionvault run <profile>
+sessionvault open <link>
+sessionvault status
+sessionvault check [-json|-window]
+sessionvault check -fix [-yes|-off]
+sessionvault alerts
+sessionvault tray`
+
+const usageRU = `sessionvault install [-user имя] [-telegram-exe путь]
 sessionvault protect [-yes] [-password-stdin] <telegram|chrome|edge|brave|discord>
 sessionvault add [-yes] [-copy-dir] [-data имя] -arg "...{data_path}..." имя путь-к-exe каталог-данных
 sessionvault refresh <приложение>
@@ -51,6 +76,13 @@ sessionvault check -fix [-yes|-off]
 sessionvault alerts
 sessionvault tray`
 
+func usage() string {
+	if i18n.English() {
+		return usageEN
+	}
+	return usageRU
+}
+
 // Код выхода 3 — основная учётка состоит в администраторах: установщик показывает отдельное сообщение.
 const exitMainUserAdmin = 3
 
@@ -63,15 +95,16 @@ var stdinReader = bufio.NewReader(os.Stdin)
 
 func finish(code int) {
 	if pause && ownConsole && (code != 0 || os.Args[1] == "import-tdata") {
-		fmt.Fprint(os.Stderr, "\nНажмите Enter, чтобы закрыть окно...")
+		fmt.Fprint(os.Stderr, i18n.T("\nНажмите Enter, чтобы закрыть окно..."))
 		_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
 	}
 	os.Exit(code)
 }
 
 func main() {
+	i18n.Init(isolation.ConfigPath())
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, usage)
+		fmt.Fprintln(os.Stderr, usage())
 		os.Exit(2)
 	}
 	profiles.RequireSignature = true
@@ -148,11 +181,11 @@ func main() {
 	case "purge-acl":
 		err = isolation.PurgeStaleACL()
 	default:
-		fmt.Fprintln(os.Stderr, usage)
+		fmt.Fprintln(os.Stderr, usage())
 		os.Exit(2)
 	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "ошибка:", err)
+		fmt.Fprintln(os.Stderr, i18n.T("ошибка:"), i18n.T(err.Error()))
 		if errors.Is(err, service.ErrMainUserAdmin) {
 			finish(exitMainUserAdmin)
 		}
@@ -163,22 +196,22 @@ func main() {
 
 func install(args []string) error {
 	fs := flag.NewFlagSet("install", flag.ContinueOnError)
-	user := fs.String("user", "", "основная учётка (по умолчанию — вошедшая на консоль)")
-	tg := fs.String("telegram-exe", "", "путь к Telegram.exe (по умолчанию ищется сам)")
+	user := fs.String("user", "", i18n.T("основная учётка (по умолчанию — вошедшая на консоль)"))
+	tg := fs.String("telegram-exe", "", i18n.T("путь к Telegram.exe (по умолчанию ищется сам)"))
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *user == "" {
 		u, err := isolation.ConsoleUser()
 		if err != nil || u == "" {
-			return errors.New("не удалось определить основную учётку: укажи -user")
+			return errors.New(i18n.T("не удалось определить основную учётку: укажи -user"))
 		}
 		*user = u
 	}
 	if err := service.Install(*user, *tg); err != nil {
 		return err
 	}
-	fmt.Println("готово: служба SessionVault установлена и защищает учётку", *user)
+	fmt.Println(i18n.T("готово: служба SessionVault установлена и защищает учётку"), *user)
 	return nil
 }
 
@@ -186,12 +219,12 @@ func install(args []string) error {
 func protect(args []string) error {
 	fs := flag.NewFlagSet("protect", flag.ContinueOnError)
 	stdin := fs.Bool("password-stdin", false, "")
-	yes := fs.Bool("yes", false, "удалить прежний профиль браузера без вопроса")
+	yes := fs.Bool("yes", false, i18n.T("удалить прежний профиль браузера без вопроса"))
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() < 1 {
-		return errors.New("укажи приложение: sessionvault protect telegram|chrome|edge|brave|discord")
+		return errors.New(i18n.T("укажи приложение: sessionvault protect telegram|chrome|edge|brave|discord"))
 	}
 	app := fs.Arg(0)
 	rest := fs.Args()[1:]
@@ -206,15 +239,15 @@ func protect(args []string) error {
 		return err
 	}
 	if fs.NArg() > 0 {
-		return errors.New("лишние аргументы: " + strings.Join(fs.Args(), " "))
+		return errors.New(i18n.T("лишние аргументы: ") + strings.Join(fs.Args(), " "))
 	}
 	confirm := func(path string, size int64) bool {
-		fmt.Fprintf(os.Stderr, "Прежний профиль браузера будет УДАЛЁН: %s (%d МБ).\n", path, size>>20)
-		fmt.Fprintln(os.Stderr, "Куки и пароли в нём привязаны к вашей учётной записи; новый защищённый профиль начнётся с пустого, входы придётся сделать заново.")
+		fmt.Fprintf(os.Stderr, i18n.T("Прежний профиль браузера будет УДАЛЁН: %s (%d МБ).\n"), path, size>>20)
+		fmt.Fprintln(os.Stderr, i18n.T("Куки и пароли в нём привязаны к вашей учётной записи; новый защищённый профиль начнётся с пустого, входы придётся сделать заново."))
 		if *yes {
 			return true
 		}
-		fmt.Fprint(os.Stderr, "Закройте браузер и введите delete для подтверждения: ")
+		fmt.Fprint(os.Stderr, i18n.T("Закройте браузер и введите delete для подтверждения: "))
 		line, _ := stdinReader.ReadString('\n')
 		return strings.TrimSpace(line) == "delete"
 	}
@@ -222,9 +255,9 @@ func protect(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Println("готово:", app, "защищён; запускайте его из иконки SessionVault в трее")
+	fmt.Println(i18n.T("готово:"), app, i18n.T("защищён; запускайте его из иконки SessionVault в трее"))
 	if left != "" {
-		fmt.Fprintln(os.Stderr, "ВНИМАНИЕ: прежний профиль удалён не полностью, удалите вручную:", left)
+		fmt.Fprintln(os.Stderr, i18n.T("ВНИМАНИЕ: прежний профиль удалён не полностью, удалите вручную:"), left)
 	}
 	return nil
 }
@@ -236,37 +269,37 @@ func importTdata(args []string) error {
 		return err
 	}
 	if !isolation.IsElevated() {
-		return errors.New("нужен запуск от администратора")
+		return errors.New(i18n.T("нужен запуск от администратора"))
 	}
 	if err := isolation.EnablePrivileges("SeTakeOwnershipPrivilege", "SeRestorePrivilege", "SeBackupPrivilege"); err != nil {
 		return err
 	}
 	cfg, err := service.LoadConfig()
 	if err != nil {
-		return fmt.Errorf("конфигурация не прочитана: сначала install: %w", err)
+		return fmt.Errorf(i18n.T("конфигурация не прочитана: сначала install: %w"), err)
 	}
 	src := service.UserTdata(cfg.MainUser)
 	if fs.NArg() > 1 {
-		return errors.New("укажи один путь к tdata")
+		return errors.New(i18n.T("укажи один путь к tdata"))
 	} else if fs.NArg() == 1 {
 		if src, err = filepath.Abs(fs.Arg(0)); err != nil {
 			return err
 		}
 	}
 	if _, err := os.Stat(src); err != nil {
-		return fmt.Errorf("папка tdata не найдена (%s): укажи путь явно", src)
+		return fmt.Errorf(i18n.T("папка tdata не найдена (%s): укажи путь явно"), src)
 	}
 	p := profiles.Telegram
 	v := vault.Vault{Dir: isolation.DataPath(p.Name), DataName: filepath.Base(isolation.WorkPath(p.Name))}
 	if _, err := os.Stat(isolation.VaultDir()); err != nil {
-		return errors.New("защищённой папки нет: сначала install")
+		return errors.New(i18n.T("защищённой папки нет: сначала install"))
 	}
 	if v.Exists() {
-		return fmt.Errorf("хранилище %s уже создано", v.Dir)
+		return fmt.Errorf(i18n.T("хранилище %s уже создано"), v.Dir)
 	}
 	dst := filepath.Join(isolation.WorkPath(p.Name), p.DataDir)
 	if _, err := os.Stat(dst); err == nil {
-		return fmt.Errorf("%s уже существует", dst)
+		return fmt.Errorf(i18n.T("%s уже существует"), dst)
 	}
 	pw, err := readPassword(*stdin, true)
 	if err != nil {
@@ -311,7 +344,7 @@ func importTdata(args []string) error {
 		return err
 	}
 	ok = true
-	fmt.Println("tdata зашифрована в", v.Dir)
+	fmt.Println(i18n.T("tdata зашифрована в"), v.Dir)
 	return nil
 }
 
@@ -324,9 +357,9 @@ func unprotect(args []string) error {
 		return err
 	}
 	if len(pos) != 1 {
-		return errors.New("использование: sessionvault unprotect <приложение>")
+		return errors.New(i18n.T("использование: sessionvault unprotect <приложение>"))
 	}
-	fmt.Fprintln(os.Stderr, "Данные", pos[0], "будут расшифрованы и возвращены на прежнее место, его учётка и профиль защиты удалены.")
+	fmt.Fprintln(os.Stderr, i18n.T("Данные"), pos[0], i18n.T("будут расшифрованы и возвращены на прежнее место, его учётка и профиль защиты удалены."))
 	pw, err := readPassword(*stdin, false)
 	if err != nil {
 		return err
@@ -335,7 +368,7 @@ func unprotect(args []string) error {
 	if err := service.Unprotect(pos[0], pw); err != nil {
 		return err
 	}
-	fmt.Println("готово:", pos[0], "больше не защищён, данные на прежнем месте")
+	fmt.Println(i18n.T("готово:"), pos[0], i18n.T("больше не защищён, данные на прежнем месте"))
 	return nil
 }
 
@@ -346,10 +379,10 @@ func uninstall(args []string) error {
 		return err
 	}
 	if !service.Installed() {
-		fmt.Println("SessionVault уже удалён")
+		fmt.Println(i18n.T("SessionVault уже удалён"))
 		return nil
 	}
-	fmt.Fprintln(os.Stderr, "Данные приложений будут расшифрованы и возвращены на прежние места.")
+	fmt.Fprintln(os.Stderr, i18n.T("Данные приложений будут расшифрованы и возвращены на прежние места."))
 	pw, err := readPassword(*stdin, false)
 	if err != nil {
 		return err
@@ -358,7 +391,7 @@ func uninstall(args []string) error {
 	if err := service.Uninstall(pw); err != nil {
 		return err
 	}
-	fmt.Println("готово: данные возвращены, SessionVault удалён")
+	fmt.Println(i18n.T("готово: данные возвращены, SessionVault удалён"))
 	return nil
 }
 
@@ -370,10 +403,10 @@ func restoreBackup(args []string) error {
 		return err
 	}
 	if fs.NArg() != 1 || !profiles.ValidName(fs.Arg(0)) {
-		return errors.New("укажи профиль: sessionvault restore-backup telegram")
+		return errors.New(i18n.T("укажи профиль: sessionvault restore-backup telegram"))
 	}
 	if !isolation.IsElevated() {
-		return errors.New("нужен запуск от администратора")
+		return errors.New(i18n.T("нужен запуск от администратора"))
 	}
 	if err := isolation.EnablePrivileges("SeTakeOwnershipPrivilege", "SeRestorePrivilege", "SeBackupPrivilege"); err != nil {
 		return err
@@ -381,7 +414,7 @@ func restoreBackup(args []string) error {
 	name := fs.Arg(0)
 	v := vault.Vault{Dir: isolation.DataPath(name), DataName: filepath.Base(isolation.WorkPath(name))}
 	if !v.Exists() {
-		return fmt.Errorf("хранилища %s нет", name)
+		return fmt.Errorf(i18n.T("хранилища %s нет"), name)
 	}
 	pw, err := readPassword(*stdin, false)
 	if err != nil {
@@ -401,22 +434,22 @@ func restoreBackup(args []string) error {
 	if err := v.RestoreBackup(dek); err != nil {
 		return err
 	}
-	fmt.Println("предыдущий архив возвращён")
+	fmt.Println(i18n.T("предыдущий архив возвращён"))
 	return nil
 }
 
 // Клиент pipe службы: запрос на запуск; пароль, если нужен, спросит само окно службы.
 func run(args []string) error {
 	if len(args) != 1 {
-		return errors.New("укажи профиль: sessionvault run telegram")
+		return errors.New(i18n.T("укажи профиль: sessionvault run telegram"))
 	}
 	resp, err := ipc.Call(ipc.CommandPipe, "run "+args[0], 3*time.Minute)
 	if err != nil {
-		return fmt.Errorf("служба недоступна: %w", err)
+		return fmt.Errorf(i18n.T("служба недоступна: %w"), err)
 	}
 	fmt.Println(resp)
 	if resp != ipc.Ok {
-		return errors.New("запуск не выполнен")
+		return errors.New(i18n.T("запуск не выполнен"))
 	}
 	return nil
 }
@@ -424,7 +457,7 @@ func run(args []string) error {
 func status() error {
 	resp, err := ipc.Call(ipc.CommandPipe, "status", 10*time.Second)
 	if err != nil {
-		return fmt.Errorf("служба недоступна: %w", err)
+		return fmt.Errorf(i18n.T("служба недоступна: %w"), err)
 	}
 	fmt.Println(resp)
 	return nil
@@ -432,21 +465,21 @@ func status() error {
 
 func promptWindow(args []string) error {
 	if len(args) != 2 {
-		return errors.New("укажи профиль и pipe")
+		return errors.New(i18n.T("укажи профиль и pipe"))
 	}
 	return prompt.Run(args[0], args[1])
 }
 
 func alertWindow(args []string) error {
 	if len(args) != 1 {
-		return errors.New("нет данных тревоги")
+		return errors.New(i18n.T("нет данных тревоги"))
 	}
 	return alert.Run(args[0])
 }
 
 func lockdownCmd(args []string) error {
 	fs := flag.NewFlagSet("lockdown", flag.ContinueOnError)
-	off := fs.Bool("off", false, "снять заслон")
+	off := fs.Bool("off", false, i18n.T("снять заслон"))
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -454,16 +487,16 @@ func lockdownCmd(args []string) error {
 		return err
 	}
 	if *off {
-		fmt.Println("сетевой заслон снят")
+		fmt.Println(i18n.T("сетевой заслон снят"))
 	} else {
-		fmt.Println("сетевой заслон включён: для учёток приложений закрыты сеть системных утилит и запуск интерпретаторов; SessionVault сети не имеет")
+		fmt.Println(i18n.T("сетевой заслон включён: для учёток приложений закрыты сеть системных утилит и запуск интерпретаторов; SessionVault сети не имеет"))
 	}
 	return nil
 }
 
 func harden(args []string) error {
 	fs := flag.NewFlagSet("harden", flag.ContinueOnError)
-	off := fs.Bool("off", false, "вернуть прежние значения")
+	off := fs.Bool("off", false, i18n.T("вернуть прежние значения"))
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -471,10 +504,10 @@ func harden(args []string) error {
 		return err
 	}
 	if *off {
-		fmt.Println("прежние значения возвращены; перезагрузите компьютер")
+		fmt.Println(i18n.T("прежние значения возвращены; перезагрузите компьютер"))
 	} else {
-		fmt.Println("шифрование файла подкачки, отключение гибернации и дампов памяти включены; перезагрузите компьютер.")
-		fmt.Println("Гибернация отключена, поэтому быстрый запуск Windows тоже не работает. Вернуть: sessionvault harden -off")
+		fmt.Println(i18n.T("шифрование файла подкачки, отключение гибернации и дампов памяти включены; перезагрузите компьютер."))
+		fmt.Println(i18n.T("Гибернация отключена, поэтому быстрый запуск Windows тоже не работает. Вернуть: sessionvault harden -off"))
 	}
 	return nil
 }
@@ -482,13 +515,13 @@ func harden(args []string) error {
 // Журнал тревог читают администраторы: у обычных учёток доступа к файлу нет.
 func alerts() error {
 	if audit.IsEnabled() {
-		fmt.Println("аудит чтения файлов: включён")
+		fmt.Println(i18n.T("аудит чтения файлов: включён"))
 	} else {
-		fmt.Println("аудит чтения файлов: НЕ работает (приманка не сработает)")
+		fmt.Println(i18n.T("аудит чтения файлов: НЕ работает (приманка не сработает)"))
 	}
 	b, err := os.ReadFile(service.AlertsPath())
 	if os.IsNotExist(err) {
-		fmt.Println("тревог не было")
+		fmt.Println(i18n.T("тревог не было"))
 		return nil
 	}
 	if err != nil {
@@ -501,7 +534,7 @@ func alerts() error {
 // Запускается службой от SYSTEM в сессии пользователя: стартует приложение под его учёткой и ждёт его выхода.
 func launch(args []string) error {
 	if len(args) < 1 || len(args) > 2 {
-		return errors.New("укажи профиль")
+		return errors.New(i18n.T("укажи профиль"))
 	}
 	p, err := profiles.Load(isolation.ProfilesDir(), args[0])
 	if err != nil {
@@ -532,7 +565,7 @@ func launch(args []string) error {
 // Службе пароль передаётся строкой не длиннее ipc.MaxPassword: более длинный потом нельзя было бы ввести.
 func checkPasswordLen(pw []byte) error {
 	if len(pw) > ipc.MaxPassword {
-		return fmt.Errorf("пароль длиннее %d байт", ipc.MaxPassword)
+		return fmt.Errorf(i18n.T("пароль длиннее %d байт"), ipc.MaxPassword)
 	}
 	return nil
 }
@@ -542,7 +575,7 @@ const minPasswordChars = 10
 
 func checkNewPassword(pw []byte) error {
 	if utf8.RuneCount(pw) < minPasswordChars {
-		return fmt.Errorf("мастер-пароль короче %d символов", minPasswordChars)
+		return fmt.Errorf(i18n.T("мастер-пароль короче %d символов"), minPasswordChars)
 	}
 	return nil
 }
@@ -555,7 +588,7 @@ func readPassword(stdin, confirm bool) ([]byte, error) {
 		}
 		pw := bytes.TrimRight(line, "\r\n")
 		if len(pw) == 0 {
-			return nil, errors.New("пароль не может быть пустым")
+			return nil, errors.New(i18n.T("пароль не может быть пустым"))
 		}
 		if confirm {
 			if err := checkNewPassword(pw); err != nil {
@@ -564,14 +597,14 @@ func readPassword(stdin, confirm bool) ([]byte, error) {
 		}
 		return pw, checkPasswordLen(pw)
 	}
-	fmt.Fprint(os.Stderr, "Мастер-пароль: ")
+	fmt.Fprint(os.Stderr, i18n.T("Мастер-пароль: "))
 	pw, err := term.ReadPassword(int(os.Stdin.Fd()))
 	fmt.Fprintln(os.Stderr)
 	if err != nil {
 		return nil, err
 	}
 	if len(pw) == 0 {
-		return nil, errors.New("пароль не может быть пустым")
+		return nil, errors.New(i18n.T("пароль не может быть пустым"))
 	}
 	if err := checkPasswordLen(pw); err != nil {
 		return nil, err
@@ -580,7 +613,7 @@ func readPassword(stdin, confirm bool) ([]byte, error) {
 		if err := checkNewPassword(pw); err != nil {
 			return nil, err
 		}
-		fmt.Fprint(os.Stderr, "Повтори пароль: ")
+		fmt.Fprint(os.Stderr, i18n.T("Повтори пароль: "))
 		again, err := term.ReadPassword(int(os.Stdin.Fd()))
 		fmt.Fprintln(os.Stderr)
 		defer crypto.Wipe(again)
@@ -589,7 +622,7 @@ func readPassword(stdin, confirm bool) ([]byte, error) {
 		}
 		if !bytes.Equal(pw, again) {
 			crypto.Wipe(pw)
-			return nil, errors.New("пароли не совпали")
+			return nil, errors.New(i18n.T("пароли не совпали"))
 		}
 	}
 	return pw, nil
@@ -598,14 +631,14 @@ func readPassword(stdin, confirm bool) ([]byte, error) {
 // Ссылка открывается в защищённом браузере; если хранилище заперто, служба сама покажет окно разблокировки.
 func openLink(args []string) error {
 	if len(args) != 1 {
-		return errors.New("укажи ссылку: sessionvault open https://example.com")
+		return errors.New(i18n.T("укажи ссылку: sessionvault open https://example.com"))
 	}
 	if err := ipc.ValidURL(args[0]); err != nil {
-		return errors.New("ссылка должна быть http(s) без пробелов и кавычек")
+		return errors.New(i18n.T("ссылка должна быть http(s) без пробелов и кавычек"))
 	}
 	c, err := ipc.Dial(ipc.CommandPipe, 3*time.Second)
 	if err != nil {
-		return fmt.Errorf("служба недоступна: %w", err)
+		return fmt.Errorf(i18n.T("служба недоступна: %w"), err)
 	}
 	defer c.Close()
 	if err := c.WriteLine("open"); err != nil {
@@ -620,7 +653,7 @@ func openLink(args []string) error {
 	}
 	fmt.Println(resp)
 	if resp != ipc.Ok {
-		return errors.New("ссылка не открыта")
+		return errors.New(i18n.T("ссылка не открыта"))
 	}
 	return nil
 }

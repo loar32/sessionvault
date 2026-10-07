@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/loar32/sessionvault/internal/i18n"
 	"strings"
 	"time"
 
@@ -19,7 +20,7 @@ func helloHelper(mode string, args []string) error {
 	// Служба ждёт ответ 90 с: успеть отменить операцию и закрыть окно Hello раньше, чем она убьёт процесс.
 	hello.Timeout = 70 * time.Second
 	if len(args) != 1 {
-		return errors.New("укажи pipe")
+		return errors.New(i18n.T("укажи pipe"))
 	}
 	c, err := ipc.Dial(args[0], 10*time.Second)
 	if err != nil {
@@ -33,8 +34,8 @@ func helloHelper(mode string, args []string) error {
 	name, chHex, ok := strings.Cut(line, " ")
 	challenge, derr := hex.DecodeString(chHex)
 	if !ok || name == "" || derr != nil || len(challenge) == 0 {
-		_ = c.WriteLine("err запрос неверен")
-		return errors.New("неверный запрос службы")
+		_ = c.WriteLine(i18n.T("err запрос неверен"))
+		return errors.New(i18n.T("неверный запрос службы"))
 	}
 	if strings.HasPrefix(mode, "fido-") {
 		reply, err := fidoReply(mode, name, challenge)
@@ -71,7 +72,7 @@ func fidoReply(mode, name string, salt []byte) (string, error) {
 	}
 	id, err := hex.DecodeString(name)
 	if err != nil || len(id) == 0 {
-		return "", errors.New("неверные учётные данные")
+		return "", errors.New(i18n.T("неверные учётные данные"))
 	}
 	secret, err := fido.Secret(id, salt)
 	if err != nil {
@@ -101,7 +102,7 @@ func helloSecret(mode, name string, challenge []byte) ([]byte, error) {
 // sessionvault fido disable [профиль]
 func fidoCmd(args []string) error {
 	if len(args) < 1 || args[0] != "disable" || len(args) > 2 {
-		return errors.New("использование: sessionvault fido disable [профиль]")
+		return errors.New(i18n.T("использование: sessionvault fido disable [профиль]"))
 	}
 	profile := ""
 	if len(args) == 2 {
@@ -110,14 +111,14 @@ func fidoCmd(args []string) error {
 	if err := service.DisableFido(profile); err != nil {
 		return err
 	}
-	fmt.Println("вход по ключу FIDO2 отключён; хранилище открывается Windows Hello или мастер-паролем")
+	fmt.Println(i18n.T("вход по ключу FIDO2 отключён; хранилище открывается Windows Hello или мастер-паролем"))
 	return nil
 }
 
 // sessionvault hello disable [профиль]
 func helloCmd(args []string) error {
 	if len(args) < 1 || args[0] != "disable" || len(args) > 2 {
-		return errors.New("использование: sessionvault hello disable [профиль]")
+		return errors.New(i18n.T("использование: sessionvault hello disable [профиль]"))
 	}
 	profile := ""
 	if len(args) == 2 {
@@ -126,6 +127,6 @@ func helloCmd(args []string) error {
 	if err := service.DisableHello(profile); err != nil {
 		return err
 	}
-	fmt.Println("вход через Windows Hello отключён; хранилище открывается мастер-паролем")
+	fmt.Println(i18n.T("вход через Windows Hello отключён; хранилище открывается мастер-паролем"))
 	return nil
 }

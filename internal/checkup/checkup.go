@@ -4,6 +4,7 @@ package checkup
 
 import (
 	"fmt"
+	"github.com/loar32/sessionvault/internal/i18n"
 	"strconv"
 	"strings"
 	"time"
@@ -35,7 +36,9 @@ type Report struct {
 }
 
 // ClickFixText — справка про приём, против которого защита файлов бессильна: пользователь запускает вредонос сам.
-const ClickFixText = "ClickFix: не вставляйте в «Выполнить», PowerShell или Терминал команды с сайтов и из «проверок, что вы не робот». Так вы сами запускаете вредонос с вашими правами, и защита файлов этого не остановит."
+func ClickFixText() string {
+	return i18n.T("ClickFix: не вставляйте в «Выполнить», PowerShell или Терминал команды с сайтов и из «проверок, что вы не робот». Так вы сами запускаете вредонос с вашими правами, и защита файлов этого не остановит.")
+}
 
 // Input — то, что знает сама служба: её меры и состояние основной учётки.
 type Input struct {
@@ -114,10 +117,10 @@ func run(sys system, in Input, now time.Time) Report {
 		memoryItem(in),
 		journalItem(sys),
 		copiesItem(in),
-		{ID: "telegram", Title: "Код-пароль Telegram", Level: Info,
-			Detail: "включается в самом Telegram",
-			Hint:   "Настройки → Конфиденциальность → Код-пароль: без него украденные файлы tdata открываются сразу"},
-		{ID: "clickfix", Title: "ClickFix", Level: Info, Detail: "не запускайте чужие команды", Hint: ClickFixText},
+		{ID: "telegram", Title: i18n.T("Код-пароль Telegram"), Level: Info,
+			Detail: i18n.T("включается в самом Telegram"),
+			Hint:   i18n.T("Настройки → Конфиденциальность → Код-пароль: без него украденные файлы tdata открываются сразу")},
+		{ID: "clickfix", Title: "ClickFix", Level: Info, Detail: i18n.T("не запускайте чужие команды"), Hint: ClickFixText()},
 	}
 	overall := OK
 	for _, it := range items {
@@ -130,13 +133,13 @@ func run(sys system, in Input, now time.Time) Report {
 
 func userItem(in Input) Item {
 	if in.MainUserUnknown {
-		return Item{"user", "Основная учётка", Warn, "состав групп определить не удалось", "Проверьте вручную, что основная учётка не в группе «Администраторы»"}
+		return Item{"user", i18n.T("Основная учётка"), Warn, i18n.T("состав групп определить не удалось"), i18n.T("Проверьте вручную, что основная учётка не в группе «Администраторы»")}
 	}
 	if in.MainUserAdmin {
-		return Item{"user", "Основная учётка", Bad, "состоит в администраторах",
-			"Защита не работает против процессов администратора: заведите обычную учётку для повседневной работы"}
+		return Item{"user", i18n.T("Основная учётка"), Bad, i18n.T("состоит в администраторах"),
+			i18n.T("Защита не работает против процессов администратора: заведите обычную учётку для повседневной работы")}
 	}
-	return Item{"user", "Основная учётка", OK, "обычная, не администратор", ""}
+	return Item{"user", i18n.T("Основная учётка"), OK, i18n.T("обычная, не администратор"), ""}
 }
 
 func build(sys system) int {
@@ -154,14 +157,14 @@ func windowsItem(sys system) Item {
 	if b >= 22000 {
 		name = strings.Replace(name, "Windows 10", "Windows 11", 1)
 	}
-	detail := strings.TrimSpace(fmt.Sprintf("%s %s, сборка %d", name, ver, b))
+	detail := strings.TrimSpace(fmt.Sprintf(i18n.T("%s %s, сборка %d"), name, ver, b))
 	switch {
 	case b == 0:
-		return Item{"windows", "Windows", Warn, "версию определить не удалось", ""}
+		return Item{"windows", "Windows", Warn, i18n.T("версию определить не удалось"), ""}
 	case b < minBuild:
-		return Item{"windows", "Windows", Warn, detail, "Эта сборка больше не получает обновления безопасности: обновите Windows"}
+		return Item{"windows", "Windows", Warn, detail, i18n.T("Эта сборка больше не получает обновления безопасности: обновите Windows")}
 	case strings.HasPrefix(ed, "Core"):
-		return Item{"windows", "Windows", Info, detail + " (Home)", "В Home нет AppLocker и части защит: это ограничение редакции, программа обходится без них"}
+		return Item{"windows", "Windows", Info, detail + " (Home)", i18n.T("В Home нет AppLocker и части защит: это ограничение редакции, программа обходится без них")}
 	}
 	return Item{"windows", "Windows", OK, detail, ""}
 }
@@ -177,31 +180,31 @@ func defenderItem(sys system, pr Probe) Item {
 		off = true
 	}
 	if off && len(pr.OtherAV) > 0 {
-		return Item{"defender", "Microsoft Defender", Info, "работает другой антивирус: " + strings.Join(pr.OtherAV, ", "),
-			"Правила ASR действуют только при Defender; у стороннего антивируса есть свои"}
+		return Item{"defender", "Microsoft Defender", Info, i18n.T("работает другой антивирус: ") + strings.Join(pr.OtherAV, ", "),
+			i18n.T("Правила ASR действуют только при Defender; у стороннего антивируса есть свои")}
 	}
 	if off {
-		return Item{"defender", "Microsoft Defender", Bad, "отключён или без защиты в реальном времени",
-			"Если нет другого антивируса, включите Defender: Безопасность Windows → Защита от вирусов"}
+		return Item{"defender", "Microsoft Defender", Bad, i18n.T("отключён или без защиты в реальном времени"),
+			i18n.T("Если нет другого антивируса, включите Defender: Безопасность Windows → Защита от вирусов")}
 	}
-	return Item{"defender", "Microsoft Defender", OK, "защита в реальном времени работает", ""}
+	return Item{"defender", "Microsoft Defender", OK, i18n.T("защита в реальном времени работает"), ""}
 }
 
 func bitlockerItem(pr Probe) Item {
 	st := pr.BitLocker
 	switch {
 	case !pr.Known || st == 2:
-		return Item{"bitlocker", "BitLocker", Warn, "состояние определить не удалось",
-			"Проверьте вручную: Параметры → Конфиденциальность и защита → Шифрование устройства"}
+		return Item{"bitlocker", "BitLocker", Warn, i18n.T("состояние определить не удалось"),
+			i18n.T("Проверьте вручную: Параметры → Конфиденциальность и защита → Шифрование устройства")}
 	case st == 0:
-		return Item{"bitlocker", "BitLocker", Warn, "системный диск не зашифрован",
-			"Без шифрования диска файл подкачки и временные данные читаются с выключенного компьютера"}
+		return Item{"bitlocker", "BitLocker", Warn, i18n.T("системный диск не зашифрован"),
+			i18n.T("Без шифрования диска файл подкачки и временные данные читаются с выключенного компьютера")}
 	}
 	if !pr.BLRecovery {
-		return Item{"bitlocker", "BitLocker", Info, "системный диск зашифрован, ключ восстановления не найден",
-			"Сохраните ключ восстановления (Параметры → Шифрование устройства или аккаунт Майкрософт): без него после сбоя TPM диск не открыть"}
+		return Item{"bitlocker", "BitLocker", Info, i18n.T("системный диск зашифрован, ключ восстановления не найден"),
+			i18n.T("Сохраните ключ восстановления (Параметры → Шифрование устройства или аккаунт Майкрософт): без него после сбоя TPM диск не открыть")}
 	}
-	return Item{"bitlocker", "BitLocker", OK, "системный диск зашифрован", ""}
+	return Item{"bitlocker", "BitLocker", OK, i18n.T("системный диск зашифрован"), ""}
 }
 
 func hvciItem(sys system, pr Probe) Item {
@@ -211,71 +214,71 @@ func hvciItem(sys system, pr Probe) Item {
 	}
 	switch {
 	case pr.HVCIKnown && pr.HVCIRunning:
-		return Item{"hvci", "Целостность памяти (HVCI)", OK, "включена и работает", ""}
+		return Item{"hvci", i18n.T("Целостность памяти (HVCI)"), OK, i18n.T("включена и работает"), ""}
 	case pr.HVCIKnown && configured:
-		return Item{"hvci", "Целостность памяти (HVCI)", Warn, "включена в настройках, но не работает",
-			"Нужна перезагрузка, либо несовместимый драйвер мешает запуску: Безопасность Windows → Изоляция ядра"}
+		return Item{"hvci", i18n.T("Целостность памяти (HVCI)"), Warn, i18n.T("включена в настройках, но не работает"),
+			i18n.T("Нужна перезагрузка, либо несовместимый драйвер мешает запуску: Безопасность Windows → Изоляция ядра")}
 	case configured:
-		return Item{"hvci", "Целостность памяти (HVCI)", OK, "включена", ""}
+		return Item{"hvci", i18n.T("Целостность памяти (HVCI)"), OK, i18n.T("включена"), ""}
 	}
-	return Item{"hvci", "Целостность памяти (HVCI)", Warn, "выключена",
-		"Безопасность Windows → Безопасность устройства → Изоляция ядра → Целостность памяти"}
+	return Item{"hvci", i18n.T("Целостность памяти (HVCI)"), Warn, i18n.T("выключена"),
+		i18n.T("Безопасность Windows → Безопасность устройства → Изоляция ядра → Целостность памяти")}
 }
 
 func secureBootItem(sys system) Item {
 	v, ok := sys.regInt(secureBoot, "UEFISecureBootEnabled")
 	switch {
 	case !ok:
-		return Item{"secureboot", "Безопасная загрузка", Warn, "не поддерживается (старый BIOS)", "Включить можно только на UEFI-компьютере"}
+		return Item{"secureboot", i18n.T("Безопасная загрузка"), Warn, i18n.T("не поддерживается (старый BIOS)"), i18n.T("Включить можно только на UEFI-компьютере")}
 	case v != 1:
-		return Item{"secureboot", "Безопасная загрузка", Warn, "выключена", "Включается в настройках UEFI (BIOS)"}
+		return Item{"secureboot", i18n.T("Безопасная загрузка"), Warn, i18n.T("выключена"), i18n.T("Включается в настройках UEFI (BIOS)")}
 	}
-	return Item{"secureboot", "Безопасная загрузка", OK, "включена", ""}
+	return Item{"secureboot", i18n.T("Безопасная загрузка"), OK, i18n.T("включена"), ""}
 }
 
 func blocklistItem(sys system) Item {
 	v, ok := sys.regInt(ciConfig, "VulnerableDriverBlocklistEnable")
 	if v == 1 || (!ok && build(sys) >= blocklistDefaultBuild) {
-		return Item{"blocklist", "Блоклист уязвимых драйверов", OK, "включён", ""}
+		return Item{"blocklist", i18n.T("Блоклист уязвимых драйверов"), OK, i18n.T("включён"), ""}
 	}
-	return Item{"blocklist", "Блоклист уязвимых драйверов", Warn, "выключен",
-		"Безопасность Windows → Изоляция ядра → Блок-список уязвимых драйверов Майкрософт"}
+	return Item{"blocklist", i18n.T("Блоклист уязвимых драйверов"), Warn, i18n.T("выключен"),
+		i18n.T("Безопасность Windows → Изоляция ядра → Блок-список уязвимых драйверов Майкрософт")}
 }
 
 func auditItem(in Input) Item {
 	if in.Audit {
-		return Item{"audit", "Аудит чтения файлов (приманка)", OK, "работает", ""}
+		return Item{"audit", i18n.T("Аудит чтения файлов (приманка)"), OK, i18n.T("работает"), ""}
 	}
-	return Item{"audit", "Аудит чтения файлов (приманка)", Bad, "не работает",
-		"Приманка не сработает; возможно, групповая политика отключила аудит. Подробности: sessionvault alerts"}
+	return Item{"audit", i18n.T("Аудит чтения файлов (приманка)"), Bad, i18n.T("не работает"),
+		i18n.T("Приманка не сработает; возможно, групповая политика отключила аудит. Подробности: sessionvault alerts")}
 }
 
 func hardenItem(in Input) Item {
 	if in.Hardened {
-		return Item{"harden", "Меры harden", OK, "подкачка шифруется, гибернация и дампы отключены", ""}
+		return Item{"harden", i18n.T("Меры harden"), OK, i18n.T("подкачка шифруется, гибернация и дампы отключены"), ""}
 	}
-	return Item{"harden", "Меры harden", Warn, "не действуют (не включены или возвращены)", "От администратора: sessionvault harden (откат: harden -off)"}
+	return Item{"harden", i18n.T("Меры harden"), Warn, i18n.T("не действуют (не включены или возвращены)"), i18n.T("От администратора: sessionvault harden (откат: harden -off)")}
 }
 
 func helloItem(in Input) Item {
 	if in.Hello {
-		return Item{"hello", "Windows Hello", OK, "вход в хранилище через Hello включён", ""}
+		return Item{"hello", "Windows Hello", OK, i18n.T("вход в хранилище через Hello включён"), ""}
 	}
-	return Item{"hello", "Windows Hello", Warn, "не включён ни для одного профиля",
-		"Без Hello мастер-пароль вводится в окне на обычном рабочем столе; включается пунктом меню в трее"}
+	return Item{"hello", "Windows Hello", Warn, i18n.T("не включён ни для одного профиля"),
+		i18n.T("Без Hello мастер-пароль вводится в окне на обычном рабочем столе; включается пунктом меню в трее")}
 }
 
 func lockdownItem(in Input, fwOff []string) Item {
-	title := "Сетевой заслон для приложений"
+	title := i18n.T("Сетевой заслон для приложений")
 	if len(fwOff) > 0 {
-		return Item{"lockdown", title, Warn, "брандмауэр Windows выключен в профилях: " + strings.Join(fwOff, ", ") + "; правила заслона не действуют",
-			"Включите брандмауэр: Безопасность Windows → Брандмауэр и защита сети"}
+		return Item{"lockdown", title, Warn, i18n.T("брандмауэр Windows выключен в профилях: ") + strings.Join(fwOff, ", ") + i18n.T("; правила заслона не действуют"),
+			i18n.T("Включите брандмауэр: Безопасность Windows → Брандмауэр и защита сети")}
 	}
 	if in.LockRules >= in.LockRulesWant && in.LockDenied >= in.LockDeniedWant && in.LockRulesWant > 0 {
-		return Item{"lockdown", title, OK, fmt.Sprintf("правил брандмауэра %d, интерпретаторов под запретом %d", in.LockRules, in.LockDenied), ""}
+		return Item{"lockdown", title, OK, fmt.Sprintf(i18n.T("правил брандмауэра %d, интерпретаторов под запретом %d"), in.LockRules, in.LockDenied), ""}
 	}
-	return Item{"lockdown", title, Warn, fmt.Sprintf("правил брандмауэра %d из %d, запрет интерпретаторов %d из %d", in.LockRules, in.LockRulesWant, in.LockDenied, in.LockDeniedWant),
-		"От администратора: sessionvault lockdown (брандмауэр Windows должен быть включён; обновление Windows может сбросить права на интерпретаторы)"}
+	return Item{"lockdown", title, Warn, fmt.Sprintf(i18n.T("правил брандмауэра %d из %d, запрет интерпретаторов %d из %d"), in.LockRules, in.LockRulesWant, in.LockDenied, in.LockDeniedWant),
+		i18n.T("От администратора: sessionvault lockdown (брандмауэр Windows должен быть включён; обновление Windows может сбросить права на интерпретаторы)")}
 }
 
 type winSystem struct{}
@@ -301,49 +304,49 @@ func (winSystem) regStr(key, value string) (string, bool) {
 }
 
 func asrItem(in Input, defender Level) Item {
-	const title = "Правила ASR (Defender)"
+	title := i18n.T("Правила ASR (Defender)")
 	switch {
 	case defender != OK:
-		return Item{"asr", title, Info, "Defender не защищает в реальном времени: правила не действуют", ""}
+		return Item{"asr", title, Info, i18n.T("Defender не защищает в реальном времени: правила не действуют"), ""}
 	case in.ASRTotal > 0 && in.ASRActive >= in.ASRTotal:
-		return Item{"asr", title, OK, fmt.Sprintf("включено %d из %d (блокировка)", in.ASRActive, in.ASRTotal), ""}
+		return Item{"asr", title, OK, fmt.Sprintf(i18n.T("включено %d из %d (блокировка)"), in.ASRActive, in.ASRTotal), ""}
 	}
-	return Item{"asr", title, Warn, fmt.Sprintf("включено %d из %d", in.ASRActive, in.ASRTotal),
-		"От администратора: sessionvault check -fix (покажет список и спросит; откат: check -fix -off)"}
+	return Item{"asr", title, Warn, fmt.Sprintf(i18n.T("включено %d из %d"), in.ASRActive, in.ASRTotal),
+		i18n.T("От администратора: sessionvault check -fix (покажет список и спросит; откат: check -fix -off)")}
 }
 
 // Расширения проверяются только при запуске защищённого Chromium-браузера, когда профиль уже расшифрован.
 func extensionsItem(in Input) Item {
-	const title = "Расширения браузеров"
+	title := i18n.T("Расширения браузеров")
 	const shown = 5
 	switch {
 	case len(in.ExtScanned) == 0:
-		return Item{"extensions", title, Info, "проверяются при запуске защищённого браузера", ""}
+		return Item{"extensions", title, Info, i18n.T("проверяются при запуске защищённого браузера"), ""}
 	case len(in.ExtRisky) == 0:
-		return Item{"extensions", title, OK, "опасных не найдено (" + strings.Join(in.ExtScanned, ", ") + ")", ""}
+		return Item{"extensions", title, OK, i18n.T("опасных не найдено (") + strings.Join(in.ExtScanned, ", ") + ")", ""}
 	}
 	list := in.ExtRisky
 	more := ""
 	if len(list) > shown {
-		more = fmt.Sprintf(" и ещё %d", len(list)-shown)
+		more = fmt.Sprintf(i18n.T(" и ещё %d"), len(list)-shown)
 		list = list[:shown]
 	}
-	return Item{"extensions", title, Warn, "доступ к cookies и ко всем сайтам: " + strings.Join(list, ", ") + more,
-		"Удалите расширения, которым не доверяете (страница chrome://extensions, edge://extensions или brave://extensions)"}
+	return Item{"extensions", title, Warn, i18n.T("доступ к cookies и ко всем сайтам: ") + strings.Join(list, ", ") + more,
+		i18n.T("Удалите расширения, которым не доверяете (страница chrome://extensions, edge://extensions или brave://extensions)")}
 }
 
 // Только справка: чужие обращения к памяти бывают и безобидными (отладчик, антивирус), поэтому ни жёлтого, ни красного.
 func memoryItem(in Input) Item {
-	const title = "Чтение памяти приложений"
+	title := i18n.T("Чтение памяти приложений")
 	switch {
 	case !in.MemAudit:
-		return Item{"memory", title, Info, "аудит объектов Windows не включён, обращения не записываются",
-			"Включит служба при запуске; если политику сбросили, перезапустите службу SessionVault"}
+		return Item{"memory", title, Info, i18n.T("аудит объектов Windows не включён, обращения не записываются"),
+			i18n.T("Включит служба при запуске; если политику сбросили, перезапустите службу SessionVault")}
 	case in.MemReads == 0:
-		return Item{"memory", title, OK, "чужих обращений за последние сутки не было", ""}
+		return Item{"memory", title, OK, i18n.T("чужих обращений за последние сутки не было"), ""}
 	}
-	return Item{"memory", title, Info, fmt.Sprintf("обращений за последние сутки: %d, последнее: %s", in.MemReads, in.MemLast),
-		"Журнал memory.log в папке данных SessionVault; если вы сами не запускали отладчик или похожую программу, проверьте, что это за процесс"}
+	return Item{"memory", title, Info, fmt.Sprintf(i18n.T("обращений за последние сутки: %d, последнее: %s"), in.MemReads, in.MemLast),
+		i18n.T("Журнал memory.log в папке данных SessionVault; если вы сами не запускали отладчик или похожую программу, проверьте, что это за процесс")}
 }
 
 // DefenderOff — Defender отключён политикой или без защиты в реальном времени (те же признаки, что у пункта отчёта).

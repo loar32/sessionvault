@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/loar32/sessionvault/internal/i18n"
 	"os"
 	"time"
 
@@ -99,7 +100,7 @@ func (s *Service) enableFido(c *ipc.Conn, name string) string {
 // Учётные данные на самом ключе не удаляются: их стирает только владелец ключа.
 func DisableFido(profile string) error {
 	if !isolation.IsElevated() {
-		return errors.New("нужен запуск от администратора")
+		return errors.New(i18n.T("нужен запуск от администратора"))
 	}
 	var names []string
 	if profile != "" {
@@ -117,7 +118,7 @@ func DisableFido(profile string) error {
 	}
 	for _, n := range names {
 		if !profiles.ValidName(n) {
-			return fmt.Errorf("недопустимое имя профиля %q", n)
+			return fmt.Errorf(i18n.T("недопустимое имя профиля %q"), n)
 		}
 		v := vault.Vault{Dir: isolation.DataPath(n), DataName: workDataName}
 		if !v.Exists() {

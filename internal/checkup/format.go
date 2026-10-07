@@ -2,6 +2,7 @@ package checkup
 
 import (
 	"fmt"
+	"github.com/loar32/sessionvault/internal/i18n"
 	"strings"
 )
 
@@ -12,13 +13,17 @@ var marks = map[Level][2]string{
 	Info: {"[i]", "36"},
 }
 
-var verdict = map[Level]string{
-	OK:   "всё в порядке",
-	Warn: "есть что улучшить (жёлтые пункты)",
-	Bad:  "есть серьёзные проблемы (красные пункты)",
+func Verdict(l Level) string {
+	switch l {
+	case OK:
+		return i18n.T("всё в порядке")
+	case Warn:
+		return i18n.T("есть что улучшить (жёлтые пункты)")
+	case Bad:
+		return i18n.T("есть серьёзные проблемы (красные пункты)")
+	}
+	return ""
 }
-
-func Verdict(l Level) string { return verdict[l] }
 
 func Mark(l Level) string { return marks[l][0] }
 
@@ -37,6 +42,6 @@ func Format(r Report, color bool) string {
 			fmt.Fprintf(&b, "    %s\n", it.Hint)
 		}
 	}
-	fmt.Fprintf(&b, "\nИтог: %s\n", paint(r.Overall, verdict[r.Overall]))
+	fmt.Fprintf(&b, i18n.T("\nИтог: %s\n"), paint(r.Overall, Verdict(r.Overall)))
 	return b.String()
 }

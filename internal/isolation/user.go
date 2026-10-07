@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"github.com/loar32/sessionvault/internal/i18n"
 	"math/big"
 	"os"
 	"unsafe"
@@ -78,7 +79,7 @@ func CreateUser(name, password string) error {
 	case nerrUserExists:
 		return ErrUserExists
 	}
-	return fmt.Errorf("NetUserAdd: код %d (параметр %d)", r, parmErr)
+	return fmt.Errorf(i18n.T("NetUserAdd: код %d (параметр %d)"), r, parmErr)
 }
 
 func DeleteUser(name string) error {
@@ -87,7 +88,7 @@ func DeleteUser(name string) error {
 		return err
 	}
 	if r, _, _ := procNetUserDel.Call(0, uintptr(unsafe.Pointer(n))); r != 0 {
-		return fmt.Errorf("NetUserDel: код %d", r)
+		return fmt.Errorf(i18n.T("NetUserDel: код %d"), r)
 	}
 	return nil
 }
@@ -119,7 +120,7 @@ func IsAdminUser(name string) (bool, error) {
 	r, _, _ := procNetUserGetGroups.Call(0, uintptr(unsafe.Pointer(n)), 0, lgIncludeIndirect,
 		uintptr(unsafe.Pointer(&buf)), 0xFFFFFFFF, uintptr(unsafe.Pointer(&read)), uintptr(unsafe.Pointer(&total)))
 	if r != 0 {
-		return false, fmt.Errorf("NetUserGetLocalGroups: код %d", r)
+		return false, fmt.Errorf(i18n.T("NetUserGetLocalGroups: код %d"), r)
 	}
 	defer func() { _ = windows.NetApiBufferFree(buf) }()
 

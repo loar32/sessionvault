@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"github.com/loar32/sessionvault/internal/i18n"
 	"os"
 	"time"
 
@@ -14,6 +15,8 @@ import (
 type Config struct {
 	MainUser    string `json:"main_user"`
 	IdleMinutes int    `json:"idle_minutes"`
+	// Язык интерфейса: "ru" или "en"; без него берётся язык Windows.
+	Language string `json:"language,omitempty"`
 	// Откуда импортирована папка данных профиля: при удалении данные возвращаются туда.
 	Origins map[string]string `json:"origins,omitempty"`
 	// Аудит файловой системы включила служба (а не он уже был): при удалении возвращаем как было.
@@ -100,5 +103,5 @@ func lockConfig() (func(), error) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	return nil, errors.New("config.json занят другим процессом")
+	return nil, errors.New(i18n.T("config.json занят другим процессом"))
 }

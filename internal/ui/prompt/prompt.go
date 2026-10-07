@@ -10,6 +10,7 @@ import (
 	"unsafe"
 
 	"github.com/loar32/sessionvault/internal/crypto"
+	"github.com/loar32/sessionvault/internal/i18n"
 	"github.com/loar32/sessionvault/internal/ipc"
 	"golang.org/x/sys/windows"
 )
@@ -181,12 +182,12 @@ func Run(profile, pipe string) error {
 		_, _, _ = pSendMessage.Call(hc, wmSetFont, font, 1)
 		return hc
 	}
-	child("STATIC", "Пароль или ключ восстановления, «"+profile+"»:", 0, 16, 14, 320, 20, 0)
+	child("STATIC", i18n.Tf("Пароль или ключ восстановления, «%s»:", profile), 0, 16, 14, 320, 20, 0)
 	edit = child("EDIT", "", wsTabStop|wsBorder|esPassword|esAutoHScrl, 16, 36, 320, 24, idEdit)
 	_, _, _ = pSendMessage.Call(edit, emSetLimitText, maxPasswordChars, 0)
 	status = child("STATIC", "", 0, 16, 66, 320, 20, idStatus)
 	child("BUTTON", "OK", wsTabStop|bsDefPush, 176, 92, 76, 28, idOK)
-	child("BUTTON", "Отмена", wsTabStop, 260, 92, 76, 28, idCancel)
+	child("BUTTON", i18n.T("Отмена"), wsTabStop, 260, 92, 76, 28, idCancel)
 
 	_, _, _ = pShowWindow.Call(hwnd, swShow)
 	_, _, _ = pSetWindowPos.Call(hwnd, hwndTopmost, 0, 0, 0, 0, swpNoMove|swpNoSize)
@@ -272,11 +273,11 @@ func submit(hwnd uintptr) {
 	clear(buf)
 	if len(pw) > ipc.MaxPassword {
 		crypto.Wipe(pw)
-		setStatus("Слишком длинный пароль")
+		setStatus(i18n.T("Слишком длинный пароль"))
 		return
 	}
 	_, _, _ = pSetWindowText.Call(edit, uintptr(unsafe.Pointer(wstr(""))))
-	setStatus("Проверка…")
+	setStatus(i18n.T("Проверка…"))
 	err := conn.WriteLine(string(pw))
 	crypto.Wipe(pw)
 	reply := ""
@@ -292,7 +293,7 @@ func submit(hwnd uintptr) {
 		result = nil
 		_, _, _ = pDestroyWindow.Call(hwnd)
 	default:
-		setStatus("Неверный пароль, попробуйте ещё раз")
+		setStatus(i18n.T("Неверный пароль, попробуйте ещё раз"))
 	}
 }
 

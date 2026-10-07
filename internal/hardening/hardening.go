@@ -5,6 +5,7 @@ package hardening
 import (
 	"errors"
 	"fmt"
+	"github.com/loar32/sessionvault/internal/i18n"
 	"os/exec"
 	"path/filepath"
 
@@ -141,7 +142,7 @@ func revert(sys system, st State) error {
 		}
 		// Значение приходит из config.json: в реестр пишется только разумное число.
 		if old < absent || old > maxValue {
-			errs = append(errs, fmt.Errorf("%s: недопустимое прежнее значение %d", s.name, old))
+			errs = append(errs, fmt.Errorf(i18n.T("%s: недопустимое прежнее значение %d"), s.name, old))
 			continue
 		}
 		var err error

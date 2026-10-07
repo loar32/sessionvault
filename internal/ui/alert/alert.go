@@ -10,6 +10,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/loar32/sessionvault/internal/i18n"
 	"golang.org/x/sys/windows"
 )
 
@@ -73,16 +74,16 @@ func Run(arg string) error {
 			time.Sleep(700 * time.Millisecond)
 		}
 	}()
-	text := fmt.Sprintf("Приманка с данными приложения прочитана посторонним процессом.\n"+
+	text := fmt.Sprintf(i18n.T("Приманка с данными приложения прочитана посторонним процессом.\n"+
 		"Защищённые приложения закрыты, данные зашифрованы, хранилище заблокировано.\n\n"+
-		"Процесс: %s (PID %d)\nSHA-256: %s\nВремя: %s",
+		"Процесс: %s (PID %d)\nSHA-256: %s\nВремя: %s"),
 		i.Process, i.PID, i.SHA256, i.Time.Format("15:04:05 02.01.2006"))
 	text = strings.ReplaceAll(text, "\x00", "")
 	t, err := windows.UTF16PtrFromString(text)
 	if err != nil {
 		return err
 	}
-	title, _ := windows.UTF16PtrFromString("SessionVault: тревога")
+	title, _ := windows.UTF16PtrFromString(i18n.T("SessionVault: тревога"))
 	_, _, _ = procMessageBox.Call(0, uintptr(unsafe.Pointer(t)), uintptr(unsafe.Pointer(title)),
 		mbIconWarning|mbSystemModal|mbSetFg|mbTopmost)
 	return nil

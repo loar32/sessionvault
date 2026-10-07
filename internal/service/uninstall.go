@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"github.com/loar32/sessionvault/internal/i18n"
 	"os"
 	"path/filepath"
 	"time"
@@ -24,7 +25,7 @@ import (
 // Любая ошибка до конца возврата данных прерывает удаление: данные пользователя не должны остаться заблокированными.
 func Uninstall(password []byte) (err error) {
 	if !isolation.IsElevated() {
-		return errors.New("нужен запуск от администратора")
+		return errors.New(i18n.T("нужен запуск от администратора"))
 	}
 	if err := isolation.EnablePrivileges("SeTakeOwnershipPrivilege", "SeRestorePrivilege", "SeBackupPrivilege", "SeSecurityPrivilege"); err != nil {
 		return err
@@ -34,11 +35,11 @@ func Uninstall(password []byte) (err error) {
 		return nil // уже удалено: установщик может вызвать нас повторно
 	}
 	if err != nil {
-		return fmt.Errorf("конфигурация не прочитана: %w", err)
+		return fmt.Errorf(i18n.T("конфигурация не прочитана: %w"), err)
 	}
 	user, _, _, err := windows.LookupSID("", cfg.MainUser)
 	if err != nil {
-		return fmt.Errorf("учётка %q не найдена: %w", cfg.MainUser, err)
+		return fmt.Errorf(i18n.T("учётка %q не найдена: %w"), cfg.MainUser, err)
 	}
 	m, err := mgr.Connect()
 	if err != nil {
@@ -68,12 +69,12 @@ func Uninstall(password []byte) (err error) {
 		if !v.Exists() {
 			// Данные без метаданных (сбой посреди import-tdata): это может быть единственная копия сессии.
 			if _, err := os.Stat(isolation.WorkPath(e.Name())); err == nil {
-				return fmt.Errorf("профиль %s: данные без хранилища, удаление остановлено (папка %s)", e.Name(), v.Dir)
+				return fmt.Errorf(i18n.T("профиль %s: данные без хранилища, удаление остановлено (папка %s)"), e.Name(), v.Dir)
 			}
 			continue
 		}
 		if err = restoreProfile(cfg, user, e.Name(), v, password); err != nil {
-			return fmt.Errorf("профиль %s: %w", e.Name(), err)
+			return fmt.Errorf(i18n.T("профиль %s: %w"), e.Name(), err)
 		}
 	}
 
@@ -113,7 +114,7 @@ func restoreProfile(cfg Config, user *windows.SID, name string, v vault.Vault, p
 	}
 	origin := cfg.Origins[name]
 	if origin == "" {
-		return errors.New("неизвестно, куда вернуть данные (не записан исходный путь)")
+		return errors.New(i18n.T("неизвестно, куда вернуть данные (не записан исходный путь)"))
 	}
 	// Администратор переносит и удаляет файлы по пути из профиля пользователя: ссылка на нём увела бы это в чужую папку.
 	// Папка закрепляется до конца переноса: ни она, ни её родители не переименуются и не станут junction.
@@ -150,7 +151,7 @@ func restoreProfile(cfg Config, user *windows.SID, name string, v vault.Vault, p
 	}
 	src := filepath.Join(isolation.WorkPath(name), p.DataDir)
 	if _, err := os.Stat(src); err != nil {
-		return fmt.Errorf("в хранилище нет %s: %w", p.DataDir, err)
+		return fmt.Errorf(i18n.T("в хранилище нет %s: %w"), p.DataDir, err)
 	}
 	if _, err := os.Stat(origin); err == nil {
 		// На месте уже что-то есть (например, Telegram создал новую папку): не затираем, а откладываем в сторону.
@@ -187,7 +188,7 @@ func stopService(m *mgr.Mgr) (wasRunning bool, err error) {
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	return true, errors.New("служба не остановилась за 30 секунд")
+	return true, errors.New(i18n.T("служба не остановилась за 30 секунд"))
 }
 
 func startService(m *mgr.Mgr) error {
