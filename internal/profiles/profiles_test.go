@@ -57,6 +57,12 @@ func TestTemplates(t *testing.T) {
 		if name == "discord" && p.Exe == "" {
 			p.Exe = `C:\Program Files\SessionVault\apps\discord\Discord.exe`
 		}
+		// Steam остаётся в учётке пользователя: путь и места сессии находятся при защите.
+		if name == "steam" && p.Exe == "" {
+			p.Exe = `C:\Program Files (x86)\Steam\steam.exe`
+			p.Origin, p.Decoy = "x", "generic"
+			p.Places = []Place{{Path: `C:\Program Files (x86)\Steam\config`, Decoy: "steamconfig"}}
+		}
 		if !ok || p.Name != name || !filepath.IsAbs(p.Exe) || p.Origin == "" || p.Publisher == "" || p.Decoy == "" {
 			t.Fatalf("шаблон %s неполный: %+v", name, p)
 		}

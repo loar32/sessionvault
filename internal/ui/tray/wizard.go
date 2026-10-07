@@ -58,7 +58,7 @@ const (
 )
 
 // Приложения, которые мастер умеет защитить командой protect.
-var wizardApps = []string{"telegram", "chrome", "edge", "brave", "discord"}
+var wizardApps = []string{"telegram", "chrome", "edge", "brave", "discord", "steam"}
 
 var (
 	wizOpen    atomic.Bool

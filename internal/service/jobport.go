@@ -9,8 +9,9 @@ import (
 
 const (
 	jobObjectAssociateCompletionPort = 7
-	jobMsgExitProcess                = 4
-	jobMsgAbnormalExit               = 5
+	jobMsgActiveProcessZero          = 4
+	jobMsgExitProcess                = 7
+	jobMsgAbnormalExit               = 8
 	jobMsgNewProcess                 = 6
 	portQuitKey                      = 1
 )

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"syscall"
 
@@ -39,6 +40,27 @@ type Profile struct {
 	Source string `json:"source,omitempty"`
 	// Профиль добавлен администратором командой add, а не взят из встроенных шаблонов.
 	Custom bool `json:"custom,omitempty"`
+	// Приложение (Steam), которое остаётся в учётке пользователя и держит сессию в его же папках: пока оно закрыто, эти
+	// места пусты (приманка), данные лежат в хранилище; при запуске службой они возвращаются на место, при выходе убираются.
+	Places []Place `json:"places,omitempty"`
+}
+
+// Place — одно место сессии в профиле пользователя или каталоге приложения.
+type Place struct {
+	Path string `json:"path"` // абсолютный путь
+	// Шаблоны имён файлов прямо в Path (ssfn*); пусто — место целиком (вся папка Path).
+	Files   []string `json:"files,omitempty"`
+	Decoy   string   `json:"decoy,omitempty"`   // раскладка приманки на месте папки; у файлов приманки нет
+	Exclude []string `json:"exclude,omitempty"` // пути внутри Path, которые не шифруются (кэши)
+}
+
+// Steam: сессия лежит в каталоге клиента (config, ssfn*) и в %LOCALAPPDATA%\Steam (htmlcache). Клиент и игры остаются в
+// учётке пользователя, поэтому места и путь к exe служба находит при защите (protect steam).
+var Steam = Profile{
+	Name:      "steam",
+	DataDir:   "places",
+	Publisher: "Valve Corp.",
+	Title:     "Steam",
 }
 
 // Шаблон, который установщик записывает в ProgramData; службе нужен только файл оттуда.
@@ -135,6 +157,8 @@ func Template(name string) (Profile, bool) {
 			`AppData\Local\Microsoft\Edge\User Data`, true), true
 	case "discord":
 		return Discord, true
+	case "steam":
+		return Steam, true
 	case "brave":
 		return chromium(name, "Brave", `BraveSoftware\Brave-Browser\Application\brave.exe`, "Brave Software, Inc.",
 			`AppData\Local\BraveSoftware\Brave-Browser\User Data`, false), true
@@ -143,7 +167,9 @@ func Template(name string) (Profile, bool) {
 }
 
 // TemplateNames — имена всех шаблонов.
-func TemplateNames() []string { return []string{"telegram", "chrome", "edge", "brave", "discord"} }
+func TemplateNames() []string {
+	return []string{"telegram", "chrome", "edge", "brave", "discord", "steam"}
+}
 
 var validName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
 
@@ -185,6 +211,16 @@ func load(dir, name string) (Profile, error) {
 	for _, x := range p.Exclude {
 		if !filepath.IsLocal(x) {
 			return Profile{}, fmt.Errorf(i18n.T("профиль %q: недопустимый путь исключения %q"), name, x)
+		}
+	}
+	for _, pl := range p.Places {
+		if !filepath.IsAbs(pl.Path) || (pl.Decoy != "" && pl.Decoy != "steamconfig" && pl.Decoy != "steamlocal") {
+			return Profile{}, fmt.Errorf(i18n.T("профиль %q повреждён"), name)
+		}
+		for _, x := range append(slices.Clone(pl.Files), pl.Exclude...) {
+			if x == "" || !filepath.IsLocal(x) {
+				return Profile{}, fmt.Errorf(i18n.T("профиль %q: недопустимый путь исключения %q"), name, x)
+			}
 		}
 	}
 	for _, x := range p.ExecFiles {

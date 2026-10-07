@@ -112,6 +112,9 @@ func restoreProfile(cfg Config, user *windows.SID, name string, v vault.Vault, p
 	if err != nil {
 		return err
 	}
+	if len(p.Places) > 0 {
+		return restorePlacesAdmin(user, p, v, password)
+	}
 	origin := cfg.Origins[name]
 	if origin == "" {
 		return errors.New(i18n.T("неизвестно, куда вернуть данные (не записан исходный путь)"))

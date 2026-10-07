@@ -4,7 +4,7 @@ English · [Русский](README.md)
 
 A quiet background guardian of sessions for Windows: against infostealers that steal your Telegram and browser logins. It works completely offline; the program makes no network calls.
 
-Status: v1.0. Protected: Telegram Desktop, Chrome, Edge, Brave and Discord; your own apps are added with `add`. It protects session files, not the window of a running app (see "Limits of protection" and the [threat model](docs/THREAT_MODEL.en.md)). The installer is not code-signed: SmartScreen may warn you, compare the SHA-256 from the release notes.
+Status: v1.1. Protected: Telegram Desktop, Chrome, Edge, Brave, Discord and Steam; your own apps are added with `add`. It protects session files, not the window of a running app (see "Limits of protection" and the [threat model](docs/THREAT_MODEL.en.md)). The installer is not code-signed: SmartScreen may warn you, compare the SHA-256 from the release notes.
 
 The idea: set it up once, live in the tray and forget about it until there is a threat. Apps start from the SessionVault tray icon; the service does everything else itself.
 
@@ -141,7 +141,16 @@ A crash dump of a protected app contains its memory with decrypted data, and the
 
 ## Steam
 
-Steam is not supported yet. The Steam session (`ssfn*` files, `config\config.vdf`, `loginusers.vdf`, `local.vdf`, registry keys) lies right in the client folder (`Program Files (x86)\Steam`), where the app account cannot write, and the client updates and keeps games there and in libraries on other drives. Protecting the session needs the whole client under the app account with access to the game libraries and sign-in through an app with its own rights; such a rework cannot be verified without a real Steam and a network, so it is moved to a separate version.
+`sessionvault protect steam` (as administrator, Steam closed, including in the tray). Steam stays in your account: games, their saves, the overlay and controllers work as before, so the protection differs from browsers and Discord. The session files are encrypted on disk while the client is closed, and a decoy lies in their place:
+
+- **What is encrypted.** The `config` folder in the client folder (`config.vdf`, `loginusers.vdf`), the `ssfn*` files (Steam Guard) and `%LOCALAPPDATA%\Steam` (the client's built-in browser: cookies, `Login Data`; caches are skipped). The client folder is found through the main account's registry. Registry values (`AutoLoginUser` etc.), games and libraries are not touched.
+- **Start from the tray** ("Start Steam"): the service decrypts the vault, puts the files back, removes the decoy and starts `steam.exe` under your account. The client and everything it starts (games) run in a separate job object; when no process is left, the service collects the files back into the vault, encrypts them and puts the decoy back. The tray item "Close Steam and encrypt its data" ends the client and games at once.
+- **Honest limits.** While Steam runs, the session files lie open, as for any user without protection: a stealer working exactly at that time reads them. There is no isolation under a separate account here: games are launched by the client itself and would lose their saves and settings in another account. The decoy and encryption on disk protect against a stealer that arrives while Steam is closed (and the client is closed most of the time) and against drive theft (with BitLocker).
+- The **decoy** on the `config` and `%LOCALAPPDATA%\Steam` places is watched like for the other apps (read audit, alarm). Valve-signed Steam processes (`steam.exe`, `steamwebhelper.exe`) from the client folder are allowlisted: Steam started outside SessionVault (autostart, a game shortcut) raises no alarm. It creates a new session in place of the decoy; at the next start from SessionVault the service sees its own data in place, takes it (instead of overwriting it with the old one from the vault) and saves it on exit.
+- If the client is running outside SessionVault, the start from the tray does not happen ("Steam is already running outside SessionVault"): otherwise the service would remove the files from under a working client.
+- If the service stops while Steam is open, the client ends with it (job) and the session files stay in place until the next start from SessionVault, which collects them into the vault. Meanwhile the vault already contains the session as of the start.
+- Up to 256 MB of data is kept. Export and moving to another PC are not supported for Steam (the client path differs): run `protect steam` again on the new PC. `sessionvault unprotect steam` puts the files back; so does uninstalling.
+- Verified on a real Steam client in a VM without a network or an account: the session is imitated by files with markers on the places where Steam keeps it. Signing in to a real account, Steam Guard, client updates and games were not verified.
 
 ## A separate account per app
 
@@ -180,7 +189,7 @@ The service puts Windows auditing on the processes of protected apps and quietly
 
 ```
 sessionvault install [-user name] [-telegram-exe path]   (called by the installer)
-sessionvault protect [-yes] [-password-stdin] <telegram|chrome|edge|brave|discord>
+sessionvault protect [-yes] [-password-stdin] <telegram|chrome|edge|brave|discord|steam>
 sessionvault add [-yes] [-copy-dir] [-data name] -arg "...{data_path}..." name path-to-exe data-folder
 sessionvault refresh <app>
 sessionvault trust [-yes] <profile>
@@ -228,7 +237,7 @@ Decoy limits:
 
 ## What next
 
-v1.0 is released. Next, as a separate version: Steam (the client keeps its session in its own folder and needs a rework of the launch). After that, on demand: behavioural detection, service self-protection, wallets, Linux and macOS versions. Not verified on hardware or on a network: a FIDO2 key (YubiKey), fingerprint and face in Windows Hello, sleep and RDP, real network blocking, real Discord and Steam, Windows 10 and Home. Anything that needs constant action or makes noise is not part of the product.
+v1.0 is released, v1.1 adds Steam. Next, on demand: behavioural detection, service self-protection, wallets, Linux and macOS versions. Not verified on hardware or on a network: a FIDO2 key (YubiKey), fingerprint and face in Windows Hello, sleep and RDP, real network blocking, signing in to a real Discord and Steam account, Steam and Discord client updates, Windows 10 and Home. Anything that needs constant action or makes noise is not part of the product.
 
 ## Project security and contributing
 

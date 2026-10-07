@@ -105,6 +105,10 @@ func (s *Service) closeApp(name string) string {
 	if !up {
 		return ipc.Failed
 	}
+	if s.closePlaceJob(name) {
+		s.log.Printf("%s закрыто по запросу пользователя", name)
+		return ipc.Ok
+	}
 	n, err := isolation.KillAccountProcesses(isolation.AccountName(name))
 	if err != nil || n == 0 {
 		s.log.Printf("закрытие %s: процессов %d, %v", name, n, err)

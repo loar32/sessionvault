@@ -30,6 +30,9 @@ func excluded(rel string, exclude []string) bool {
 	return false
 }
 
+// Excluded — путь относительно папки данных попадает под шаблоны исключений.
+func Excluded(rel string, exclude []string) bool { return excluded(rel, exclude) }
+
 // exclude — пути относительно root (кэши): в архив не попадают, вместе с открытой папкой удаляются.
 func packDir(root string, exclude []string) ([]byte, int, error) {
 	var buf bytes.Buffer

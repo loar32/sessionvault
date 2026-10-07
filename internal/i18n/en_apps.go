@@ -15,6 +15,11 @@ var appsEN = map[string]string{
 	"Приложение %s из файла экспорта.\nИсполняемый файл на этом ПК: %s\nИздатель (подпись): %s\nДанные: профиль основной учётки\\%s\nАргументы запуска из файла: %s\n": "App %s from the export file.\nExecutable on this PC: %s\nPublisher (signature): %s\nData: main account profile\\%s\nLaunch arguments from the file: %s\n",
 	"Приложение: %s\nИздатель (подпись): %s\nДанные: %s -> защищённая рабочая папка\nАргументы: %s\n":                                                                  "App: %s\nPublisher (signature): %s\nData: %s -> protected working folder\nArguments: %s\n",
 
+	"Steam уже запущен вне SessionVault: закройте его и повторите":                                                                        "Steam is already running outside SessionVault: close it and try again",
+	"закройте Steam (в том числе из трея) и повторите":                                                                                    "close Steam (including in the tray) and try again",
+	"Steam не переносится экспортом: путь клиента на новом ПК другой, защитите Steam там заново (sessionvault protect steam)":             "Steam is not moved by export: the client path differs on a new PC, protect Steam there again (sessionvault protect steam)",
+	"Steam остаётся в вашей учётке: файлы входа зашифрованы, пока он закрыт, а на их местах приманка. Пока Steam запущен, файлы открыты.": "Steam stays in your account: the sign-in files are encrypted while it is closed and a decoy lies in their place. While Steam is running, the files are open.",
+	"данные Steam больше 256 МБ: шифрование отменено":                                                                                     "Steam data is larger than 256 MB: encryption cancelled",
 	"обфусцированные скрипты":                    "obfuscated scripts",
 	"JS/VBS запускает скачанный exe":             "JS/VBS launches a downloaded exe",
 	"исполняемое содержимое из почты и вебпочты": "executable content from email and webmail",

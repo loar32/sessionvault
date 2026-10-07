@@ -149,20 +149,40 @@ func (s *Service) syncDecoys() {
 		defer func() { _ = tok.Close() }()
 	}
 	watch := map[string]bool{}
+	// Цели приманок: прежнее место данных профиля и места сессии приложений, которые остаются в учётке пользователя (Steam).
+	type target struct{ key, vault, kind, path string }
+	var targets []target
 	for name, origin := range cfg.Origins {
+		if p, err := profiles.Load(isolation.ProfilesDir(), name); err == nil && p.Decoy != "" {
+			targets = append(targets, target{name, name, p.Decoy, origin})
+		}
+	}
+	for _, p := range placeProfiles() {
+		// Пока приложение запущено, на местах лежат настоящие данные: приманка и наблюдение не нужны.
+		s.mu.Lock()
+		up := s.running[p.Name] || s.closing[p.Name]
+		s.mu.Unlock()
+		if up {
+			continue
+		}
+		for i, pl := range p.Places {
+			if pl.Decoy != "" {
+				targets = append(targets, target{placeKey(p.Name, i), p.Name, pl.Decoy, pl.Path})
+			}
+		}
+	}
+	for _, t := range targets {
+		name, origin := t.key, t.path
 		// Пока data.enc не записан, импорт не закончен: при его откате данные должны вернуться на это место.
-		if _, err := os.Stat(filepath.Join(isolation.DataPath(name), "data.enc")); err != nil {
+		if _, err := os.Stat(filepath.Join(isolation.DataPath(t.vault), "data.enc")); err != nil {
 			continue
 		}
-		p, err := profiles.Load(isolation.ProfilesDir(), name)
-		if err != nil || p.Decoy == "" {
-			continue
-		}
+		var err error
 		_, statErr := os.Stat(origin)
 		existed := statErr == nil
 		var created bool
 		if tokErr == nil {
-			created, err = decoy.Ensure(name, p.Decoy, origin, user, decoyRefresh, tok)
+			created, err = decoy.Ensure(name, t.kind, origin, user, decoyRefresh, tok)
 		} else if !existed || !decoy.Known(name, origin) {
 			continue
 		}
@@ -388,6 +408,7 @@ func (s *Service) alarm(r audit.Read) {
 
 // Закрытие job убивает приложения; новый job нужен следующим запускам.
 func (s *Service) killApps() {
+	s.closeAllPlaceJobs()
 	fresh, err := killOnCloseJob()
 	if err != nil {
 		// Нового job нет: гасим приложения в текущем (он же останется рабочим).

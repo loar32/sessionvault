@@ -29,7 +29,7 @@ import (
 )
 
 const usageEN = `sessionvault install [-user name] [-telegram-exe path]
-sessionvault protect [-yes] [-password-stdin] <telegram|chrome|edge|brave|discord>
+sessionvault protect [-yes] [-password-stdin] <telegram|chrome|edge|brave|discord|steam>
 sessionvault add [-yes] [-copy-dir] [-data name] -arg "...{data_path}..." name path-to-exe data-folder
 sessionvault refresh <app>
 sessionvault trust [-yes] <profile>
@@ -53,7 +53,7 @@ sessionvault alerts
 sessionvault tray`
 
 const usageRU = `sessionvault install [-user имя] [-telegram-exe путь]
-sessionvault protect [-yes] [-password-stdin] <telegram|chrome|edge|brave|discord>
+sessionvault protect [-yes] [-password-stdin] <telegram|chrome|edge|brave|discord|steam>
 sessionvault add [-yes] [-copy-dir] [-data имя] -arg "...{data_path}..." имя путь-к-exe каталог-данных
 sessionvault refresh <приложение>
 sessionvault trust [-yes] <профиль>
@@ -224,10 +224,18 @@ func protect(args []string) error {
 		return err
 	}
 	if fs.NArg() < 1 {
-		return errors.New(i18n.T("укажи приложение: sessionvault protect telegram|chrome|edge|brave|discord"))
+		return errors.New(i18n.T("укажи приложение: sessionvault protect telegram|chrome|edge|brave|discord|steam"))
 	}
 	app := fs.Arg(0)
 	rest := fs.Args()[1:]
+	if app == "steam" {
+		if err := service.ProtectSteam(func() ([]byte, error) { return readPassword(*stdin, true) }); err != nil {
+			return err
+		}
+		fmt.Println(i18n.T("готово:"), app, i18n.T("защищён; запускайте его из иконки SessionVault в трее"))
+		fmt.Println(i18n.T("Steam остаётся в вашей учётке: файлы входа зашифрованы, пока он закрыт, а на их местах приманка. Пока Steam запущен, файлы открыты."))
+		return nil
+	}
 	if app == "telegram" {
 		if *stdin {
 			rest = append([]string{"-password-stdin"}, rest...)
@@ -359,7 +367,7 @@ func unprotect(args []string) error {
 	if len(pos) != 1 {
 		return errors.New(i18n.T("использование: sessionvault unprotect <приложение>"))
 	}
-	fmt.Fprintln(os.Stderr, i18n.T("Данные"), pos[0], i18n.T("будут расшифрованы и возвращены на прежнее место, его учётка и профиль защиты удалены."))
+	fmt.Fprintln(os.Stderr, i18n.Tf("Данные %s будут расшифрованы и возвращены на прежнее место, его учётка и профиль защиты удалены.", pos[0]))
 	pw, err := readPassword(*stdin, false)
 	if err != nil {
 		return err
