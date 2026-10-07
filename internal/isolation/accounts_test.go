@@ -93,3 +93,28 @@ func TestPasswordSealRoundTrip(t *testing.T) {
 		t.Fatal("повреждённая запись принята")
 	}
 }
+
+func TestUnreadablePasswordIsTreatedAsMissing(t *testing.T) {
+	old := ProgramData
+	ProgramData = t.TempDir()
+	defer func() { ProgramData = old }()
+	if err := os.MkdirAll(BaseDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveAccounts(map[string]string{"sv-good": "pw"}); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(accountsFile())
+	bad := strings.Replace(string(b), "{", `{"sv-bad":"dpapi:AAAA",`, 1)
+	_ = os.Remove(accountsFile())
+	if err := os.WriteFile(accountsFile(), []byte(bad), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m, err := loadAccounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := m["sv-bad"]; ok || m["sv-good"] != "pw" {
+		t.Fatalf("нечитаемая запись должна пропасть, остальные остаться: %v", m)
+	}
+}

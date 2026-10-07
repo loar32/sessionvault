@@ -52,6 +52,7 @@ var interpreters = []string{
 // Интерпретаторы, которые ставит сам пользователь: путь зависит от версии, поэтому по маске (`*` в профиле — все пользователи).
 var userInterpreters = []string{
 	`Python*\python*.exe`,
+	`Python\Python*\python*.exe`, // установка для одного пользователя: AppData\Local\Programs\Python\Python312
 	`nodejs\node.exe`,
 	`Git\bin\bash.exe`,
 	`Git\usr\bin\bash.exe`,

@@ -432,7 +432,7 @@ func customProfile(b bundle, c CustomImport) (profiles.Profile, error) {
 	}
 	p = *b.Profile
 	p.Name, p.Custom, p.Decoy = b.App, true, "generic"
-	p.Exe, p.Source, p.Sig, p.ExecFiles, p.ExecSigner = "", "", "", nil, ""
+	p.Exe, p.Source, p.Sig, p.ExecFiles, p.ExecSigner, p.Exclude = "", "", "", nil, "", nil
 	if p.DataDir == "" || !filepath.IsLocal(p.DataDir) || strings.ContainsAny(p.DataDir, `\/`) {
 		return p, errors.New("в файле недопустимая папка данных")
 	}

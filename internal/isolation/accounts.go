@@ -129,7 +129,10 @@ func loadAccounts() (map[string]string, error) {
 	for k, v := range m {
 		pw, err := openPassword(v)
 		if err != nil {
-			return nil, fmt.Errorf("пароль учётки %s: %w", k, err)
+			// Ключ DPAPI другой машины (клон диска, переустановка): пароль не прочитать. Запись считается отсутствующей,
+			// и учётка приложения пересоздаётся при следующем запуске, а не блокирует все приложения.
+			delete(m, k)
+			continue
 		}
 		m[k] = pw
 	}

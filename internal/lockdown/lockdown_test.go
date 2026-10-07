@@ -65,3 +65,24 @@ func TestListsExistOnWindows(t *testing.T) {
 		}
 	}
 }
+
+func TestUserInstalledPythonPattern(t *testing.T) {
+	root := t.TempDir()
+	p := filepath.Join(root, `Python\Python312\python.exe`)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, nil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, rel := range userInterpreters {
+		m, _ := filepath.Glob(filepath.Join(root, rel))
+		for _, f := range m {
+			found = found || f == p
+		}
+	}
+	if !found {
+		t.Fatal("пользовательская установка Python не найдена по маскам")
+	}
+}
