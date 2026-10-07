@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
+	"strings"
 
 	"golang.org/x/sys/windows/registry"
 )
@@ -31,12 +32,14 @@ const (
 	block      = "1"
 )
 
-// State — прежние значения по GUID правил и общего переключателя; пустая строка — значения не было.
+// State — прежние значения по GUID правил и общего переключателя; пустая строка — значения не было. Перед числом стоит тип:
+// «d:» — DWORD, «s:» — строка, чтобы откат вернул значение того же типа (запись прежних версий без типа читается по умолчанию).
 type State map[string]string
 
 // Реестр за интерфейсом: в тестах подменяется.
 type system interface {
 	get(key, value string) (string, bool)
+	isDword(key, value string) bool
 	setDword(key, value string, v uint32) error
 	setString(key, value, s string) error
 	remove(key, value string) error
@@ -57,6 +60,16 @@ func (winSystem) get(key, value string) (string, bool) {
 		return strconv.FormatUint(v, 10), true
 	}
 	return "", false
+}
+
+func (winSystem) isDword(key, value string) bool {
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, key, registry.QUERY_VALUE)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = k.Close() }()
+	_, typ, err := k.GetValue(value, nil)
+	return err == nil && typ == registry.DWORD
 }
 
 func (winSystem) setDword(key, value string, v uint32) error {
@@ -108,20 +121,32 @@ func apply(sys system, prev State) (State, error) {
 		st[k] = v
 	}
 	if _, ok := st[masterName]; !ok {
-		st[masterName], _ = sys.get(policyKey, master)
+		st[masterName] = previous(sys, policyKey, master)
 	}
 	if err := sys.setDword(policyKey, master, 1); err != nil {
 		return st, fmt.Errorf("включение политики ASR: %w", err)
 	}
 	for _, r := range Rules {
 		if _, ok := st[r.ID]; !ok {
-			st[r.ID], _ = sys.get(rulesKey, r.ID)
+			st[r.ID] = previous(sys, rulesKey, r.ID)
 		}
 		if err := sys.setString(rulesKey, r.ID, block); err != nil {
 			return st, fmt.Errorf("правило %s: %w", r.Title, err)
 		}
 	}
 	return st, nil
+}
+
+// previous записывает прежнее значение вместе с его типом.
+func previous(sys system, key, value string) string {
+	v, ok := sys.get(key, value)
+	if !ok {
+		return ""
+	}
+	if sys.isDword(key, value) {
+		return "d:" + v
+	}
+	return "s:" + v
 }
 
 // Значения приходят из config.json: в реестр пишется только короткое число.
@@ -131,6 +156,12 @@ func revert(sys system, st State) error {
 	var errs []error
 	restore := func(key, value, old string, dword bool) {
 		var err error
+		switch {
+		case strings.HasPrefix(old, "d:"):
+			dword, old = true, old[2:]
+		case strings.HasPrefix(old, "s:"):
+			dword, old = false, old[2:]
+		}
 		switch {
 		case old == "":
 			err = sys.remove(key, value)

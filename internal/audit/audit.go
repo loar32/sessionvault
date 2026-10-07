@@ -163,5 +163,12 @@ func WatchReads(path string) error {
 	if sacl == nil {
 		return errors.New("пустой SACL")
 	}
-	return windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.SACL_SECURITY_INFORMATION, nil, nil, nil, sacl)
+	// Путь лежит в профиле пользователя: по дескриптору проверенной папки аудит не уйдёт на чужую папку, как бы её ни подменили.
+	// Для передачи правила вложенным файлам дескриптору нужны ещё READ_CONTROL и WRITE_DAC: без них Windows отвечает «доступ запрещён».
+	h, err := OpenDirChecked(path, accessSystemSecurity|windows.WRITE_DAC|windows.READ_CONTROL, ShareAll)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = windows.CloseHandle(h) }()
+	return windows.SetSecurityInfo(h, windows.SE_FILE_OBJECT, windows.SACL_SECURITY_INFORMATION, nil, nil, nil, sacl)
 }

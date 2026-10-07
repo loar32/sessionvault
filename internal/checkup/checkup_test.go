@@ -13,6 +13,7 @@ type fake struct {
 	strs map[string]string
 	bl   int
 	err  error
+	pr   *Probe // если задан, отдаётся как есть
 }
 
 func (f fake) regInt(key, value string) (int64, bool) { v, ok := f.ints[key+"|"+value]; return v, ok }
@@ -20,7 +21,15 @@ func (f fake) regStr(key, value string) (string, bool) {
 	v, ok := f.strs[key+"|"+value]
 	return v, ok
 }
-func (f fake) bitlocker() (int, error) { return f.bl, f.err }
+func (f fake) probe() Probe {
+	if f.pr != nil {
+		return *f.pr
+	}
+	if f.err != nil {
+		return Probe{BitLocker: 2}
+	}
+	return Probe{Known: true, BitLocker: f.bl, BLRecovery: true}
+}
 
 func good() fake {
 	return fake{
@@ -98,8 +107,8 @@ func TestDefenderAndEditions(t *testing.T) {
 	}
 	f = good()
 	f.strs[ntVersion+"|EditionID"] = "Core"
-	if r := run(f, allOn, time.Now()); level(r, "windows") != Warn {
-		t.Fatal("Home — жёлтый")
+	if r := run(f, allOn, time.Now()); level(r, "windows") != Info || r.Overall != OK {
+		t.Fatal("Home — справка, итог не портит")
 	}
 	f = good()
 	delete(f.ints, ciConfig+"|VulnerableDriverBlocklistEnable")
@@ -203,5 +212,65 @@ func TestMemoryItem(t *testing.T) {
 	r := run(good(), in, time.Now())
 	if level(r, "memory") != Info || r.Overall != OK {
 		t.Fatalf("обращения — только справка, итог не меняется: %+v", r)
+	}
+}
+
+func TestProbeDrivenItems(t *testing.T) {
+	f := good()
+	f.pr = &Probe{Known: true, BitLocker: 1, BLRecovery: false, DefenderKnown: true, DefenderRT: true, HVCIKnown: true, HVCIRunning: true}
+	r := run(f, allOn, time.Now())
+	if level(r, "bitlocker") != Info {
+		t.Fatal("BitLocker без ключа восстановления — справка")
+	}
+	if level(r, "defender") != OK || level(r, "hvci") != OK {
+		t.Fatalf("Defender и HVCI работают: %+v", r)
+	}
+	f.pr = &Probe{Known: true, BitLocker: 1, BLRecovery: true, DefenderKnown: true, DefenderRT: false, HVCIKnown: true, HVCIRunning: false}
+	r = run(f, allOn, time.Now())
+	if level(r, "defender") != Bad {
+		t.Fatal("защита Defender выключена на деле — красный, хотя реестр чист")
+	}
+	if level(r, "hvci") != Warn {
+		t.Fatal("HVCI включена в настройках, но не работает — жёлтый")
+	}
+	if level(r, "asr") != Info {
+		t.Fatal("при выключенном Defender правила ASR — справка")
+	}
+	f.pr.OtherAV = []string{"Kaspersky"}
+	r = run(f, allOn, time.Now())
+	if level(r, "defender") != Info || r.Overall == Bad {
+		t.Fatalf("сторонний антивирус — справка, не красный: %+v", r)
+	}
+}
+
+func TestParseProbe(t *testing.T) {
+	p := parseProbe([]byte(`{"bl":1,"rec":true,"dk":true,"rt":true,"av":"Kaspersky","hk":true,"hv":true}`))
+	if !p.Known || p.BitLocker != 1 || !p.BLRecovery || len(p.OtherAV) != 1 || !p.HVCIRunning {
+		t.Fatalf("%+v", p)
+	}
+	p = parseProbe([]byte(`{"dk":true,"rt":false,"av":["A","B"]}`))
+	if p.Known || p.BitLocker != 2 || len(p.OtherAV) != 2 {
+		t.Fatalf("BitLocker не определён, а антивирусов два: %+v", p)
+	}
+	if p := parseProbe([]byte("мусор")); p.Known || p.BitLocker != 2 {
+		t.Fatal("мусор вместо JSON должен давать «не определено»")
+	}
+}
+
+func TestFirewallAndJournal(t *testing.T) {
+	f := good()
+	f.ints[firewallKey+"PublicProfile|EnableFirewall"] = 0
+	r := run(f, allOn, time.Now())
+	if level(r, "lockdown") != Warn {
+		t.Fatalf("брандмауэр выключен — заслон жёлтый: %+v", r)
+	}
+	f = good()
+	f.ints[eventLogKey+"|MaxSize"] = 1 << 20
+	if r := run(f, allOn, time.Now()); level(r, "journal") != Info {
+		t.Fatal("малый журнал — справка")
+	}
+	f.ints[eventLogPolicy+"|MaxSize"] = 102400
+	if r := run(f, allOn, time.Now()); level(r, "journal") != OK {
+		t.Fatal("политика 100 МБ перекрывает локальный размер")
 	}
 }

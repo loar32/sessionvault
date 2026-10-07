@@ -598,6 +598,9 @@ Check ($r.win -ge 1 -and $r.winSession -ne 0) "окно тревоги пока�
 Write-Host "  снимок экрана: $env:TEMP\sv-alarm.png"
 Vm { Get-CimInstance Win32_Process -Filter "Name='sessionvault.exe'" | Where-Object { $_.CommandLine -like '* alert *' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force } } | Out-Null
 
+$r = Vm { WaitFor { -not (Test-Path C:\ProgramData\SessionVault\granted-sids.txt) } 30 }
+Check $r 'права рабочего стола от убитого тревогой помощника сняты (список granted-sids.txt пуст)'
+
 Write-Host '  после тревоги служба работает: хранилище заблокировано, запуск снова просит пароль'
 Vm { AsTester 'run7' "`"$exe`" run telegram" }
 Check (WaitPrompt) 'окно пароля после тревоги'
@@ -611,6 +614,24 @@ $r = Vm {
 }
 Check ($r.up -and $r.key -eq 'secret-session-data') 'после тревоги приложение снова запускается, данные целы'
 Vm { Stop-Process -Name standin -Force; WaitFor { (Files) -eq 'data.enc,vault.json' } 60 | Out-Null } | Out-Null
+
+Write-Host '  приманка: чтение через жёсткую ссылку и после переименования папки (учёт по FileId)'
+Start-Sleep 35
+$n0 = Vm { @(Get-Content C:\ProgramData\SessionVault\alerts.log -Encoding UTF8).Count }
+$r = Vm { param($d) AsTester 'hl0' "mklink /H `"$d\..\hl-key`" `"$d\key_datas`""; Done 'hl0' 30 | Out-Null; Out 'hl0' } @($dec)
+Check ($r -match 'EXIT=0') "жёсткая ссылка на файл приманки создана ($("$r" -replace '\s+',' '))"
+Vm { param($d) AsTester 'hl1' "copy `"$d\..\hl-key`" C:\sv\hl1.copy" } @($dec) | Out-Null
+$ok = Vm { param($n) WaitFor { @(Get-Content C:\ProgramData\SessionVault\alerts.log -Encoding UTF8).Count -gt $n } 30 } @($n0)
+Check $ok 'чтение приманки через жёсткую ссылку вызвало тревогу'
+Start-Sleep 35
+$n1 = Vm { @(Get-Content C:\ProgramData\SessionVault\alerts.log -Encoding UTF8).Count }
+$r = Vm { param($d) AsTester 'rn0' "ren `"$d`" tdata-moved"; Done 'rn0' 30 | Out-Null; Start-Sleep 12; @{ out = (Out 'rn0'); fresh = (Test-Path "$d\key_datas") } } @($dec)
+Check ($r.out -match 'EXIT=0' -and $r.fresh) 'папку приманки переименовали: на её месте сразу создана новая приманка'
+Start-Sleep 35
+Vm { param($d) AsTester 'rn1' "copy `"$(Split-Path $d)\tdata-moved\key_datas`" C:\sv\rn1.copy" } @($dec) | Out-Null
+$ok = Vm { param($n) WaitFor { @(Get-Content C:\ProgramData\SessionVault\alerts.log -Encoding UTF8).Count -gt $n } 30 } @($n1)
+Check $ok 'чтение приманки из переименованной папки вызвало тревогу'
+Vm { param($d) AsTester 'rn2' "rd /s /q `"$(Split-Path $d)\tdata-moved`" & del /q `"$(Split-Path $d)\hl-key`""; Done 'rn2' 30 | Out-Null } @($dec) | Out-Null
 
 function BrowserTest($app, $title, $exePath, $proc, $originRel, $required) {
     Write-Host "--- 14. браузер ${title}: protect, запуск от vault, шифрование, приманка ---"
@@ -852,7 +873,7 @@ $r = Vm {
     @{ tampered = $tampered; trusted = $trusted; trust = ($t -replace '\s+', ' '); bad1c = $bad1c; bad2c = $bad2c; bad3c = $bad3c; addc = $addc; noDiscordc = $noDiscordc; disc = $disc; refc = $refc
        bad1 = ($bad1 -replace '\s+', ' '); bad2 = ($bad2 -replace '\s+', ' '); bad3 = ($bad3 -replace '\s+', ' '); add = ($add -replace '\s+', ' ')
        custom = $custom; cfiles = ((Get-ChildItem C:\ProgramData\SessionVault\vault\custom -Name) -join ',')
-       moved = -not (Test-Path 'C:\Users\tester\AppData\Roaming\CustomApp')
+       moved = -not (Test-Path 'C:\Users\tester\AppData\Roaming\CustomApp\data.txt')
        noDiscord = ($noDiscord -replace '\s+', ' '); dis = ($dis -replace '\s+', ' '); ref = ($ref -replace '\s+', ' ')
        dexe = (Test-Path "$apps\Discord.exe"); asar = (Get-Content "$apps\resources\app.asar" -ErrorAction SilentlyContinue)
        dprofile = (Get-Content "$pdir\discord.json" -Raw -Encoding UTF8); dfiles = ((Get-ChildItem C:\ProgramData\SessionVault\vault\discord -Name | Where-Object { $_ -ne 'running.lock' }) -join ',') }
@@ -869,6 +890,51 @@ Check ($r.disc -eq 0 -and $r.dexe -and $r.dfiles -eq 'data.enc,vault.json') "pro
 Check ($r.dprofile -match '"source":' -and $r.dprofile -match '"sig":') 'профиль Discord записан с источником копии и подписью'
 Check ($r.refc -eq 0 -and ("$($r.asar)" -match 'asar-v2')) "refresh обновил копию Discord ($($r.ref))"
 
+Write-Host '  unprotect: снятие защиты с одного приложения'
+$r = Vm {
+    param($pw)
+    $sv = 'C:\sv\sessionvault.exe'
+    New-Item -ItemType Directory -Force 'C:\Users\tester\AppData\Roaming\TmpApp' | Out-Null
+    Set-Content 'C:\Users\tester\AppData\Roaming\TmpApp\data.txt' 'tmp-secret'
+    $env:SESSIONVAULT_SKIP_SIGNATURE = '1'
+    $a = $pw | & $sv add -yes -password-stdin -data data -arg '-workdir {data_path}\data' tmpapp C:\sv\standin.exe C:\Users\tester\AppData\Roaming\TmpApp 2>&1 | Out-String; $ac = $LASTEXITCODE
+    $u = $pw | & $sv unprotect -password-stdin tmpapp 2>&1 | Out-String; $uc = $LASTEXITCODE
+    $other = $pw | & $sv unprotect -password-stdin nosuchapp 2>&1 | Out-String; $oc = $LASTEXITCODE
+    @{ ac = $ac; uc = $uc; oc = $oc; u = ($u -replace '\s+', ' ')
+       back = (Get-Content 'C:\Users\tester\AppData\Roaming\TmpApp\data.txt' -ErrorAction SilentlyContinue)
+       vault = (Test-Path C:\ProgramData\SessionVault\vault\tmpapp); profile = (Test-Path C:\ProgramData\SessionVault\profiles\tmpapp.json)
+       cfg = ((Get-Content C:\ProgramData\SessionVault\config.json -Raw) -match 'tmpapp')
+       custom = (Test-Path C:\ProgramData\SessionVault\vault\custom\vault.json) }
+} @($MasterPassword)
+Check ($r.ac -eq 0 -and $r.uc -eq 0 -and $r.back -eq 'tmp-secret') "unprotect вернул данные приложения на прежнее место ($($r.u))"
+Check (-not $r.vault -and -not $r.profile -and -not $r.cfg) 'unprotect убрал хранилище, профиль и запись о пути'
+Check ($r.oc -ne 0 -and $r.custom) 'unprotect несуществующего приложения отказывает, остальные защищены'
+
+Write-Host '  export и import собственного приложения (add) вместе с профилем'
+$r = Vm {
+    param($pw)
+    $sv = 'C:\sv\sessionvault.exe'
+    $o = 'C:\Users\tester\AppData\Roaming\MoveApp'
+    New-Item -ItemType Directory -Force $o | Out-Null
+    Set-Content "$o\data.txt" 'move-secret'
+    $env:SESSIONVAULT_SKIP_SIGNATURE = '1'
+    $a = $pw | & $sv add -yes -password-stdin -data data -arg '-workdir {data_path}\data' moveapp C:\sv\standin.exe $o 2>&1 | Out-String; $ac = $LASTEXITCODE
+    Remove-Item C:\sv\moveapp.svx -ErrorAction SilentlyContinue
+    $e = & $sv export moveapp C:\sv\moveapp.svx 2>&1 | Out-String; $ec = $LASTEXITCODE
+    $un = $pw | & $sv unprotect -password-stdin moveapp 2>&1 | Out-String; $uc = $LASTEXITCODE
+    $noExe = $pw | & $sv import -password-stdin C:\sv\moveapp.svx 2>&1 | Out-String; $nc = $LASTEXITCODE
+    $imp = $pw | & $sv import -yes -exe C:\sv\standin.exe -password-stdin C:\sv\moveapp.svx 2>&1 | Out-String; $ic = $LASTEXITCODE
+    $pj = Get-Content C:\ProgramData\SessionVault\profiles\moveapp.json -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+    @{ ac = $ac; ec = $ec; uc = $uc; nc = $nc; ic = $ic; noExe = ($noExe -replace '\s+', ' '); imp = ($imp -replace '\s+', ' ')
+       files = ((Get-ChildItem C:\ProgramData\SessionVault\vault\moveapp -Name -ErrorAction SilentlyContinue | Where-Object { $_ -ne 'running.lock' }) -join ',')
+       profile = $pj; copy = (Test-Path 'C:\Program Files\SessionVault\apps\moveapp\standin.exe') }
+} @($MasterPassword)
+Check ($r.ac -eq 0 -and $r.ec -eq 0 -and $r.uc -eq 0) 'add, export и unprotect собственного приложения прошли'
+Check ($r.nc -ne 0 -and $r.noExe -match '-exe') "import без -exe отказывает и подсказывает, что нужен путь ($($r.noExe))"
+Check ($r.ic -eq 0 -and $r.files -eq 'data.enc,vault.json') "import с -exe восстановил хранилище ($($r.imp); $($r.files))"
+Check ($r.profile -match '"custom": true' -and $r.profile -match '"sig":' -and $r.profile -match '"decoy": "generic"' -and $r.copy) 'профиль из файла записан как собственный, подписан, exe скопирован под vault'
+Vm { Remove-Item C:\sv\moveapp.svx -ErrorAction SilentlyContinue } | Out-Null
+
 # Проверка защиты: отчёт приходит от службы, check.json для обычной учётки закрыт.
 $r = Vm {
     AsTester 'ck' '"C:\Program Files\SessionVault\sessionvault.exe" check -json'
@@ -880,7 +946,7 @@ $r = Vm {
 }
 $rep = try { $r.json | ConvertFrom-Json } catch { $null }
 $ids = if ($rep) { ($rep.items | ForEach-Object { $_.id }) -join ',' } else { '' }
-Check ($rep -and $ids -match 'user,windows,defender,bitlocker,hvci,secureboot,blocklist,asr,audit,harden,hello,lockdown,extensions,memory,telegram,clickfix') "check -json: отчёт от службы со всеми пунктами ($ids)"
+Check ($rep -and $ids -match 'user,windows,defender,bitlocker,hvci,secureboot,blocklist,asr,audit,harden,hello,lockdown,extensions,memory,journal,copies,telegram,clickfix') "check -json: отчёт от службы со всеми пунктами ($ids)"
 Check ($rep -and ($rep.items | Where-Object { $_.id -eq 'user' }).level -eq 'ok' -and ($rep.items | Where-Object { $_.id -eq 'audit' }).level -eq 'ok') "check: основная учётка не админ, аудит работает"
 Check ($rep -and ($rep.items | Where-Object { $_.id -eq 'hvci' }).level -eq 'warn') "check: выключенная HVCI найдена (жёлтый пункт)"
 Check ($r.saved -and $r.file -notmatch 'items') "check.json создан и недоступен обычной учётке"

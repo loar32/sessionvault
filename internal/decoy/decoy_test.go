@@ -1,6 +1,7 @@
 package decoy
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -27,7 +28,7 @@ func setup(t *testing.T) (string, *windows.SID) {
 
 func TestEnsureCreatesStructure(t *testing.T) {
 	path, sid := setup(t)
-	created, err := Ensure("telegram", "telegram", path, sid, time.Hour)
+	created, err := Ensure("telegram", "telegram", path, sid, time.Hour, 0)
 	if err != nil || !created {
 		t.Fatalf("created=%v err=%v", created, err)
 	}
@@ -40,18 +41,18 @@ func TestEnsureCreatesStructure(t *testing.T) {
 			t.Errorf("%s: размер %d вне %d..%d", f.name, fi.Size(), f.min, f.max)
 		}
 	}
-	if created, err = Ensure("telegram", "telegram", path, sid, time.Hour); err != nil || created {
+	if created, err = Ensure("telegram", "telegram", path, sid, time.Hour, 0); err != nil || created {
 		t.Fatalf("повтор: created=%v err=%v", created, err)
 	}
 }
 
 func TestEnsureRefreshes(t *testing.T) {
 	path, sid := setup(t)
-	if _, err := Ensure("telegram", "telegram", path, sid, time.Hour); err != nil {
+	if _, err := Ensure("telegram", "telegram", path, sid, time.Hour, 0); err != nil {
 		t.Fatal(err)
 	}
 	before, _ := os.ReadFile(filepath.Join(path, "usertag"))
-	created, err := Ensure("telegram", "telegram", path, sid, 0)
+	created, err := Ensure("telegram", "telegram", path, sid, 0, 0)
 	if err != nil || !created {
 		t.Fatalf("created=%v err=%v", created, err)
 	}
@@ -69,7 +70,7 @@ func TestEnsureKeepsForeignData(t *testing.T) {
 	if err := os.WriteFile(real, []byte("настоящее"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Ensure("telegram", "telegram", path, sid, 0); !errors.Is(err, ErrForeign) {
+	if _, err := Ensure("telegram", "telegram", path, sid, 0, 0); !errors.Is(err, ErrForeign) {
 		t.Fatalf("ожидался ErrForeign, получено %v", err)
 	}
 	if b, _ := os.ReadFile(real); string(b) != "настоящее" {
@@ -85,20 +86,20 @@ func TestEnsureKeepsForeignData(t *testing.T) {
 
 func TestForeignFileInsideOurDecoy(t *testing.T) {
 	path, sid := setup(t)
-	if _, err := Ensure("telegram", "telegram", path, sid, time.Hour); err != nil {
+	if _, err := Ensure("telegram", "telegram", path, sid, time.Hour, 0); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(path, "new"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Ensure("telegram", "telegram", path, sid, 0); !errors.Is(err, ErrForeign) {
+	if _, err := Ensure("telegram", "telegram", path, sid, 0, 0); !errors.Is(err, ErrForeign) {
 		t.Fatalf("ожидался ErrForeign, получено %v", err)
 	}
 }
 
 func TestRemoveOurs(t *testing.T) {
 	path, sid := setup(t)
-	if _, err := Ensure("telegram", "telegram", path, sid, time.Hour); err != nil {
+	if _, err := Ensure("telegram", "telegram", path, sid, time.Hour, 0); err != nil {
 		t.Fatal(err)
 	}
 	if err := Remove("telegram", path); err != nil {
@@ -114,13 +115,13 @@ func TestKnownSurvivesForeignFile(t *testing.T) {
 	if Known("telegram", path) {
 		t.Fatal("приманка известна до создания")
 	}
-	if _, err := Ensure("telegram", "telegram", path, sid, time.Hour); err != nil {
+	if _, err := Ensure("telegram", "telegram", path, sid, time.Hour, 0); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(path, "x.txt"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Ensure("telegram", "telegram", path, sid, 0); !errors.Is(err, ErrForeign) {
+	if _, err := Ensure("telegram", "telegram", path, sid, 0, 0); !errors.Is(err, ErrForeign) {
 		t.Fatalf("ожидался ErrForeign, получено %v", err)
 	}
 	if !Known("telegram", path) {
@@ -131,7 +132,7 @@ func TestKnownSurvivesForeignFile(t *testing.T) {
 func TestChromiumLayout(t *testing.T) {
 	_, sid := setup(t)
 	path := filepath.Join(t.TempDir(), "Chrome", "User Data")
-	created, err := Ensure("chrome", "chromium", path, sid, time.Hour)
+	created, err := Ensure("chrome", "chromium", path, sid, time.Hour, 0)
 	if err != nil || !created {
 		t.Fatalf("created=%v err=%v", created, err)
 	}
@@ -148,7 +149,7 @@ func TestChromiumLayout(t *testing.T) {
 		}
 	}
 	// Своя приманка с вложенными папками (Default, Default\Network) не должна считаться чужой.
-	if created, err = Ensure("chrome", "chromium", path, sid, time.Hour); err != nil || created {
+	if created, err = Ensure("chrome", "chromium", path, sid, time.Hour, 0); err != nil || created {
 		t.Fatalf("повтор: created=%v err=%v", created, err)
 	}
 	if err := Remove("chrome", path); err != nil {
@@ -158,20 +159,20 @@ func TestChromiumLayout(t *testing.T) {
 
 func TestUnknownKind(t *testing.T) {
 	path, sid := setup(t)
-	if _, err := Ensure("x", "firefox", path, sid, time.Hour); !errors.Is(err, ErrKind) {
+	if _, err := Ensure("x", "firefox", path, sid, time.Hour, 0); !errors.Is(err, ErrKind) {
 		t.Fatalf("ждали ErrKind, получили %v", err)
 	}
 }
 
 func TestOverwrittenDecoyFileIsForeign(t *testing.T) {
 	path, sid := setup(t)
-	if _, err := Ensure("telegram", "telegram", path, sid, time.Hour); err != nil {
+	if _, err := Ensure("telegram", "telegram", path, sid, time.Hour, 0); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(path, "key_datas"), []byte("real session"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Ensure("telegram", "telegram", path, sid, 0); !errors.Is(err, ErrForeign) {
+	if _, err := Ensure("telegram", "telegram", path, sid, 0, 0); !errors.Is(err, ErrForeign) {
 		t.Fatalf("ожидался ErrForeign, получено %v", err)
 	}
 	if err := Remove("telegram", path); !errors.Is(err, ErrForeign) {
@@ -179,5 +180,26 @@ func TestOverwrittenDecoyFileIsForeign(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(filepath.Join(path, "key_datas")); string(b) != "real session" {
 		t.Fatal("чужие данные затронуты")
+	}
+}
+
+func TestJSONFilesAreValid(t *testing.T) {
+	for kind, files := range map[string][]string{
+		"chromium": {"Local State", `Default\Preferences`},
+		"discord":  {"Local State", "Preferences", "settings.json"},
+	} {
+		path, sid := setup(t)
+		if _, err := Ensure(kind, kind, path, sid, time.Hour, 0); err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range files {
+			b, err := os.ReadFile(filepath.Join(path, f))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !json.Valid(b) {
+				t.Errorf("%s %s: не JSON", kind, f)
+			}
+		}
 	}
 }

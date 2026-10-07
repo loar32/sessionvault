@@ -27,6 +27,7 @@ const (
 	alarmLatch   = 10 * time.Minute
 	alarmDedup   = 30 * time.Second
 	eventQueue   = 256
+	maxDecoyKeys = 4096
 )
 
 func AlertsPath() string { return filepath.Join(isolation.BaseDir(), "alerts.log") }
@@ -35,6 +36,11 @@ func AlertsPath() string { return filepath.Join(isolation.BaseDir(), "alerts.log
 func (s *Service) StartTraps() {
 	if err := isolation.EnablePrivileges("SeSecurityPrivilege", "SeRestorePrivilege", "SeTakeOwnershipPrivilege"); err != nil {
 		s.log.Println("привилегии для аудита:", err)
+	}
+	if ev, err := windows.CreateEvent(nil, 1, 0, nil); err == nil {
+		s.stopEvt = ev
+	} else {
+		s.log.Println("событие остановки:", err)
 	}
 	s.allow = newAllowlist(s.cfg.DecoyAllow, s.log.Printf)
 	s.ensureAudit()
@@ -46,7 +52,13 @@ func (s *Service) StartTraps() {
 		s.stopAudit = stop
 	}
 	go s.trapWorker()
+	go s.purgeACL()
+	go s.cleanExchange()
+	s.loadMemoryHistory()
 	go s.memWorker()
+	if s.port != 0 {
+		go s.jobPortWorker()
+	}
 	go s.trapLoop()
 }
 
@@ -55,6 +67,12 @@ func (s *Service) stopTraps() {
 		close(s.quit)
 		if s.syncEvent != 0 {
 			_ = windows.SetEvent(s.syncEvent)
+		}
+		if s.stopEvt != 0 {
+			_ = windows.SetEvent(s.stopEvt)
+		}
+		if s.port != 0 {
+			_ = windows.PostQueuedCompletionStatus(s.port, 0, portQuitKey, nil)
 		}
 	})
 	if s.stopAudit != nil {
@@ -125,6 +143,11 @@ func (s *Service) syncDecoys() {
 		s.log.Println("приманка:", err)
 		return
 	}
+	// Приманку создают с правами пользователя; если он не вошёл, остаётся наблюдение за уже лежащими.
+	tok, tokErr := isolation.UserToken(user)
+	if tokErr == nil {
+		defer func() { _ = tok.Close() }()
+	}
 	watch := map[string]bool{}
 	for name, origin := range cfg.Origins {
 		// Пока data.enc не записан, импорт не закончен: при его откате данные должны вернуться на это место.
@@ -135,7 +158,14 @@ func (s *Service) syncDecoys() {
 		if err != nil || p.Decoy == "" {
 			continue
 		}
-		created, err := decoy.Ensure(name, p.Decoy, origin, user, decoyRefresh)
+		_, statErr := os.Stat(origin)
+		existed := statErr == nil
+		var created bool
+		if tokErr == nil {
+			created, err = decoy.Ensure(name, p.Decoy, origin, user, decoyRefresh, tok)
+		} else if !existed || !decoy.Known(name, origin) {
+			continue
+		}
 		foreign := errors.Is(err, decoy.ErrForeign)
 		switch {
 		case foreign && !decoy.Known(name, origin):
@@ -166,6 +196,10 @@ func (s *Service) syncDecoys() {
 		if created {
 			s.log.Printf("приманка %s создана: %s", name, origin)
 		}
+		s.rememberKeys(name, origin, created && existed)
+		if s.stopEvt != 0 {
+			s.watchParent(origin)
+		}
 		// Журнал пишет объект то с буквой диска, то в формате устройства: ждём обе записи.
 		watch[origin] = true
 		if nt, err := audit.NTPath(origin); err == nil {
@@ -175,6 +209,55 @@ func (s *Service) syncDecoys() {
 	s.trapMu.Lock()
 	s.watch = watch
 	s.trapMu.Unlock()
+}
+
+// Ключи файлов приманки копятся: после переименования папки или жёсткой ссылки журнал называет объект другим путём,
+// а ключ остаётся прежним. При обновлении приманки старые файлы удалены, их ключи могут достаться чужим файлам — сбрасываем.
+func (s *Service) rememberKeys(name, origin string, refreshed bool) {
+	keys, err := audit.TreeKeys(origin)
+	if err != nil {
+		s.log.Printf("ключи приманки %s: %v", name, err)
+		return
+	}
+	s.trapMu.Lock()
+	defer s.trapMu.Unlock()
+	if s.watchKeys == nil {
+		s.watchKeys = map[string]map[audit.FileKey]bool{}
+	}
+	old := s.watchKeys[name]
+	if refreshed || len(old) > maxDecoyKeys {
+		old = nil
+	}
+	if old == nil {
+		old = map[audit.FileKey]bool{}
+	}
+	for k := range keys {
+		old[k] = true
+	}
+	s.watchKeys[name] = old
+}
+
+// Объект журнала вне наблюдаемых путей может оказаться приманкой под другим именем.
+func (s *Service) watchedByKey(r audit.Read) bool {
+	if r.Type != "File" {
+		return false
+	}
+	path, ok := audit.DOSPath(r.Object)
+	if !ok {
+		return false
+	}
+	k, err := audit.FileID(path)
+	if err != nil {
+		return false
+	}
+	s.trapMu.Lock()
+	defer s.trapMu.Unlock()
+	for _, keys := range s.watchKeys {
+		if keys[k] {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) watched(object string) bool {
@@ -239,7 +322,7 @@ func (s *Service) handleRead(r audit.Read) {
 		}
 	}()
 	// Сама служба читает приманку при проверке (список файлов) — это не тревога.
-	if !s.watchedLong(r.Object) || strings.EqualFold(r.Process, s.exe) || s.allow.allowed(r.Process, r.PID) {
+	if strings.EqualFold(r.Process, s.exe) || (!s.watchedLong(r.Object) && !s.watchedByKey(r)) || s.allow.allowed(r.Process, r.PID) {
 		return
 	}
 	// Один разбор на серию чтений: окно, звук и журнал не должны множиться, если процесс порождает потомков.
@@ -265,14 +348,21 @@ func (s *Service) alarmed() bool {
 // Сначала гасим приложения — это единственное, что нельзя откладывать; остальное (хэш, журнал, окно) уже не торопится.
 // Ключи стираем только после шифрования: оно идёт на тех же ключах.
 func (s *Service) alarm(r audit.Read) {
+	s.mu.Lock()
+	s.alarmGen++
+	s.mu.Unlock()
 	s.killApps()
 	go func() {
 		s.wg.Wait()
 		s.mu.Lock()
-		if len(s.running) == 0 && !s.prompting {
+		idle := len(s.running) == 0
+		if idle && !s.prompting {
 			s.lock()
 		}
 		s.mu.Unlock()
+		if idle {
+			s.purgeACL()
+		}
 	}()
 
 	info := alert.Info{Process: r.Process, PID: r.PID, SHA256: fileHash(r.Process), Object: r.Object, Time: time.Now()}
@@ -305,6 +395,7 @@ func (s *Service) killApps() {
 		_ = windows.TerminateJobObject(s.jobHandle(), 1)
 		return
 	}
+	s.attachJob(fresh)
 	s.mu.Lock()
 	old := s.job
 	s.job = fresh
@@ -350,4 +441,21 @@ func localFixed(path string) bool {
 	}
 	root, err := windows.UTF16PtrFromString(path[:3])
 	return err == nil && windows.GetDriveType(root) == windows.DRIVE_FIXED
+}
+
+// Права на рабочий стол, которые снять некому (помощник запуска убит тревогой или остановкой службы), снимает помощник в сеансе пользователя.
+func (s *Service) purgeACL() {
+	if !isolation.HasStaleACL() {
+		return
+	}
+	session := windows.WTSGetActiveConsoleSessionId()
+	if session == 0xFFFFFFFF {
+		return
+	}
+	_, proc, _, err := isolation.StartInSession(session, fmt.Sprintf(`"%s" purge-acl`, s.exe), false)
+	if err != nil {
+		s.log.Println("снятие прав рабочего стола:", err)
+		return
+	}
+	_ = windows.CloseHandle(proc)
 }

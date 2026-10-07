@@ -65,10 +65,12 @@ func protectedRoots() []string {
 type allowlist struct {
 	entries []Allow
 	signer  func(string) (string, error)
+	modules func(pid uint32) ([]string, error) // загруженные в процесс модули; nil — образ не проверяется
+	images  *imageCache
 }
 
 func newAllowlist(extra []Allow, log func(string, ...any)) allowlist {
-	a := allowlist{entries: defaultAllow(), signer: audit.Signer}
+	a := allowlist{entries: defaultAllow(), signer: audit.Signer, modules: audit.LoadedModules, images: &imageCache{}}
 	for _, e := range extra {
 		if e.Path == "" || (e.Publisher == "" && !within(e.Path, protectedRoots())) {
 			log("белый список: запись %q отклонена (нужен издатель или каталог Windows/Program Files)", e.Path)
@@ -89,10 +91,10 @@ func (a allowlist) allowed(process string, pid uint32) bool {
 			continue
 		}
 		if e.Publisher == "" {
-			return true
+			return a.imageClean(process, pid)
 		}
 		if name, err := a.signer(process); err == nil && strings.EqualFold(name, e.Publisher) {
-			return true
+			return a.imageClean(process, pid)
 		}
 	}
 	return false

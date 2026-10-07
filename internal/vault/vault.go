@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/loar32/sessionvault/internal/crypto"
@@ -112,6 +113,24 @@ func (v Vault) readMeta() (meta, error) {
 	return m, nil
 }
 
+// metaMu не даёт двум изменениям vault.json в одном процессе затереть друг друга: Encrypt при закрытии приложения,
+// включение Hello или FIDO и смена пароля читают файл, правят свою часть и пишут его целиком.
+var metaMu sync.Mutex
+
+// updateMeta читает vault.json, применяет изменение и записывает; всё под одной блокировкой.
+func (v Vault) updateMeta(change func(m *meta) error) error {
+	metaMu.Lock()
+	defer metaMu.Unlock()
+	m, err := v.readMeta()
+	if err != nil {
+		return err
+	}
+	if err := change(&m); err != nil {
+		return err
+	}
+	return v.writeMeta(m)
+}
+
 func (v Vault) writeMeta(m meta) error {
 	b, err := json.Marshal(m)
 	if err != nil {
@@ -200,19 +219,33 @@ func (m meta) recoveryAAD() []byte { return append([]byte("sv-recovery-v1"), m.a
 
 // SetRecovery обёртывает dek ключом восстановления; прежний слот заменяется.
 func (v Vault) SetRecovery(dek, key []byte) error {
-	m, err := v.readMeta()
-	if err != nil {
+	return v.updateMeta(func(m *meta) (err error) {
+		kek, err := crypto.DeriveRecoveryKey(key, m.Salt)
+		if err != nil {
+			return err
+		}
+		defer crypto.Wipe(kek)
+		m.Recovery, err = crypto.SealAAD(kek, dek, m.recoveryAAD())
 		return err
-	}
-	kek, err := crypto.DeriveRecoveryKey(key, m.Salt)
-	if err != nil {
-		return err
-	}
-	defer crypto.Wipe(kek)
-	if m.Recovery, err = crypto.SealAAD(kek, dek, m.recoveryAAD()); err != nil {
-		return err
-	}
-	return v.writeMeta(m)
+	})
+}
+
+// RemoveRecovery убирает слот ключа восстановления у одного хранилища (ключ перестаёт его открывать).
+func (v Vault) RemoveRecovery() error {
+	return v.updateMeta(func(m *meta) error {
+		m.Recovery = nil
+		return nil
+	})
+}
+
+// MetaBytes — vault.json как есть: точка отката для операций, которые меняют несколько хранилищ.
+func (v Vault) MetaBytes() ([]byte, error) { return os.ReadFile(v.path(metaFile)) }
+
+// RestoreMeta возвращает vault.json, снятый MetaBytes.
+func (v Vault) RestoreMeta(b []byte) error {
+	metaMu.Lock()
+	defer metaMu.Unlock()
+	return writeAtomic(v.path(metaFile), b)
 }
 
 func (v Vault) HasRecovery() bool {
@@ -242,17 +275,13 @@ func (v Vault) UnlockRecovery(key []byte) ([]byte, error) {
 
 // SetPassword меняет мастер-пароль. Соль и параметры остаются прежними: от них зависят слоты Hello и восстановления.
 func (v Vault) SetPassword(dek, password []byte) error {
-	m, err := v.readMeta()
-	if err != nil {
+	return v.updateMeta(func(m *meta) (err error) {
+		kek := crypto.DeriveKey(password, m.Salt, m.Params)
+		defer crypto.Wipe(kek)
+		m.Version = metaV2
+		m.WrappedDEK, err = crypto.SealAAD(kek, dek, m.aad())
 		return err
-	}
-	kek := crypto.DeriveKey(password, m.Salt, m.Params)
-	defer crypto.Wipe(kek)
-	m.Version = metaV2
-	if m.WrappedDEK, err = crypto.SealAAD(kek, dek, m.aad()); err != nil {
-		return err
-	}
-	return v.writeMeta(m)
+	})
 }
 
 // HelloInfo — имя ключа Hello и challenge, если вход через Hello включён.
@@ -275,21 +304,19 @@ func (v Vault) FidoInfo() (credID, salt []byte, ok bool) {
 
 // EnableFido добавляет слот ключа FIDO2: dek оборачивается ключом из secret (hmac-secret для credID и salt).
 func (v Vault) EnableFido(dek, credID, salt, secret []byte) error {
-	m, err := v.readMeta()
-	if err != nil {
-		return err
-	}
-	kek, err := crypto.DeriveFidoKey(secret)
-	if err != nil {
-		return err
-	}
-	defer crypto.Wipe(kek)
-	w, err := crypto.SealAAD(kek, dek, m.fidoAAD(credID, salt))
-	if err != nil {
-		return err
-	}
-	m.Fido = &fidoSlot{CredID: credID, Salt: salt, WrappedDEK: w}
-	return v.writeMeta(m)
+	return v.updateMeta(func(m *meta) error {
+		kek, err := crypto.DeriveFidoKey(secret)
+		if err != nil {
+			return err
+		}
+		defer crypto.Wipe(kek)
+		w, err := crypto.SealAAD(kek, dek, m.fidoAAD(credID, salt))
+		if err != nil {
+			return err
+		}
+		m.Fido = &fidoSlot{CredID: credID, Salt: salt, WrappedDEK: w}
+		return nil
+	})
 }
 
 func (v Vault) UnlockFido(secret []byte) ([]byte, error) {
@@ -314,34 +341,27 @@ func (v Vault) UnlockFido(secret []byte) ([]byte, error) {
 
 // DisableFido убирает слот ключа FIDO2; пароль, Hello и ключ восстановления продолжают работать.
 func (v Vault) DisableFido() error {
-	m, err := v.readMeta()
-	if err != nil {
-		return err
-	}
-	if m.Fido == nil {
+	return v.updateMeta(func(m *meta) error {
+		m.Fido = nil
 		return nil
-	}
-	m.Fido = nil
-	return v.writeMeta(m)
+	})
 }
 
 // EnableHello добавляет слот Hello: dek оборачивается ключом из secret (подписи challenge).
 func (v Vault) EnableHello(dek []byte, name string, challenge, secret []byte) error {
-	m, err := v.readMeta()
-	if err != nil {
-		return err
-	}
-	kek, err := crypto.DeriveHelloKey(secret)
-	if err != nil {
-		return err
-	}
-	defer crypto.Wipe(kek)
-	w, err := crypto.SealAAD(kek, dek, m.helloAAD(name, challenge))
-	if err != nil {
-		return err
-	}
-	m.Hello = &helloSlot{Name: name, Challenge: challenge, WrappedDEK: w}
-	return v.writeMeta(m)
+	return v.updateMeta(func(m *meta) error {
+		kek, err := crypto.DeriveHelloKey(secret)
+		if err != nil {
+			return err
+		}
+		defer crypto.Wipe(kek)
+		w, err := crypto.SealAAD(kek, dek, m.helloAAD(name, challenge))
+		if err != nil {
+			return err
+		}
+		m.Hello = &helloSlot{Name: name, Challenge: challenge, WrappedDEK: w}
+		return nil
+	})
 }
 
 // UnlockHello открывает DEK ключом из подписи Hello.
@@ -367,15 +387,10 @@ func (v Vault) UnlockHello(secret []byte) ([]byte, error) {
 
 // DisableHello убирает слот Hello; пароль продолжает работать.
 func (v Vault) DisableHello() error {
-	m, err := v.readMeta()
-	if err != nil {
-		return err
-	}
-	if m.Hello == nil {
+	return v.updateMeta(func(m *meta) error {
+		m.Hello = nil
 		return nil
-	}
-	m.Hello = nil
-	return v.writeMeta(m)
+	})
 }
 
 // Открытая папка → data.enc. Порядок важен при сбое: пока data.enc не заменён, маркер и открытая копия целы;
@@ -417,9 +432,13 @@ func (v Vault) Encrypt(dek []byte) error {
 		return err
 	}
 	// Сбой между двумя записями оставляет data.enc с номером на единицу больше: Decrypt такое принимает и подтягивает номер.
+	// Файл перечитывается: пока шло шифрование, могли включить Hello или сменить пароль, и записать устаревшую копию нельзя.
 	if m.Version != 1 {
-		m.Counter++
-		if err := v.writeMeta(m); err != nil {
+		counter := m.Counter + 1
+		if err := v.updateMeta(func(cur *meta) error {
+			cur.Counter = counter
+			return nil
+		}); err != nil {
 			return err
 		}
 	}

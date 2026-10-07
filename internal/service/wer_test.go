@@ -28,7 +28,7 @@ func TestWerExclude(t *testing.T) {
 	}
 	const exe = "svtest-wer.exe"
 	name, _ := windows.UTF16PtrFromString(exe)
-	defer pWerRemove.Call(uintptr(unsafe.Pointer(name)), 1)
+	defer func() { _, _, _ = pWerRemove.Call(uintptr(unsafe.Pointer(name)), 1) }()
 	werExclude(`C:\x\` + exe)
 	if !werHas(t, exe) {
 		t.Fatal("исключение WER не записано")

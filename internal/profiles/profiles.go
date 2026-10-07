@@ -178,7 +178,7 @@ func load(dir, name string) (Profile, error) {
 	if p.Name != name || !filepath.IsAbs(p.Exe) || !filepath.IsLocal(p.DataDir) || (p.Origin != "" && !filepath.IsLocal(p.Origin)) {
 		return Profile{}, fmt.Errorf("профиль %q повреждён", name)
 	}
-	if p.Decoy != "" && p.Decoy != "telegram" && p.Decoy != "chromium" && p.Decoy != "discord" {
+	if p.Decoy != "" && p.Decoy != "telegram" && p.Decoy != "chromium" && p.Decoy != "discord" && p.Decoy != "generic" {
 		return Profile{}, fmt.Errorf("профиль %q: неизвестная раскладка приманки %q", name, p.Decoy)
 	}
 	for _, x := range p.Exclude {

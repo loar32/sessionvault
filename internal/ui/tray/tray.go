@@ -6,6 +6,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -77,6 +78,7 @@ const (
 	idHello       = 1050
 	idRecovery    = 1051
 	idFido        = 1052
+	idClose       = 1020 // и далее по одному на запущенное приложение (до 1035)
 	idCheck       = 1060
 	idExchange    = 1061
 	idExit        = 1100
@@ -152,6 +154,7 @@ var (
 	state       = stateDown
 	taskbarMsg  uintptr
 	menuApps    []string
+	menuRunning []string
 	stateTitles = [4]string{"SessionVault: служба недоступна", "SessionVault: заблокировано", "SessionVault: открыто", "SessionVault: ТРЕВОГА, прочитана приманка"}
 )
 
@@ -285,6 +288,9 @@ func poll() {
 			s = stateAlarm
 		}
 		_, _, _ = pPostMessage.Call(hwnd, wmState, uintptr(s), 0)
+		if s != stateDown {
+			refreshApps()
+		}
 		// Первый ответ службы после запуска трея: окно проверки при красных пунктах, один раз за учётку.
 		if s != stateDown && !autoChecked {
 			autoChecked = true
@@ -308,6 +314,18 @@ var runMessages = map[string]string{
 
 var checking atomic.Bool
 
+// Разные причины требуют разных действий: остановленную службу запускают, занятой дают время.
+func serviceItem(err error) checkup.Item {
+	it := checkup.Item{Title: "Служба SessionVault", Level: checkup.Bad, Detail: "не отвечает (занята)", Hint: "Повторите через минуту"}
+	switch {
+	case errors.Is(err, windows.ERROR_FILE_NOT_FOUND):
+		it.Detail, it.Hint = "остановлена", "Запустите службу SessionVault (services.msc) или перезагрузите компьютер"
+	case errors.Is(err, windows.ERROR_ACCESS_DENIED):
+		it.Detail, it.Hint = "нет доступа", "Запускать трей нужно из основной учётки, для которой установлена защита"
+	}
+	return it
+}
+
 // Проверка идёт до 15 с, поэтому в отдельной горутине; повторный клик за это время ничего не запускает.
 func checkProtection() {
 	if !checking.CompareAndSwap(false, true) {
@@ -316,7 +334,7 @@ func checkProtection() {
 	defer checking.Store(false)
 	r, err := checkwin.Fetch()
 	if err != nil {
-		r = checkup.Report{Overall: checkup.Bad, Items: []checkup.Item{{Title: "Служба SessionVault", Level: checkup.Bad, Detail: "недоступна", Hint: "Проверьте, что служба запущена, и повторите"}}}
+		r = checkup.Report{Overall: checkup.Bad, Items: []checkup.Item{serviceItem(err)}}
 	}
 	checkwin.Show(r)
 }
@@ -414,8 +432,10 @@ func appTitle(name string) string {
 }
 
 // Приложения с хранилищем спрашиваем у службы: у обычной учётки нет доступа к её папкам.
-func protectedApps() []string {
-	resp, err := ipc.Call(ipc.CommandPipe, "list", 2*time.Second)
+func protectedApps() []string { return askNames("list") }
+
+func askNames(cmd string) []string {
+	resp, err := ipc.Call(ipc.CommandPipe, cmd, 2*time.Second)
 	if err != nil || resp == "" {
 		return nil
 	}
@@ -428,17 +448,45 @@ func protectedApps() []string {
 	return apps
 }
 
+// Меню открывается из потока окна: запрос к службе прямо там подвесил бы интерфейс до двух секунд, поэтому списки
+// приложений обновляет опрос состояния, а меню берёт последние.
+var (
+	appsMu        sync.Mutex
+	cachedApps    []string
+	cachedRunning []string
+)
+
+func refreshApps() {
+	apps, running := protectedApps(), askNames("running")
+	appsMu.Lock()
+	cachedApps, cachedRunning = apps, running
+	appsMu.Unlock()
+}
+
+func closeApp(profile string) {
+	speedUp()
+	defer speedUp()
+	if resp, err := ipc.Call(ipc.CommandPipe, "close "+profile, 15*time.Second); err != nil || resp != ipc.Ok {
+		_, _, _ = pPostMessage.Call(hwnd, wmBalloon, 9, 0)
+	}
+}
+
 func showMenu() {
 	menu, _, _ := pCreatePopupMenu.Call()
 	defer func() { _, _, _ = pDestroyMenu.Call(menu) }()
 	_, _, _ = pAppendMenu.Call(menu, mfString|mfGrayed, 0, uintptr(unsafe.Pointer(wstr(stateTitles[state]))))
 	_, _, _ = pAppendMenu.Call(menu, mfSeparator, 0, 0)
-	menuApps = protectedApps()
+	appsMu.Lock()
+	menuApps, menuRunning = cachedApps, cachedRunning
+	appsMu.Unlock()
 	if len(menuApps) == 0 {
 		_, _, _ = pAppendMenu.Call(menu, mfString|mfGrayed, 0, uintptr(unsafe.Pointer(wstr("Нет защищённых приложений"))))
 	}
 	for i, name := range menuApps {
 		_, _, _ = pAppendMenu.Call(menu, mfString, uintptr(idRun+i), uintptr(unsafe.Pointer(wstr("Запустить "+appTitle(name)))))
+	}
+	for i, name := range menuRunning {
+		_, _, _ = pAppendMenu.Call(menu, mfString, uintptr(idClose+i), uintptr(unsafe.Pointer(wstr("Закрыть "+appTitle(name)+" и зашифровать данные"))))
 	}
 	_, _, _ = pAppendMenu.Call(menu, mfSeparator, 0, 0)
 	if len(menuApps) > 0 {
@@ -447,7 +495,11 @@ func showMenu() {
 		_, _, _ = pAppendMenu.Call(menu, mfString, idRecovery, uintptr(unsafe.Pointer(wstr("Создать ключ восстановления…"))))
 	}
 	_, _, _ = pAppendMenu.Call(menu, mfString, idExchange, uintptr(unsafe.Pointer(wstr("Папка обмена с защищёнными приложениями"))))
-	_, _, _ = pAppendMenu.Call(menu, mfString, idCheck, uintptr(unsafe.Pointer(wstr("Проверить защиту"))))
+	checkLabel, checkFlags := "Проверить защиту", uintptr(mfString)
+	if checking.Load() {
+		checkLabel, checkFlags = "Проверка защиты…", mfString|mfGrayed
+	}
+	_, _, _ = pAppendMenu.Call(menu, checkFlags, idCheck, uintptr(unsafe.Pointer(wstr(checkLabel))))
 	_, _, _ = pAppendMenu.Call(menu, mfString, idExit, uintptr(unsafe.Pointer(wstr("Выход"))))
 	var p point
 	_, _, _ = pGetCursorPos.Call(uintptr(unsafe.Pointer(&p)))
@@ -474,7 +526,8 @@ func wndProc(h, message, wparam, lparam uintptr) uintptr {
 		texts := map[uintptr]string{1: runMessages[ipc.Failed], 2: "Служба SessionVault недоступна", 3: runMessages[ipc.Busy],
 			4: "Вход через Windows Hello включён", 5: "Не удалось включить Windows Hello",
 			6: "Windows Hello не настроен: добавьте PIN, лицо или отпечаток в Параметрах Windows",
-			7: "Вход по ключу FIDO2 включён", 8: "Не удалось включить вход по ключу FIDO2: нужны Windows 11, ключ с hmac-secret и PIN ключа"}
+			7: "Вход по ключу FIDO2 включён", 8: "Не удалось включить вход по ключу FIDO2: нужны Windows 11, ключ с hmac-secret и PIN ключа",
+			9: "Не удалось закрыть приложение"}
 		notify(nimModify, texts[wparam])
 		return 0
 	case wmCommand:
@@ -488,6 +541,10 @@ func wndProc(h, message, wparam, lparam uintptr) uintptr {
 			}
 			if i := id - idRun; i < len(apps) {
 				go runApp(apps[i])
+			}
+		case id >= idClose && id < idClose+maxMenuApps:
+			if i := id - idClose; i < len(menuRunning) {
+				go closeApp(menuRunning[i])
 			}
 		case id == idHello:
 			go enableHello()

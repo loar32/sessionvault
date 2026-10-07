@@ -39,6 +39,31 @@ var interpreters = []string{
 	`scriptrunner.exe`,
 	`wsl.exe`,
 	`bash.exe`,
+	// Запуск команд по шаблону, закрепление в планировщике и копирование файлов в обход прав: приложению ничего из этого не нужно.
+	`forfiles.exe`,
+	`schtasks.exe`,
+	`at.exe`,
+	`esentutl.exe`,
+	`expand.exe`,
+	`makecab.exe`,
+	`extrac32.exe`,
+}
+
+// Интерпретаторы, которые ставит сам пользователь: путь зависит от версии, поэтому по маске (`*` в профиле — все пользователи).
+var userInterpreters = []string{
+	`Python*\python*.exe`,
+	`nodejs\node.exe`,
+	`Git\bin\bash.exe`,
+	`Git\usr\bin\bash.exe`,
+	`Git\usr\bin\perl.exe`,
+}
+
+func userInterpreterRoots() []string {
+	pf, pf86, sd := os.Getenv("ProgramFiles"), os.Getenv("ProgramFiles(x86)"), os.Getenv("SystemDrive")
+	if sd == "" {
+		sd = "C:"
+	}
+	return []string{pf, pf86, sd + `\`, sd + `\Users\*\AppData\Local\Programs`}
 }
 
 // Компиляторы и хосты .NET Framework: MSBuild (inline tasks), csc/vbc/jsc, InstallUtil, RegAsm, RegSvcs выполняют код из файлов,
@@ -86,7 +111,7 @@ func existing(rel []string, withPwsh bool) []string {
 
 // Interpreters — интерпретаторы и сборщики, найденные на этом компьютере.
 func Interpreters() []string {
-	out := existing(interpreters, true)
+	out := append(existing(interpreters, true), userInstalled()...)
 	for _, fw := range []string{"Framework", "Framework64"} {
 		m, _ := filepath.Glob(filepath.Join(windir(), "Microsoft.NET", fw, "v*"))
 		for _, dir := range m {
@@ -96,6 +121,25 @@ func Interpreters() []string {
 				}
 			}
 		}
+	}
+	return out
+}
+
+// userInstalled — Python, Node.js, Git Bash и Perl, найденные по типичным путям установки.
+func userInstalled() []string {
+	var out []string
+	for _, root := range userInterpreterRoots() {
+		if root == "" {
+			continue
+		}
+		for _, rel := range userInterpreters {
+			m, _ := filepath.Glob(filepath.Join(root, rel))
+			out = append(out, m...)
+		}
+	}
+	if sd := os.Getenv("SystemDrive"); sd != "" {
+		m, _ := filepath.Glob(filepath.Join(sd+`\`, `Strawberry\perl\bin\perl.exe`))
+		out = append(out, m...)
 	}
 	return out
 }
@@ -258,12 +302,15 @@ func ApplyFirewall(vault *windows.SID, selfExe, scriptDir string) error {
 	b.WriteString("$ErrorActionPreference='Stop'\n")
 	fmt.Fprintf(&b, "Remove-NetFirewallRule -Group %s -ErrorAction SilentlyContinue\n", psQuote(Group))
 	fmt.Fprintf(&b, "$u=%s\n", psQuote("D:(A;;CC;;;"+vault.String()+")"))
+	// New-NetFirewallRule тратит около 0,3 с на правило, COM-интерфейс брандмауэра — миллисекунды; правила получаются те же.
+	b.WriteString("$fw=New-Object -ComObject HNetCfg.FwPolicy2\n")
+	b.WriteString("function Add-Block($name,$prog,$user){$r=New-Object -ComObject HNetCfg.FWRule;$r.Name=$name;$r.Grouping='" + Group +
+		"';$r.Direction=2;$r.Action=0;$r.Profiles=2147483647;$r.ApplicationName=$prog;if($user){$r.LocalUserAuthorizedList=$user};$r.Enabled=$true;$fw.Rules.Add($r)}\n")
 	for _, p := range NetTools() {
-		fmt.Fprintf(&b, "New-NetFirewallRule -DisplayName %s -Group %s -Direction Outbound -Action Block -Profile Any -Program %s -LocalUser $u | Out-Null\n",
-			psQuote("SessionVault vault "+strings.TrimPrefix(strings.ToLower(p), strings.ToLower(windir())+`\`)), psQuote(Group), psQuote(p))
+		fmt.Fprintf(&b, "Add-Block %s %s $u\n",
+			psQuote("SessionVault vault "+strings.TrimPrefix(strings.ToLower(p), strings.ToLower(windir())+`\`)), psQuote(p))
 	}
-	fmt.Fprintf(&b, "New-NetFirewallRule -DisplayName 'SessionVault no network' -Group %s -Direction Outbound -Action Block -Profile Any -Program %s | Out-Null\n",
-		psQuote(Group), psQuote(selfExe))
+	fmt.Fprintf(&b, "Add-Block 'SessionVault no network' %s $null\n", psQuote(selfExe))
 	return powershellFile(scriptDir, b.String())
 }
 

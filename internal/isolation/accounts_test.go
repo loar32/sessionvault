@@ -73,3 +73,23 @@ func TestAccountsStore(t *testing.T) {
 		t.Fatalf("после удаления осталось %d записей", len(left))
 	}
 }
+
+func TestPasswordSealRoundTrip(t *testing.T) {
+	s, err := sealPassword("Pa55-секрет")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(s, dpapiPrefix) || strings.Contains(s, "Pa55") {
+		t.Fatalf("пароль не зашифрован: %s", s)
+	}
+	got, err := openPassword(s)
+	if err != nil || got != "Pa55-секрет" {
+		t.Fatalf("расшифровка: %q, %v", got, err)
+	}
+	if got, err := openPassword("plain-old"); err != nil || got != "plain-old" {
+		t.Fatalf("запись прежней версии без префикса не прочитана: %q, %v", got, err)
+	}
+	if _, err := openPassword(dpapiPrefix + "!!"); err == nil {
+		t.Fatal("повреждённая запись принята")
+	}
+}

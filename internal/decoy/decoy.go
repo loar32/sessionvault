@@ -4,6 +4,7 @@ package decoy
 
 import (
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io/fs"
@@ -61,6 +62,13 @@ var layouts = map[string][]file{
 		{`Network\Cookies`, 20480, 45056, true},
 		{"settings.json", 300, 700, false},
 	},
+	// Собственные приложения (add): структура данных неизвестна, поэтому приманка общая — несколько типичных файлов.
+	"generic": {
+		{"Local State", 1500, 4000, false},
+		{"Preferences", 800, 3000, false},
+		{"data.db", 40960, 122880, true},
+		{"cache.bin", 8192, 65536, false},
+	},
 	"chromium": {
 		{"Local State", 20000, 60000, false},
 		{"First Run", 0, 0, false},
@@ -99,7 +107,10 @@ func save(m map[string]entry) error {
 
 // Ensure создаёт приманку, если места нет, и пересоздаёт её не реже раза в refresh, чтобы даты выглядели живыми.
 // created сообщает, что папка новая: на неё нужно заново поставить аудит.
-func Ensure(profile, kind, path string, user *windows.SID, refresh time.Duration) (created bool, err error) {
+// Папка лежит в профиле пользователя и ему подконтрольна: пока SYSTEM менял бы в ней файлы и права по пути, подмена
+// подпапки ссылкой (junction) увела бы эти операции на системные файлы. Поэтому при ненулевом tok вся работа с папкой
+// идёт с правами самого пользователя (рядом с приманкой собирается временная папка, затем переименовывается).
+func Ensure(profile, kind, path string, user *windows.SID, refresh time.Duration, tok windows.Token) (created bool, err error) {
 	if _, ok := layouts[kind]; !ok {
 		return false, ErrKind
 	}
@@ -116,37 +127,41 @@ func Ensure(profile, kind, path string, user *windows.SID, refresh time.Duration
 		if time.Since(e.Updated) < refresh {
 			return false, nil
 		}
-		if err := os.RemoveAll(path); err != nil {
-			return false, err
+	}
+	var names []string
+	var sigs map[string]sig
+	build := func() (err error) {
+		if err = os.RemoveAll(path); err != nil {
+			return err
+		}
+		stage := filepath.Join(filepath.Dir(path), ".svstage-"+profile)
+		_ = os.RemoveAll(stage)
+		defer func() {
+			if err != nil {
+				_ = os.RemoveAll(stage)
+			}
+		}()
+		if names, sigs, err = generate(stage, layouts[kind]); err != nil {
+			return err
+		}
+		if err = grantUser(stage, user); err != nil {
+			return err
+		}
+		return os.Rename(stage, path)
+	}
+	if tok != 0 {
+		err = isolation.AsUser(tok, func() error {
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				return err
+			}
+			return build()
+		})
+	} else if err = NoReparse(path); err == nil {
+		if err = os.MkdirAll(filepath.Dir(path), 0o755); err == nil {
+			err = build()
 		}
 	}
-	if err := NoReparse(path); err != nil {
-		return false, err
-	}
-	// Папка приманки лежит в профиле пользователя и ему подконтрольна, а службе приходится менять в ней владельца и права.
-	// Пока SYSTEM работает в такой папке, пользователь мог бы подменить подпапку ссылкой (junction) и заставить службу
-	// менять владельца у системных файлов. Поэтому приманка собирается в закрытой папке службы и переносится целиком.
-	stage := stagePath(profile)
-	_ = os.RemoveAll(stage)
-	names, sigs, err := generate(stage, layouts[kind])
 	if err != nil {
-		_ = os.RemoveAll(stage)
-		return false, err
-	}
-	if err := grantUser(stage, user); err != nil {
-		_ = os.RemoveAll(stage)
-		return false, err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		_ = os.RemoveAll(stage)
-		return false, err
-	}
-	if err := NoReparse(path); err != nil {
-		_ = os.RemoveAll(stage)
-		return false, err
-	}
-	if err := os.Rename(stage, path); err != nil {
-		_ = os.RemoveAll(stage)
 		return false, err
 	}
 	st[profile] = entry{Path: path, Names: names, Updated: time.Now(), Sigs: sigs}
@@ -244,6 +259,9 @@ func generate(root string, layout []file) ([]string, map[string]sig, error) {
 		if f.sqlite {
 			copy(buf, sqliteHeader)
 		}
+		if head, ok := jsonHeads[filepath.Base(f.name)]; ok {
+			buf = jsonBody(head, buf)
+		}
 		if err := os.WriteFile(p, buf, 0o644); err != nil {
 			return nil, nil, err
 		}
@@ -271,6 +289,27 @@ func generate(root string, layout []file) ([]string, map[string]sig, error) {
 	return names, sigs, nil
 }
 
+// У Local State, Preferences и settings.json настоящие файлы — JSON: случайные байты выдали бы приманку первому же разбору.
+var jsonHeads = map[string]string{
+	"Local State":   `{"os_crypt":{"encrypted_key":"`,
+	"Preferences":   `{"profile":{"name":"Person 1","avatar":"`,
+	"settings.json": `{"SKIP_HOST_UPDATE":true,"app":{"ack":"`,
+}
+
+// Тело JSON того же размера, что и буфер: начало, случайные символы base64 и закрытие скобок.
+func jsonBody(head string, rnd []byte) []byte {
+	const tail = `"}}`
+	out := make([]byte, len(rnd))
+	n := copy(out, head)
+	fill := base64.StdEncoding.EncodeToString(rnd)
+	k := len(out) - len(tail)
+	for i := n; i < k; i++ {
+		out[i] = fill[(i-n)%len(fill)]
+	}
+	copy(out[k:], tail)
+	return out
+}
+
 func between(min, max int) (int, error) {
 	if min == max {
 		return min, nil
@@ -280,10 +319,6 @@ func between(min, max int) (int, error) {
 		return 0, err
 	}
 	return min + int(n.Int64()), nil
-}
-
-func stagePath(profile string) string {
-	return filepath.Join(isolation.BaseDir(), "decoy-stage", profile)
 }
 
 // Явные права вместо наследования: у собранной в закрытой папке приманки родитель другой, а после переноса права остаются как есть.

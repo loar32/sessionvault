@@ -110,12 +110,20 @@ func LaunchAsVault(user, password, cmdline, workDir string) (pid uint32, process
 		_ = tok.Close()
 		return
 	}
+	sidStr := sid.String()
+	if err = noteGranted(sidStr); err != nil {
+		_ = tok.Close()
+		return
+	}
 	if err = setDesktopAccess(sid, windows.GRANT_ACCESS); err != nil {
+		_ = setDesktopAccess(sid, windows.REVOKE_ACCESS)
+		forgetGranted(sidStr)
 		_ = tok.Close()
 		return
 	}
 	if err = setNamedObjectAccess(sid, windows.GRANT_ACCESS); err != nil {
 		_ = setDesktopAccess(sid, windows.REVOKE_ACCESS)
+		forgetGranted(sidStr)
 		_ = tok.Close()
 		return
 	}
@@ -124,13 +132,16 @@ func LaunchAsVault(user, password, cmdline, workDir string) (pid uint32, process
 	if r, _, e := procLoadUserProfile.Call(uintptr(tok), uintptr(unsafe.Pointer(&pi))); r == 0 {
 		_ = setNamedObjectAccess(sid, windows.REVOKE_ACCESS)
 		_ = setDesktopAccess(sid, windows.REVOKE_ACCESS)
+		forgetGranted(sidStr)
 		_ = tok.Close()
 		return 0, 0, nil, e
 	}
+	lockProfile(tok)
 	cleanup = func() {
 		_, _, _ = procUnloadUserProfile.Call(uintptr(tok), uintptr(pi.Profile))
 		_ = setNamedObjectAccess(sid, windows.REVOKE_ACCESS)
 		_ = setDesktopAccess(sid, windows.REVOKE_ACCESS)
+		forgetGranted(sidStr)
 		_ = tok.Close()
 	}
 	if pid, process, _, err = createAsUser(tok, cmdline, workDir, 0); err != nil {

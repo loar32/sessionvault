@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/loar32/sessionvault/internal/crypto"
 	"github.com/loar32/sessionvault/internal/isolation"
@@ -107,12 +108,73 @@ func RecoveryCreate(ask func(name string) ([]byte, error)) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// Слоты пишутся по очереди, но сбой на середине не должен оставить часть хранилищ на старом ключе, а часть на новом:
+	// прежний vault.json каждого хранилища запоминается и при ошибке возвращается всем, кого уже успели изменить.
+	saved := map[string][]byte{}
 	for name, v := range vs {
-		if err := v.SetRecovery(deks[name], key); err != nil {
+		b, err := v.MetaBytes()
+		if err != nil {
 			return "", fmt.Errorf("%s: %w", name, err)
 		}
+		saved[name] = b
+	}
+	var changed []string
+	for name, v := range vs {
+		if err := v.SetRecovery(deks[name], key); err != nil {
+			err = fmt.Errorf("%s: %w", name, err)
+			for _, done := range changed {
+				if e := vs[done].RestoreMeta(saved[done]); e != nil {
+					err = errors.Join(err, fmt.Errorf("%s: прежний vault.json не возвращён: %w", done, e))
+				}
+			}
+			return "", err
+		}
+		changed = append(changed, name)
 	}
 	return words, nil
+}
+
+// RecoveryVerify проверяет слова с бумаги: ничего не меняет, только пробует открыть слот каждого хранилища.
+func RecoveryVerify(words string) (ok, bad []string, err error) {
+	vs, err := adminVaults()
+	if err != nil {
+		return nil, nil, err
+	}
+	key, err := recovery.Parse(words)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer crypto.Wipe(key)
+	for name, v := range vs {
+		dek, err := v.UnlockRecovery(key)
+		if err != nil {
+			bad = append(bad, name)
+			continue
+		}
+		crypto.Wipe(dek)
+		ok = append(ok, name)
+	}
+	sort.Strings(ok)
+	sort.Strings(bad)
+	return ok, bad, nil
+}
+
+// RecoveryRevoke убирает ключ восстановления у одного приложения; у остальных он продолжает работать.
+func RecoveryRevoke(app string) error {
+	vs, err := adminVaults()
+	if err != nil {
+		return err
+	}
+	v, ok := vs[app]
+	if !ok {
+		return fmt.Errorf("хранилища %s нет", app)
+	}
+	release, err := lockAll(vs, []string{app})
+	if err != nil {
+		return err
+	}
+	defer release()
+	return v.RemoveRecovery()
 }
 
 // RecoveryReset задаёт новый мастер-пароль всем хранилищам, которые открывает ключ восстановления.
@@ -170,6 +232,15 @@ type bundle struct {
 	App  string
 	Meta []byte
 	Data []byte
+	// Профиль собственного приложения (add): у него нет встроенного шаблона, и на новом ПК его описание берётся отсюда.
+	Profile *profiles.Profile `json:",omitempty"`
+}
+
+// CustomImport — как перенести собственное приложение (add) на этот ПК: где оно лежит здесь и подтверждение профиля из файла.
+type CustomImport struct {
+	Exe     string
+	CopyDir bool
+	Confirm func(info string) bool
 }
 
 // Export пишет зашифрованное хранилище приложения в один файл для переноса на другой ПК.
@@ -191,7 +262,13 @@ func Export(app, path string) error {
 	if err != nil {
 		return err
 	}
-	b, err := json.Marshal(bundle{App: app, Meta: m, Data: d})
+	b := bundle{App: app, Meta: m, Data: d}
+	if p, err := profiles.Load(isolation.ProfilesDir(), app); err == nil && p.Custom {
+		// Пути этого ПК и подпись профиля на другом не действуют: остаётся описание приложения, остальное задаст import.
+		p.Exe, p.Source, p.Sig, p.ExecFiles, p.ExecSigner = "", "", "", nil, ""
+		b.Profile = &p
+	}
+	raw, err := json.Marshal(b)
 	if err != nil {
 		return err
 	}
@@ -200,7 +277,7 @@ func Export(app, path string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := f.Write(b); err != nil {
+	if _, err := f.Write(raw); err != nil {
 		_ = f.Close()
 		_ = os.Remove(path)
 		return err
@@ -210,7 +287,7 @@ func Export(app, path string) error {
 
 // Import восстанавливает приложение из файла Export на новом ПК; secret — мастер-пароль или ключ восстановления.
 // Прежние данные приложения на этом ПК не трогаются: если они там есть, разберитесь с ними вручную.
-func Import(path string, ask func(app string) ([]byte, error)) (string, error) {
+func Import(path string, ask func(app string) ([]byte, error), custom CustomImport) (string, error) {
 	if !isolation.IsElevated() {
 		return "", errors.New("нужен запуск от администратора")
 	}
@@ -226,8 +303,16 @@ func Import(path string, ask func(app string) ([]byte, error)) (string, error) {
 		return "", errors.New("файл не похож на экспорт SessionVault")
 	}
 	p, ok := profiles.Template(b.App)
+	customApp := false
 	if !ok {
-		return "", fmt.Errorf("неизвестное приложение %q", b.App)
+		if b.Profile == nil {
+			return "", fmt.Errorf("неизвестное приложение %q", b.App)
+		}
+		var err error
+		if p, err = customProfile(b, custom); err != nil {
+			return "", err
+		}
+		customApp = true
 	}
 	cfg, err := LoadConfig()
 	if err != nil {
@@ -236,7 +321,7 @@ func Import(path string, ask func(app string) ([]byte, error)) (string, error) {
 	if _, err := os.Stat(isolation.VaultDir()); err != nil {
 		return "", errors.New("защищённой папки нет: сначала install")
 	}
-	if p.Exe != "" {
+	if p.Exe != "" && !customApp {
 		if _, err := os.Stat(p.Exe); err != nil {
 			return "", fmt.Errorf("%s не найден (%s): сначала установите приложение", p.Title, p.Exe)
 		}
@@ -251,7 +336,11 @@ func Import(path string, ask func(app string) ([]byte, error)) (string, error) {
 	if _, err := os.Stat(isolation.WorkPath(b.App)); err == nil {
 		return "", fmt.Errorf("в %s есть данные без хранилища: разберитесь с ними вручную", v.Dir)
 	}
-	if p.Exe == "" {
+	if customApp {
+		if err := placeExe(&p, custom.Exe, custom.CopyDir); err != nil {
+			return "", err
+		}
+	} else if p.Exe == "" {
 		if err := resolveApp(&p, cfg.MainUser); err != nil {
 			return "", err
 		}

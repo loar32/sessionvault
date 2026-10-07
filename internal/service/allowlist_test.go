@@ -83,3 +83,32 @@ func TestThirdPartyAVNeedsPublisher(t *testing.T) {
 		t.Error("проводник не разрешён")
 	}
 }
+
+func TestAllowedProcessWithForeignModuleIsNotAllowed(t *testing.T) {
+	a := testList(noSigner)
+	exe := `C:\Windows\explorer.exe`
+	a.images = &imageCache{}
+	a.modules = func(uint32) ([]string, error) {
+		return []string{exe, `C:\Windows\System32\kernel32.dll`, `C:\Program Files\Foo\ext.dll`}, nil
+	}
+	if !a.allowed(exe, 100) {
+		t.Fatal("процесс с модулями из каталогов Windows и Program Files отклонён")
+	}
+	a.images = &imageCache{}
+	a.modules = func(uint32) ([]string, error) {
+		return []string{exe, `C:\Users\x\AppData\Local\Temp\evil.dll`}, nil
+	}
+	if a.allowed(exe, 101) {
+		t.Fatal("процесс с неподписанным модулем из Temp разрешён")
+	}
+	a.images = &imageCache{}
+	a.signer = func(p string) (string, error) { return "Microsoft Corporation", nil }
+	if !a.allowed(exe, 102) {
+		t.Fatal("подписанный модуль из профиля пользователя отклонён")
+	}
+	a.images = &imageCache{}
+	a.modules = func(uint32) ([]string, error) { return nil, errors.New("процесс вышел") }
+	if !a.allowed(exe, 103) {
+		t.Fatal("вышедший процесс отклонён: ложная тревога")
+	}
+}

@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"os"
+	"time"
 
 	"github.com/loar32/sessionvault/internal/isolation"
 	"github.com/loar32/sessionvault/internal/lockdown"
@@ -70,12 +71,39 @@ func migrateLegacyVault() {
 // migrate выполняется при старте службы после замены программы без переустановки (прежняя версия оставила учётку vault и не
 // создала группу приложений): создаёт группу и права общей папки, переносит правила на группу, удаляет vault.
 // Установка делает то же сама, поэтому здесь работа есть только при обновлении на месте.
+func (s *Service) cleanExchange() {
+	if n := isolation.CleanExchangeLinks(); n > 0 {
+		s.log.Printf("в общей папке удалено ссылок: %d", n)
+	}
+}
+
 func (s *Service) migrate() {
+	// Профиль vault, который ещё загружен (процесс приложения пережил запуск службы), удалить нельзя: пробуем снова.
+	for range migrateTries {
+		if s.migrateOnce() {
+			return
+		}
+		select {
+		case <-s.quit:
+			return
+		case <-time.After(migrateRetry):
+		}
+	}
+	s.log.Println("переход с общей учётки vault не завершён: учётка занята, повтор при следующем старте службы")
+}
+
+const (
+	migrateTries = 6
+	migrateRetry = 5 * time.Minute
+)
+
+// migrateOnce возвращает true, когда делать больше нечего.
+func (s *Service) migrateOnce() bool {
 	_, groupErr := isolation.AppsGroupSID()
 	legacy := isolation.UserExists(isolation.LegacyVaultUser)
 	if groupErr == nil && !legacy {
 		isolation.RemoveLegacyPassword()
-		return
+		return true
 	}
 	if groupErr != nil {
 		if err := isolation.SetupExchange(s.cfg.MainUser); err != nil {
@@ -86,5 +114,9 @@ func (s *Service) migrate() {
 		}
 	}
 	migrateLegacyVault()
+	if isolation.UserExists(isolation.LegacyVaultUser) {
+		return false
+	}
 	s.log.Println("переход с общей учётки vault на учётки приложений выполнен")
+	return true
 }
