@@ -290,6 +290,8 @@ func PlanAdd(req AddRequest) (AddPlan, error) {
 	switch {
 	case base == "flatpak":
 		return plan, errors.New(i18n.T("приложения Flatpak уже работают в своей песочнице и не защищаются SessionVault"))
+	case base == "xdg-terminal-exec":
+		return plan, errors.New(i18n.T("консольные программы не защищаются: у них нет окна, которое запускала бы служба"))
 	case strings.HasPrefix(base, "omarchy-launch-") || slices.ContainsFunc(args, func(s string) bool { return strings.HasPrefix(s, "--app=") }):
 		return plan, errors.New(i18n.T("это веб-приложение: оно открывается браузером, защитите браузер (sudo sessionvault protect chromium)"))
 	}
@@ -692,7 +694,7 @@ func Candidates(home string) []Candidate {
 			e := ParseDesktop(f.Name(), b)
 			prog, args := execProgram(ExecArgv(e.Exec))
 			if e.NoDisplay || e.Terminal || e.Name == "" || prog == "" || (e.Type != "" && e.Type != "Application") ||
-				filepath.Base(prog) == "flatpak" || strings.HasPrefix(filepath.Base(prog), "omarchy-") ||
+				filepath.Base(prog) == "flatpak" || filepath.Base(prog) == "xdg-terminal-exec" || strings.HasPrefix(filepath.Base(prog), "omarchy-") ||
 				slices.ContainsFunc(args, func(s string) bool { return strings.HasPrefix(s, "--app=") }) {
 				continue
 			}

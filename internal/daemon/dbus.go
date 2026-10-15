@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -34,7 +35,7 @@ type busProxy struct {
 // и у двух приложений с одинаковым pid значки бы не ужились.
 func trayPID(uid int) int { return 50 + 16*((1000-uid%1000)%32) }
 
-func proxyRules(pid int) []string {
+func proxyRules(pid int, desktopIDs []string) []string {
 	const portal = "org.freedesktop.portal.Desktop"
 	r := []string{"--filter",
 		"--talk=org.freedesktop.Notifications",
@@ -53,6 +54,13 @@ func proxyRules(pid int) []string {
 	for p := pid; p < pid+4; p++ {
 		for n := 1; n <= 3; n++ {
 			r = append(r, fmt.Sprintf("--own=org.kde.StatusNotifierItem-%d-%d", p, n))
+		}
+	}
+	// Имя приложения по его ярлыку (org.telegram.desktop): под ним оно регистрирует себя на шине.
+	for _, id := range desktopIDs {
+		id = strings.TrimSuffix(id, ".desktop")
+		if strings.Count(id, ".") >= 2 {
+			r = append(r, "--own="+id, "--own="+id+".*")
 		}
 	}
 	return r
@@ -88,7 +96,7 @@ func startBus(cfg Config, a App, acc account) (*busProxy, error) {
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.Command(dbusProxyPath, append([]string{"--fd=3", "unix:path=" + bus, sockPath}, proxyRules(trayPID(acc.uid))...)...)
+	cmd := exec.Command(dbusProxyPath, append([]string{"--fd=3", "unix:path=" + bus, sockPath}, proxyRules(trayPID(acc.uid), a.Desktop)...)...)
 	cmd.ExtraFiles = []*os.File{w}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: cred, Setsid: true, Pdeathsig: syscall.SIGKILL}
 	cmd.Env = []string{"HOME=" + cfg.OwnerHome, "XDG_RUNTIME_DIR=" + filepath.Dir(bus)}
