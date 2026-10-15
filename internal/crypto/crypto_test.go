@@ -2,6 +2,8 @@ package crypto
 
 import (
 	"bytes"
+	"errors"
+	"io"
 	"testing"
 )
 
@@ -74,5 +76,49 @@ func TestWipeAndLock(t *testing.T) {
 	Unlock(k)
 	if !bytes.Equal(k, make([]byte, KeySize)) {
 		t.Fatal("ключ не обнулён")
+	}
+}
+
+func TestStreamRoundTrip(t *testing.T) {
+	key, _ := NewKey()
+	aad := []byte("hdr")
+	for _, size := range []int{0, 1, ChunkSize - 1, ChunkSize, ChunkSize + 1, 3 * ChunkSize} {
+		plain := bytes.Repeat([]byte{7}, size)
+		var buf bytes.Buffer
+		w, err := NewSealWriter(key, aad, &buf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Запись кусками разной длины: границы блоков не должны зависеть от того, как пишут.
+		for p := plain; len(p) > 0; {
+			k := min(len(p), 1000+len(p)%3333)
+			if _, err := w.Write(p[:k]); err != nil {
+				t.Fatal(err)
+			}
+			p = p[k:]
+		}
+		if err := w.Close(); err != nil {
+			t.Fatal(err)
+		}
+		r, err := NewOpenReader(key, aad, &buf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := io.ReadAll(r)
+		if err != nil || !bytes.Equal(got, plain) {
+			t.Fatalf("размер %d: %v", size, err)
+		}
+	}
+}
+
+func TestStreamWrongAADRejected(t *testing.T) {
+	key, _ := NewKey()
+	var buf bytes.Buffer
+	w, _ := NewSealWriter(key, []byte("SVD3-1"), &buf)
+	_, _ = w.Write([]byte("данные"))
+	_ = w.Close()
+	r, _ := NewOpenReader(key, []byte("SVD3-2"), &buf)
+	if _, err := io.ReadAll(r); !errors.Is(err, ErrStream) {
+		t.Fatalf("поток с другим заголовком принят: %v", err)
 	}
 }

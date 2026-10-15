@@ -1,12 +1,14 @@
 package vault
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/loar32/sessionvault/internal/i18n"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -23,10 +25,12 @@ const (
 
 	backupFile = "data.enc.bak"
 
-	// Заголовок data.enc версии 2: метка и номер записи; номер входит в AAD, поэтому его нельзя подменить отдельно от шифротекста.
-	dataMagic  = "SVD2"
-	headerSize = len(dataMagic) + 8
-	metaV2     = 2
+	// Заголовок data.enc: метка и номер записи; номер входит в AAD, поэтому его нельзя подменить отдельно от шифротекста.
+	// Версия 2 — один блок AES-GCM на весь архив (архив в памяти), версия 3 — поток блоков без ограничения размера.
+	dataMagic   = "SVD2"
+	streamMagic = "SVD3"
+	headerSize  = len(dataMagic) + 8
+	metaV2      = 2
 )
 
 var (
@@ -396,60 +400,163 @@ func (v Vault) DisableHello() error {
 // Открытая папка → data.enc. Порядок важен при сбое: пока data.enc не заменён, маркер и открытая копия целы;
 // после замены data.enc полный, а недоудалённая папка без маркера при следующем Decrypt затирается.
 func (v Vault) Encrypt(dek []byte) error {
-	tar, files, err := packDir(v.dataDir(), v.Exclude)
-	if err != nil {
-		return err
-	}
-	defer crypto.Wipe(tar)
-	// Пустая папка — признак того, что приложение стёрло данные или упало: архив из неё затёр бы рабочую копию.
-	if files == 0 {
-		return ErrEmptyData
-	}
 	m, err := v.readMeta()
 	if err != nil {
 		return err
 	}
-	var blob []byte
 	if m.Version == 1 {
-		blob, err = crypto.Seal(dek, tar)
-	} else {
-		hdr := binary.BigEndian.AppendUint64([]byte(dataMagic), m.Counter+1)
-		var sealed []byte
-		if sealed, err = crypto.SealAAD(dek, tar, hdr); err == nil {
-			blob = append(hdr, sealed...)
-		}
+		return v.encryptV1(dek)
+	}
+	hdr := binary.BigEndian.AppendUint64([]byte(streamMagic), m.Counter+1)
+	tmp := v.path(dataFile + ".tmp")
+	var files int
+	err = retry(func() (err error) {
+		files, err = v.writeStream(tmp, dek, hdr)
+		return err
+	})
+	if err == nil && files == 0 {
+		// Пустая папка — признак того, что приложение стёрло данные или упало: архив из неё затёр бы рабочую копию.
+		err = ErrEmptyData
+	}
+	if err == nil {
+		err = v.keepBackup()
+	}
+	if err == nil {
+		err = retry(func() error { return os.Rename(tmp, v.path(dataFile)) })
 	}
 	if err != nil {
-		return err
-	}
-	// Предыдущий архив остаётся на случай, если в новый попало повреждённое состояние приложения.
-	if old, err := os.ReadFile(v.path(dataFile)); err == nil {
-		if err := writeAtomic(v.path(backupFile), old); err != nil {
-			return err
-		}
-	}
-	if err := writeAtomic(v.path(dataFile), blob); err != nil {
+		_ = os.Remove(tmp)
 		return err
 	}
 	// Сбой между двумя записями оставляет data.enc с номером на единицу больше: Decrypt такое принимает и подтягивает номер.
 	// Файл перечитывается: пока шло шифрование, могли включить Hello или сменить пароль, и записать устаревшую копию нельзя.
-	if m.Version != 1 {
-		counter := m.Counter + 1
-		if err := v.updateMeta(func(cur *meta) error {
-			cur.Counter = counter
-			return nil
-		}); err != nil {
-			return err
-		}
+	counter := m.Counter + 1
+	if err := v.updateMeta(func(cur *meta) error {
+		cur.Counter = counter
+		return nil
+	}); err != nil {
+		return err
 	}
+	return v.closeOpen()
+}
+
+func (v Vault) closeOpen() error {
 	if err := os.Remove(v.path(openFile)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	return removeAll(v.dataDir())
 }
 
+// Хранилище версии 1 (до первой разблокировки новой версией) пишется прежним форматом: один блок без заголовка.
+func (v Vault) encryptV1(dek []byte) error {
+	tar, files, err := packDir(v.dataDir(), v.Exclude)
+	if err != nil {
+		return err
+	}
+	defer crypto.Wipe(tar)
+	if files == 0 {
+		return ErrEmptyData
+	}
+	blob, err := crypto.Seal(dek, tar)
+	if err != nil {
+		return err
+	}
+	if err := v.keepBackup(); err != nil {
+		return err
+	}
+	if err := writeAtomic(v.path(dataFile), blob); err != nil {
+		return err
+	}
+	return v.closeOpen()
+}
+
+// writeStream шифрует открытую папку в файл path потоком: архив не собирается в памяти, размер не ограничен.
+func (v Vault) writeStream(path string, dek, hdr []byte) (int, error) {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = f.Close() }()
+	bw := bufio.NewWriterSize(f, 256<<10)
+	if _, err := bw.Write(hdr); err != nil {
+		return 0, err
+	}
+	sw, err := crypto.NewSealWriter(dek, hdr, bw)
+	if err != nil {
+		return 0, err
+	}
+	files, err := writeTar(sw, v.dataDir(), v.Exclude)
+	if cerr := sw.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return 0, err
+	}
+	if err := bw.Flush(); err != nil {
+		return 0, err
+	}
+	// Sync до rename: после потери питания на месте data.enc не должно оказаться недописанного файла.
+	if err := f.Sync(); err != nil {
+		return 0, err
+	}
+	return files, f.Close()
+}
+
+// Предыдущий архив остаётся на случай, если в новый попало повреждённое состояние приложения. Жёсткая ссылка не копирует
+// гигабайты; где ссылок нет, файл копируется.
+func (v Vault) keepBackup() error {
+	cur := v.path(dataFile)
+	if _, err := os.Stat(cur); err != nil {
+		return nil
+	}
+	tmp := v.path(backupFile + ".tmp")
+	_ = os.Remove(tmp)
+	if err := os.Link(cur, tmp); err != nil {
+		if err := copyFile(cur, tmp); err != nil {
+			_ = os.Remove(tmp)
+			return err
+		}
+	}
+	return retry(func() error { return os.Rename(tmp, v.path(backupFile)) })
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = in.Close() }()
+	return writeStreamFile(dst, in)
+}
+
+// writeStreamFile пишет поток в файл и сбрасывает его на диск.
+func writeStreamFile(path string, r io.Reader) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(f, r); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
 // data.enc → открытая папка. Маркер ставится после распаковки: частичная распаковка не считается открытыми данными.
 func (v Vault) Decrypt(dek []byte) error {
+	f, err := os.Open(v.path(dataFile))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	hdr := make([]byte, headerSize)
+	if n, _ := io.ReadFull(f, hdr); n == headerSize && string(hdr[:len(streamMagic)]) == streamMagic {
+		return v.decryptStream(dek, f, hdr)
+	}
 	blob, err := os.ReadFile(v.path(dataFile))
 	if err != nil {
 		return err
@@ -466,6 +573,77 @@ func (v Vault) Decrypt(dek []byte) error {
 		return errors.Join(err, removeAll(v.dataDir()))
 	}
 	return os.WriteFile(v.path(openFile), nil, 0o600)
+}
+
+// decryptStream распаковывает поток блоков по мере проверки. Блок, не прошедший проверку на середине, отменяет всё:
+// уже распакованное удаляется.
+func (v Vault) decryptStream(dek []byte, r io.Reader, hdr []byte) error {
+	m, err := v.readMeta()
+	if err != nil {
+		return err
+	}
+	if m.Version == 1 {
+		return errors.New(i18n.T("data.enc не соответствует версии хранилища"))
+	}
+	n := binary.BigEndian.Uint64(hdr[len(streamMagic):])
+	if n < m.Counter {
+		return ErrRollback
+	}
+	if err := removeAll(v.dataDir()); err != nil {
+		return err
+	}
+	or, err := crypto.NewOpenReader(dek, hdr, r)
+	if err != nil {
+		return err
+	}
+	defer or.Close()
+	err = extractTar(or, v.dataDir())
+	if err == nil {
+		err = or.Verify()
+	}
+	if err != nil {
+		return errors.Join(err, removeAll(v.dataDir()))
+	}
+	if n > m.Counter {
+		if err := v.updateMeta(func(cur *meta) error {
+			cur.Counter = max(cur.Counter, n)
+			return nil
+		}); err != nil {
+			return errors.Join(err, removeAll(v.dataDir()))
+		}
+	}
+	return os.WriteFile(v.path(openFile), nil, 0o600)
+}
+
+// verifyData проверяет, что файл формата data.enc открывается ключом, ничего не распаковывая. Возвращает номер записи
+// и есть ли у файла заголовок (у формата версии 1 его нет).
+func verifyData(dek []byte, path string) (counter uint64, header bool, err error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, false, err
+	}
+	defer func() { _ = f.Close() }()
+	hdr := make([]byte, headerSize)
+	if n, _ := io.ReadFull(f, hdr); n == headerSize && string(hdr[:len(streamMagic)]) == streamMagic {
+		or, err := crypto.NewOpenReader(dek, hdr, f)
+		if err != nil {
+			return 0, false, err
+		}
+		defer or.Close()
+		return binary.BigEndian.Uint64(hdr[len(streamMagic):]), true, or.Verify()
+	}
+	blob, err := os.ReadFile(path)
+	if err != nil {
+		return 0, false, err
+	}
+	if bytes.HasPrefix(blob, []byte(dataMagic)) && len(blob) >= headerSize {
+		tar, err := crypto.OpenAAD(dek, blob[headerSize:], blob[:headerSize])
+		crypto.Wipe(tar)
+		return binary.BigEndian.Uint64(blob[len(dataMagic):headerSize]), true, err
+	}
+	tar, err := crypto.Open(dek, blob)
+	crypto.Wipe(tar)
+	return 0, false, err
 }
 
 // Проверяет, что архив не старше последней записи, и подтягивает номер после сбоя между записью data.enc и vault.json.
@@ -545,7 +723,7 @@ func (v Vault) RestoreBackup(dek []byte) error {
 	if v.NeedsRecovery() {
 		return errors.New(i18n.T("есть открытые данные: сначала закройте приложение"))
 	}
-	blob, err := os.ReadFile(v.path(backupFile))
+	counter, _, err := verifyData(dek, v.path(backupFile))
 	if err != nil {
 		return err
 	}
@@ -553,21 +731,7 @@ func (v Vault) RestoreBackup(dek []byte) error {
 	if err != nil {
 		return err
 	}
-	if bytes.HasPrefix(blob, []byte(dataMagic)) && len(blob) >= headerSize {
-		tar, err := crypto.OpenAAD(dek, blob[headerSize:], blob[:headerSize])
-		if err != nil {
-			return err
-		}
-		crypto.Wipe(tar)
-		m.Counter = binary.BigEndian.Uint64(blob[len(dataMagic):headerSize])
-	} else {
-		tar, err := crypto.Open(dek, blob)
-		if err != nil {
-			return err
-		}
-		crypto.Wipe(tar)
-		m.Counter = 0
-	}
+	m.Counter = counter
 	// Сначала номер, потом файл: сбой между ними оставляет data.enc новее номера, а это допустимо.
 	if err := v.writeMeta(m); err != nil {
 		return err
@@ -575,17 +739,25 @@ func (v Vault) RestoreBackup(dek []byte) error {
 	return retry(func() error { return os.Rename(v.path(backupFile), v.path(dataFile)) })
 }
 
-// Export возвращает vault.json без слота Hello (ключ Hello работает только на этом ПК) и data.enc: оба файла уже зашифрованы.
-func (v Vault) Export() (metaJSON, data []byte, err error) {
+// ExportMeta — vault.json без слота Hello (ключ Hello работает только на этом ПК); он уже зашифрован.
+func (v Vault) ExportMeta() ([]byte, error) {
 	if v.NeedsRecovery() {
-		return nil, nil, errors.New(i18n.T("есть открытые данные: сначала закройте приложение"))
+		return nil, errors.New(i18n.T("есть открытые данные: сначала закройте приложение"))
 	}
 	m, err := v.readMeta()
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	m.Hello = nil
-	if metaJSON, err = json.Marshal(m); err != nil {
+	return json.Marshal(m)
+}
+
+// DataPath — зашифрованный архив хранилища (для переноса потоком).
+func (v Vault) DataPath() string { return v.path(dataFile) }
+
+// Export возвращает vault.json без слота Hello и data.enc: оба файла уже зашифрованы.
+func (v Vault) Export() (metaJSON, data []byte, err error) {
+	if metaJSON, err = v.ExportMeta(); err != nil {
 		return nil, nil, err
 	}
 	if data, err = os.ReadFile(v.path(dataFile)); err != nil {
@@ -596,7 +768,12 @@ func (v Vault) Export() (metaJSON, data []byte, err error) {
 
 // Import кладёт файлы из Export на место и проверяет, что secret (пароль или ключ восстановления) их открывает;
 // иначе всё убирается. Существующее хранилище не перезаписывается.
-func (v Vault) Import(metaJSON, data, secret []byte) (err error) {
+func (v Vault) Import(metaJSON, data, secret []byte) error {
+	return v.ImportFrom(metaJSON, bytes.NewReader(data), secret)
+}
+
+// ImportFrom — Import с архивом из потока: большой data.enc не читается в память.
+func (v Vault) ImportFrom(metaJSON []byte, data io.Reader, secret []byte) (err error) {
 	if v.Exists() {
 		return errors.New(i18n.T("хранилище уже есть"))
 	}
@@ -616,15 +793,20 @@ func (v Vault) Import(metaJSON, data, secret []byte) (err error) {
 		if err != nil {
 			_ = os.Remove(v.path(metaFile))
 			_ = os.Remove(v.path(dataFile))
+			_ = os.Remove(v.path(dataFile + ".tmp"))
 		}
 	}()
-	if err := writeAtomic(v.path(dataFile), data); err != nil {
+	tmp := v.path(dataFile + ".tmp")
+	if err := writeStreamFile(tmp, data); err != nil {
+		return err
+	}
+	if err := retry(func() error { return os.Rename(tmp, v.path(dataFile)) }); err != nil {
 		return err
 	}
 	if err := writeAtomic(v.path(metaFile), metaJSON); err != nil {
 		return err
 	}
-	if _, err := v.readMeta(); err != nil {
+	if m, err = v.readMeta(); err != nil {
 		return err
 	}
 	dek, err := v.Unlock(secret)
@@ -632,10 +814,13 @@ func (v Vault) Import(metaJSON, data, secret []byte) (err error) {
 		return err
 	}
 	defer crypto.Wipe(dek)
-	tar, err := v.openData(dek, data)
+	counter, header, err := verifyData(dek, v.path(dataFile))
 	if err != nil {
 		return err
 	}
-	crypto.Wipe(tar)
+	// Тот же запрет отката, что при расшифровке: архив не старше записи в vault.json.
+	if (header && counter < m.Counter) || (!header && m.Version != 1 && m.Counter > 0) {
+		return ErrRollback
+	}
 	return nil
 }
