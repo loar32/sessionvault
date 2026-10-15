@@ -281,7 +281,7 @@ func (d *Daemon) selfCheck() []checkup.Item {
 		if !fan.perm {
 			mode = i18n.T("уведомлениями")
 		}
-		items = append(items, item("decoys", i18n.T("Приманки"), checkup.OK, i18n.Tf("под наблюдением: %d файлов (%s)", len(fan.files), mode), ""))
+		items = append(items, item("decoys", i18n.T("Приманки"), checkup.OK, i18n.Tf("под наблюдением: %d файлов (%s)", fan.count(), mode), ""))
 	}
 	var without []string
 	for _, a := range protected {

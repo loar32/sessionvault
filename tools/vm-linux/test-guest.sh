@@ -143,7 +143,7 @@ printf '#!/bin/sh\nexec foot --app-id=discord-fake --title=FakeDiscord sh -c "sl
 chmod +x ~/.config/discord/Discord
 echo '{"SKIP_HOST_UPDATE":true}' > ~/.config/discord/settings.json
 # app: имя, начало командной строки главного процесса, часть класса или заголовка окна
-for spec in "brave|^/usr/bin/brave|brave" "chrome|^/usr/bin/google-chrome-stable|chrome" "discord|app-id=discord-fake|discord"; do
+for spec in "brave|^/opt/brave-bin/brave|brave" "chrome|^/opt/google/chrome/chrome|chrome" "discord|app-id=discord-fake|discord"; do
   IFS='|' read -r app main class <<<"$spec"
   check "$app: protect" bash -c "echo '$PW' | sudo $SV protect -yes -password-stdin $app"
   check "$app: unlock + запуск" bash -c "echo '$PW' | $S $SV unlock $app"

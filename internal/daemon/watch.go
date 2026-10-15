@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -25,10 +26,18 @@ import (
 // События-разрешения (FAN_OPEN_PERM): открывающий процесс ждёт ответа службы, поэтому его exe и uid ещё можно прочитать —
 // короткоживущий процесс (cat, скрипт) при обычном уведомлении успевает завершиться. Чтение всегда разрешается: в приманке
 // мусор. Если ядро собрано без них, остаются обычные уведомления.
+// Группа одна на всё время работы службы: перезагрузка меняет только метки. Закрыть группу, пока её читатель ждёт в read,
+// нельзя — read не прервётся, номер дескриптора займёт другой файл, и ответ на событие уйдёт не туда: открывший приманку
+// (в том числе сама служба) повиснет навсегда.
 type fanWatch struct {
 	fd    int
 	perm  bool
-	files map[string]string // ключ dev:inode -> приложение
+	mu    sync.Mutex
+	files map[string]fanMark // ключ dev:inode
+}
+
+type fanMark struct {
+	app, path string
 }
 
 const fanMetaSize = 24 // struct fanotify_event_metadata
@@ -42,7 +51,7 @@ func newFanWatch(perm bool) (*fanWatch, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &fanWatch{fd: fd, perm: perm, files: map[string]string{}}, nil
+	return &fanWatch{fd: fd, perm: perm, files: map[string]fanMark{}}, nil
 }
 
 func (w *fanWatch) mask() uint64 {
@@ -50,6 +59,19 @@ func (w *fanWatch) mask() uint64 {
 		return unix.FAN_OPEN_PERM
 	}
 	return unix.FAN_OPEN
+}
+
+func (w *fanWatch) lookup(key string) (fanMark, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	m, ok := w.files[key]
+	return m, ok
+}
+
+func (w *fanWatch) count() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return len(w.files)
 }
 
 func inodeKey(st *unix.Stat_t) string {
@@ -66,70 +88,119 @@ func (d *Daemon) reloadTraps() {
 	if err := writeShareDir(); err != nil {
 		d.log.Println("файлы ссылок для песочницы:", err)
 	}
-	w, err := d.markDecoys(true)
-	if errors.Is(err, unix.EINVAL) {
-		w, err = d.markDecoys(false)
-	}
-	if err != nil {
-		d.log.Println("fanotify:", err)
-		return
-	}
+	d.trapMu.Lock()
+	defer d.trapMu.Unlock()
 	d.mu.Lock()
-	old := d.fan
-	d.fan = w
+	w := d.fan
 	d.mu.Unlock()
-	if old != nil {
-		_ = unix.Close(old.fd)
+	if w == nil {
+		var err error
+		if w, err = d.newTraps(); err != nil {
+			d.log.Println("fanotify:", err)
+			return
+		}
+		d.mu.Lock()
+		d.fan = w
+		d.mu.Unlock()
+		go d.readEvents(w)
+	} else if err := d.remark(w); err != nil {
+		d.log.Println("fanotify:", err)
 	}
-	d.log.Printf("приманки под наблюдением: %d файлов", len(w.files))
-	go d.readEvents(w)
+	d.log.Printf("приманки под наблюдением: %d файлов", w.count())
 }
 
-func (d *Daemon) markDecoys(perm bool) (*fanWatch, error) {
-	w, err := newFanWatch(perm)
-	if err != nil {
-		return nil, err
+// newTraps создаёт группу с событиями-разрешениями, а если ядро их не умеет — с уведомлениями. Читатель группы ещё не
+// запущен, поэтому неподошедшую группу можно закрыть.
+func (d *Daemon) newTraps() (*fanWatch, error) {
+	w, err := newFanWatch(true)
+	if err == nil {
+		if err = d.remark(w); errors.Is(err, unix.EINVAL) {
+			_ = unix.Close(w.fd)
+		}
 	}
+	if errors.Is(err, unix.EINVAL) {
+		if w, err = newFanWatch(false); err == nil {
+			err = d.remark(w)
+		}
+	}
+	return w, err
+}
+
+// remark ставит метки на все приманки из decoys.json (повторная метка безвредна) и только потом снимает метки с тех,
+// которых в списке больше нет: окна, когда приманка не под наблюдением, нет.
+func (d *Daemon) remark(w *fanWatch) error {
+	next := map[string]fanMark{}
 	for app, entries := range loadDecoys() {
 		for _, e := range entries {
 			for _, f := range e.Files {
-				err := w.mark(filepath.Join(e.Path, f.Name), d.cfg.Owner, app)
+				path := filepath.Join(e.Path, f.Name)
+				key, err := w.mark(path, d.cfg.Owner)
 				if errors.Is(err, unix.EINVAL) {
-					_ = unix.Close(w.fd)
-					return nil, err
+					return err
 				}
 				if err != nil {
 					d.log.Printf("%s: приманка %s: %v", app, f.Name, err)
+					continue
 				}
+				next[key] = fanMark{app: app, path: path}
 			}
 		}
 	}
-	return w, nil
+	w.mu.Lock()
+	old := w.files
+	w.files = next
+	w.mu.Unlock()
+	for key, m := range old {
+		if _, ok := next[key]; !ok {
+			w.unmark(m.path, key)
+		}
+	}
+	return nil
 }
 
 // mark открывает файл без перехода по ссылкам и ставит метку на сам открытый файл: подменённый путь не уведёт метку
 // на системный файл. Файл должен принадлежать владельцу. O_PATH не годится: fanotify_mark без имени его не принимает.
-func (w *fanWatch) mark(path string, owner int, app string) error {
+func (w *fanWatch) mark(path string, owner int) (string, error) {
+	fd, st, err := openDecoy(path)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = unix.Close(fd) }()
+	if int(st.Uid) != owner || st.Mode&unix.S_IFMT != unix.S_IFREG {
+		return "", errors.New(i18n.T("файл приманки подменён"))
+	}
+	if err := unix.FanotifyMark(w.fd, unix.FAN_MARK_ADD, w.mask(), fd, ""); err != nil {
+		return "", err
+	}
+	return inodeKey(&st), nil
+}
+
+// unmark снимает метку с прежнего файла приманки, если на его месте всё тот же файл (иначе метка исчезла вместе с ним).
+func (w *fanWatch) unmark(path, key string) {
+	fd, st, err := openDecoy(path)
+	if err != nil {
+		return
+	}
+	defer func() { _ = unix.Close(fd) }()
+	if inodeKey(&st) == key {
+		_ = unix.FanotifyMark(w.fd, unix.FAN_MARK_REMOVE, w.mask(), fd, "")
+	}
+}
+
+func openDecoy(path string) (int, unix.Stat_t, error) {
+	var st unix.Stat_t
 	fd, err := unix.Openat2(unix.AT_FDCWD, path, &unix.OpenHow{
 		Flags:   unix.O_RDONLY | unix.O_NOFOLLOW | unix.O_NONBLOCK | unix.O_NOCTTY | unix.O_CLOEXEC,
 		Resolve: unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS,
 	})
 	if err != nil {
-		return err
+		return -1, st, err
 	}
-	defer func() { _ = unix.Close(fd) }()
-	var st unix.Stat_t
 	if err := unix.Fstat(fd, &st); err != nil {
-		return err
+		_ = unix.Close(fd)
+		return -1, st, err
 	}
-	if int(st.Uid) != owner || st.Mode&unix.S_IFMT != unix.S_IFREG {
-		return errors.New(i18n.T("файл приманки подменён"))
-	}
-	if err := unix.FanotifyMark(w.fd, unix.FAN_MARK_ADD, w.mask(), fd, ""); err != nil {
-		return err
-	}
-	w.files[inodeKey(&st)] = app
-	return nil
+	return fd, st, nil
 }
 
 func (d *Daemon) readEvents(w *fanWatch) {
@@ -140,7 +211,7 @@ func (d *Daemon) readEvents(w *fanWatch) {
 			if errors.Is(err, unix.EINTR) {
 				continue
 			}
-			return // группа закрыта при перезагрузке меток
+			return // группа закрыта: служба останавливается
 		}
 		for off := 0; off+fanMetaSize <= n; {
 			l := int(binary.LittleEndian.Uint32(buf[off:]))
@@ -187,7 +258,7 @@ func (d *Daemon) onOpen(w *fanWatch, fd, pid int) (a Alert, alarm bool) {
 	if unix.Fstat(fd, &st) != nil {
 		return a, false
 	}
-	app, ok := w.files[inodeKey(&st)]
+	m, ok := w.lookup(inodeKey(&st))
 	if !ok {
 		return a, false
 	}
@@ -196,7 +267,7 @@ func (d *Daemon) onOpen(w *fanWatch, fd, pid int) (a Alert, alarm bool) {
 	if d.allowed(exe) {
 		return a, false
 	}
-	return Alert{App: app, Process: exe, PID: pid, UID: procUID(pid), Object: object}, true
+	return Alert{App: m.app, Process: exe, PID: pid, UID: procUID(pid), Object: object}, true
 }
 
 // Своё приложение, запущенное в обход SessionVault (например, браузер из терминала), открывает свою прежнюю папку —

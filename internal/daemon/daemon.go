@@ -69,7 +69,8 @@ type Daemon struct {
 	server      int // pid композитора последнего сеанса: его выход — выход из системы
 	wg          sync.WaitGroup
 
-	fan *fanWatch
+	fan    *fanWatch
+	trapMu sync.Mutex // перестановка меток приманок по одной
 }
 
 func New(cfg Config, l *log.Logger) *Daemon {
