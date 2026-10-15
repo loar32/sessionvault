@@ -7,3 +7,4 @@ go.sum text eol=lf
 *.sh text eol=lf
 PKGBUILD text eol=lf
 *.install text eol=lf
+*.py text eol=lf
