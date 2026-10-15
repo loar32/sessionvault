@@ -150,7 +150,7 @@ func (s session) revoke(uid int) {
 
 // acl меняет ACL объекта в каталоге сеанса владельца. Путь там подменяет любой его процесс, а setfacl идёт по ссылкам:
 // подменённый сокет выдал бы учётке приложения права на системный файл. Поэтому объект открывается без перехода по
-// ссылкам, проверяются тип и владелец, а setfacl получает уже открытый дескриптор (/proc/self/fd/3).
+// ссылкам, проверяются тип и владелец, а setfacl получает уже открытый дескриптор.
 func (s session) acl(path string, kind uint32, args ...string) error {
 	fd, err := unix.Openat2(unix.AT_FDCWD, path, &unix.OpenHow{
 		Flags:   unix.O_PATH | unix.O_NOFOLLOW | unix.O_CLOEXEC,
@@ -169,10 +169,15 @@ func (s session) acl(path string, kind uint32, args ...string) error {
 	if st.Mode&unix.S_IFMT != kind || strconv.Itoa(int(st.Uid)) != owner {
 		return fmt.Errorf(i18n.T("%s подменён: не тот тип или владелец"), path)
 	}
+	return aclFD(f, args...)
+}
+
+// aclFD — setfacl по открытому дескриптору (/proc/self/fd/3): путь уже проверен, подменить его нельзя.
+func aclFD(f *os.File, args ...string) error {
 	cmd := exec.Command("setfacl", append(args, "/proc/self/fd/3")...)
 	cmd.ExtraFiles = []*os.File{f}
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("setfacl %s %s: %v: %s", strings.Join(args, " "), path, err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("setfacl %s %s: %v: %s", strings.Join(args, " "), f.Name(), err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
@@ -185,13 +190,16 @@ func setfacl(args ...string) error {
 	return nil
 }
 
-// bwrapArgs — песочница приложения: система только для чтения, свой /tmp и /run, вместо домашнего каталога владельца —
-// расшифрованный дом приложения, вместо «Загрузок» — общая папка обмена. Своё пространство PID: приложение не видит чужих
-// процессов, а выход bwrap гасит всё внутри. Сеть общая.
-func bwrapArgs(app App, acc account, s session, ownerHome string, argv []string) []string {
-	run := "/run/user/" + strconv.Itoa(acc.uid)
-	appDir := AppDir(app.Name)
+// sandboxArgs — песочница приложения: система только для чтения, свой /tmp и /run, вместо домашнего каталога владельца —
+// расшифрованный дом приложения, вместо «Загрузок» — общая папка обмена, плюс папки, открытые приложению. Своё
+// пространство PID: приложение не видит чужих процессов, а выход bwrap гасит всё внутри. Внутри uid — как у владельца
+// (так шина сеанса принимает приложение), снаружи процессы под учёткой приложения. Сеть общая.
+func (d *Daemon) sandboxArgs(app App, inst *instance, argv []string) []string {
+	home := d.cfg.OwnerHome
+	run := "/run/user/" + strconv.Itoa(d.cfg.Owner)
+	s := inst.sess
 	a := []string{
+		"--unshare-user", "--uid", strconv.Itoa(d.cfg.Owner), "--gid", strconv.Itoa(ownerGID(d.cfg)),
 		"--unshare-pid", "--unshare-ipc", "--unshare-cgroup-try",
 		"--die-with-parent", "--new-session",
 		"--ro-bind", "/usr", "/usr",
@@ -211,21 +219,48 @@ func bwrapArgs(app App, acc account, s session, ownerHome string, argv []string)
 		"--bind", filepath.Join(s.runtime, s.wayland), filepath.Join(run, s.wayland),
 		"--bind-try", filepath.Join(s.runtime, "pipewire-0"), filepath.Join(run, "pipewire-0"),
 		"--bind-try", filepath.Join(s.runtime, "pulse", "native"), filepath.Join(run, "pulse", "native"),
-		"--bind", filepath.Join(appDir, homeName), ownerHome,
-		"--bind", filepath.Join(appDir, "tmp"), "/tmp",
-		"--bind", ExchangeDir(), filepath.Join(ownerHome, "Downloads"),
-		"--chdir", ownerHome,
-		"--",
+		"--bind", filepath.Join(AppDir(app.Name), homeName), home,
+		"--bind", filepath.Join(AppDir(app.Name), "tmp"), "/tmp",
+		"--bind", ExchangeDir(), filepath.Join(home, "Downloads"),
+		"--ro-bind-try", shareDir(), sandboxShare,
 	}
+	// Камера: устройства есть на момент запуска; доступ к ним даёт группа video процесса.
+	for _, pat := range []string{"/dev/video*", "/dev/media*"} {
+		devs, _ := filepath.Glob(pat)
+		for _, dev := range devs {
+			if fi, err := os.Lstat(dev); err == nil && fi.Mode()&os.ModeCharDevice != 0 {
+				a = append(a, "--dev-bind", dev, dev)
+			}
+		}
+	}
+	a = append(a, "--ro-bind-try", "/dev/v4l", "/dev/v4l")
+	if p := app.ProgramDir(); p != "" {
+		a = append(a, "--ro-bind", p, p)
+	}
+	if inst.links != nil {
+		a = append(a, "--bind", linkSocket(app.Name), sandboxLink)
+		if _, err := os.Stat("/usr/bin/xdg-open"); err == nil {
+			a = append(a, "--ro-bind", BinPath, "/usr/bin/xdg-open")
+		}
+	}
+	if inst.bus != nil {
+		a = append(a, "--bind", inst.bus.path, filepath.Join(run, "bus"))
+	}
+	for _, s := range inst.shares {
+		a = append(a, "--bind", s.src, s.dest)
+	}
+	a = append(a, "--chdir", home, "--", BinPath, "sandbox", strconv.Itoa(trayPID(inst.acc.uid)))
 	return append(a, argv...)
 }
 
-func sandboxEnv(app App, acc account, s session, ownerHome string) []string {
-	run := "/run/user/" + strconv.Itoa(acc.uid)
+func (d *Daemon) sandboxEnv(app App, inst *instance) []string {
+	home := d.cfg.OwnerHome
+	run := "/run/user/" + strconv.Itoa(d.cfg.Owner)
+	s := inst.sess
 	env := []string{
-		"HOME=" + ownerHome,
-		"USER=" + AccountName(app.Name),
-		"LOGNAME=" + AccountName(app.Name),
+		"HOME=" + home,
+		"USER=" + d.cfg.OwnerName,
+		"LOGNAME=" + d.cfg.OwnerName,
 		"PATH=/usr/local/bin:/usr/bin",
 		"XDG_RUNTIME_DIR=" + run,
 		"WAYLAND_DISPLAY=" + s.wayland,
@@ -234,7 +269,15 @@ func sandboxEnv(app App, acc account, s session, ownerHome string) []string {
 		"ELECTRON_OZONE_PLATFORM_HINT=wayland",
 		"QT_QPA_PLATFORM=wayland",
 		"GDK_BACKEND=wayland",
-		"XDG_DOWNLOAD_DIR=" + filepath.Join(ownerHome, "Downloads"),
+		"XDG_DOWNLOAD_DIR=" + filepath.Join(home, "Downloads"),
+		"XDG_DATA_DIRS=" + sandboxShare + ":/usr/local/share:/usr/share",
+		"XDG_CONFIG_DIRS=" + sandboxShare + "/config:/etc/xdg",
+	}
+	if inst.bus != nil {
+		env = append(env, "DBUS_SESSION_BUS_ADDRESS=unix:path="+filepath.Join(run, "bus"))
+	}
+	if app.Kind == "appimage" {
+		env = append(env, "APPDIR="+app.ProgramDir())
 	}
 	if s.lang != "" {
 		env = append(env, "LANG="+s.lang)
@@ -252,7 +295,7 @@ func sandboxEnv(app App, acc account, s session, ownerHome string) []string {
 }
 
 var (
-	safeFlag    = regexp.MustCompile(`^--(ozone-platform|ozone-platform-hint|wayland-text-input-version|force-device-scale-factor)=[A-Za-z0-9_.]{1,32}$`)
+	safeFlag    = regexp.MustCompile(`^--(ozone-platform|ozone-platform-hint|wayland-text-input-version|force-device-scale-factor)=[A-Za-z0-9_.]{1,32}$|^--password-store=(basic|gnome-libsecret|kwallet5|kwallet6)$`)
 	featureFlag = regexp.MustCompile(`^--(enable|disable)-features=[A-Za-z0-9_,:]{1,512}$`)
 	extPath     = regexp.MustCompile(`^/usr/share/[A-Za-z0-9_./-]{1,200}$`)
 )

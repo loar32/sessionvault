@@ -42,6 +42,12 @@ var decoyLayouts = map[string][]decoyFile{
 		{"Default/Cookies", 24576, 122880, true},
 		{"Default/Network/Cookies", 24576, 122880, true},
 	},
+	// Общая раскладка для добавленных приложений: настройки, база и файл сессии.
+	"generic": {
+		{"config.json", 300, 2500, false},
+		{"storage.db", 16384, 98304, true},
+		{"session", 200, 900, false},
+	},
 	"discord": {
 		{"Local State", 2000, 6000, false},
 		{"Preferences", 800, 2500, false},
@@ -61,19 +67,20 @@ type DecoyFile struct {
 }
 
 type decoyEntry struct {
-	Path  string      `json:"path"`
-	Files []DecoyFile `json:"files"`
+	Layout string      `json:"layout"`
+	Path   string      `json:"path"`
+	Files  []DecoyFile `json:"files"`
 }
 
-func loadDecoys() map[string]decoyEntry {
-	m := map[string]decoyEntry{}
+func loadDecoys() map[string][]decoyEntry {
+	m := map[string][]decoyEntry{}
 	if b, err := os.ReadFile(DecoysPath()); err == nil {
 		_ = json.Unmarshal(b, &m)
 	}
 	return m
 }
 
-func saveDecoys(m map[string]decoyEntry) error {
+func saveDecoys(m map[string][]decoyEntry) error {
 	b, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return err

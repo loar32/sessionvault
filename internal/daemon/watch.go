@@ -63,6 +63,9 @@ func (d *Daemon) StartTraps() {
 }
 
 func (d *Daemon) reloadTraps() {
+	if err := writeShareDir(); err != nil {
+		d.log.Println("файлы ссылок для песочницы:", err)
+	}
 	w, err := d.markDecoys(true)
 	if errors.Is(err, unix.EINVAL) {
 		w, err = d.markDecoys(false)
@@ -87,15 +90,17 @@ func (d *Daemon) markDecoys(perm bool) (*fanWatch, error) {
 	if err != nil {
 		return nil, err
 	}
-	for app, e := range loadDecoys() {
-		for _, f := range e.Files {
-			err := w.mark(filepath.Join(e.Path, f.Name), d.cfg.Owner, app)
-			if errors.Is(err, unix.EINVAL) {
-				_ = unix.Close(w.fd)
-				return nil, err
-			}
-			if err != nil {
-				d.log.Printf("%s: приманка %s: %v", app, f.Name, err)
+	for app, entries := range loadDecoys() {
+		for _, e := range entries {
+			for _, f := range e.Files {
+				err := w.mark(filepath.Join(e.Path, f.Name), d.cfg.Owner, app)
+				if errors.Is(err, unix.EINVAL) {
+					_ = unix.Close(w.fd)
+					return nil, err
+				}
+				if err != nil {
+					d.log.Printf("%s: приманка %s: %v", app, f.Name, err)
+				}
 			}
 		}
 	}
@@ -195,14 +200,15 @@ func (d *Daemon) onOpen(w *fanWatch, fd, pid int) (a Alert, alarm bool) {
 }
 
 // Своё приложение, запущенное в обход SessionVault (например, браузер из терминала), открывает свою прежнюю папку —
-// там приманка, это не кража. Остальное разрешается только явно (decoy_allow).
+// там приманка, это не кража. Остальное разрешается только явно (decoy_allow). Программа, которую может заменить не
+// только root, в белый список не попадает: стилер положил бы себя на её место.
 func (d *Daemon) allowed(exe string) bool {
 	if exe == "" {
 		return false
 	}
-	for _, a := range Apps {
+	for _, a := range AllApps() {
 		if slices.Contains(a.Images, exe) {
-			return true
+			return !a.Custom || rootOwned(exe) == nil
 		}
 	}
 	return slices.Contains(d.cfg.DecoyAllow, exe)
