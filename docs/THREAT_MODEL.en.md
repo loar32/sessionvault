@@ -41,6 +41,22 @@ Out of scope (the protection does not stop these; see the README, "Границ�
 - The **password, alarm and Hello windows** are started by the service in the user session as SYSTEM: user processes cannot read or replace them (UIPI).
 - **Network**: the program has no network calls; the firewall also forbids it any outbound access.
 
+## Linux (Omarchy)
+
+The same vault and the same model: your account is the untrusted environment, the `sessionvault daemon` service (root) is trusted. Differences:
+
+| Measure | Against |
+|---|---|
+| The app runs under `sv-<name>` in a bubblewrap sandbox (own PID namespace, read-only system, the decrypted app home `0700` in place of your home folder) | a stealer reading the app's data and memory; a compromised app reaching your home and a neighbour's data |
+| The service socket accepts only the owner's uid and root (`SO_PEERCRED`); the protocol is a word and an app name, links are validated | forged requests, passing arguments to the app |
+| The app's access to the session is an ACL only on the Wayland socket and passage to PipeWire/Pulse; the object is opened without following links, its type and owner are checked; the socket must be served by a known compositor from `/usr` | granting rights to a foreign file via a planted link; a fake "compositor" |
+| Actions in the owner's home folder are done by a helper with the owner's rights | link attacks on root |
+| A decoy with fanotify marks by inode and permission events | a stealer reading the old paths, including via a hard link or after a rename |
+| Locking on a screen locker or systemd-sleep start (kernel process connector), on compositor exit and on a timer | the key staying in memory after the user leaves |
+| Only safe flags are taken from the browser flags file | `--remote-debugging-port` and the like from a file the stealer can write |
+
+Limits: a process of your account sees windows and the screen (Wayland does not stop screenshots); the password is typed in a terminal of your session; the shared `~/SessionVault` folder is available to all protected apps; the sandbox shares the network (abstract Unix sockets are reachable for both you and the app); root bypasses the protection.
+
 ## Known limits
 
 The full list is in the README ("Границы защиты", "Ограничения приманки"). The main ones: it protects session files, not the window of a running app; decrypted data sits in the working folder while the app runs; an administrator and a kernel driver bypass it; not verified on hardware (YubiKey, fingerprint/face, sleep, RDP) or with real Discord and Steam; the installer is not code-signed.
