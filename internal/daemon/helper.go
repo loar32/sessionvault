@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,12 +22,14 @@ import (
 	"github.com/loar32/sessionvault/internal/vault"
 )
 
-// Всё, что служба делает в домашнем каталоге владельца (перенос данных, приманка, ярлыки), выполняет помощник с правами
-// владельца: root, идущий по путям чужого каталога, прошёл бы по подставленной ссылке к системным файлам.
+// Всё, что служба делает в домашнем каталоге владельца (перенос данных, приманка, ярлыки, права на папки), выполняет
+// помощник с правами владельца: root, идущий по путям чужого каталога, прошёл бы по подставленной ссылке к системным
+// файлам. Распаковку копии программы делает помощник с правами учётки приложения — по той же причине.
 
 const desktopMarker = "X-SessionVault=true"
 
-// RunHelper — команда «sessionvault helper ...»; вызывается только службой и командами root с правами владельца.
+// RunHelper — команда «sessionvault helper ...»; вызывается только службой и командами root с правами владельца или
+// учётки приложения.
 func RunHelper(args []string) error {
 	if os.Geteuid() == 0 {
 		return errors.New("helper не запускается от root")
@@ -47,11 +50,7 @@ func RunHelper(args []string) error {
 				exclude = a.Exclude
 			}
 		}
-		data, _, err := vault.PackDir(path, exclude)
-		if err != nil {
-			return err
-		}
-		_, err = os.Stdout.Write(data)
+		_, err := vault.WriteTar(os.Stdout, path, exclude)
 		return err
 	case "unpack":
 		// На месте приманки уже что-то есть (приложение запускали в обход SessionVault): это откладывается рядом, не теряется.
@@ -62,11 +61,7 @@ func RunHelper(args []string) error {
 			}
 			fmt.Printf(i18n.T("На месте данных были файлы, они перенесены в %s\n"), aside)
 		}
-		data, err := io.ReadAll(io.LimitReader(os.Stdin, 1<<30+1))
-		if err != nil {
-			return err
-		}
-		return vault.UnpackDir(data, path)
+		return vault.ExtractTar(os.Stdin, path)
 	case "remove":
 		return os.RemoveAll(path)
 	case "decoy":
@@ -84,9 +79,10 @@ func RunHelper(args []string) error {
 			return err
 		}
 		return removeDecoy(path, files)
-	case "put":
-		// Ярлык пишется, только если на этом месте нет чужого файла (своё — с меткой SessionVault).
-		if b, err := os.ReadFile(path); err == nil && !bytes.Contains(b, []byte(desktopMarker)) {
+	case "put", "replace":
+		// put пишет ярлык, только если на этом месте нет чужого файла (своё — с меткой SessionVault). replace — после того,
+		// как служба сохранила прежний файл владельца.
+		if b, err := os.ReadFile(path); err == nil && args[0] == "put" && !bytes.Contains(b, []byte(desktopMarker)) {
 			return fmt.Errorf(i18n.T("%s уже есть и это не ярлык SessionVault"), path)
 		}
 		data, err := io.ReadAll(io.LimitReader(os.Stdin, 1<<20))
@@ -96,6 +92,7 @@ func RunHelper(args []string) error {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return err
 		}
+		_ = os.Remove(path) // ссылка на месте ярлыка заменяется файлом, а не переписывает цель
 		return os.WriteFile(path, data, 0o644)
 	case "del":
 		b, err := os.ReadFile(path)
@@ -103,6 +100,57 @@ func RunHelper(args []string) error {
 			return nil
 		}
 		return os.Remove(path)
+	case "read":
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = f.Close() }()
+		fi, err := f.Stat()
+		if err != nil || !fi.Mode().IsRegular() {
+			return errors.New(i18n.T("не обычный файл"))
+		}
+		_, err = io.Copy(os.Stdout, f)
+		return err
+	case "magic":
+		// Первые байты файла: по ним узнаётся AppImage.
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = f.Close() }()
+		b := make([]byte, 16)
+		n, _ := io.ReadFull(f, b)
+		fmt.Println(hex.EncodeToString(b[:n]))
+		return nil
+	case "list":
+		// Имена в каталоге (для поиска ярлыков и папок данных): только имена, без содержимого.
+		entries, err := os.ReadDir(path)
+		if err != nil {
+			return nil
+		}
+		for _, e := range entries {
+			fmt.Println(e.Name())
+		}
+		return nil
+	case "update-db":
+		if _, err := os.Stat("/usr/bin/update-desktop-database"); err != nil {
+			return nil
+		}
+		return exec.Command("/usr/bin/update-desktop-database", "-q", path).Run()
+	case "packprog":
+		return writeProgramTar(os.Stdout, path)
+	case "untar":
+		return extractProgramTar(os.Stdin, path)
+	case "appimage":
+		return extractAppImage(os.Stdin, path)
+	case "acl":
+		// acl <папка> grant|revoke <uid учётки> <uid владельца>: права учётки приложения на папку владельца ставит сам
+		// владелец — так права нельзя выдать на чужой файл через ссылку.
+		if len(args) != 5 {
+			return errors.New("helper acl: неверные аргументы")
+		}
+		return shareACL(path, args[2], args[3], args[4])
 	case "link":
 		if len(args) != 3 {
 			return errors.New("helper link: нужна цель")
@@ -132,30 +180,104 @@ func helperBin() string {
 	return exe
 }
 
+func helperCmd(cred *syscall.Credential, home string, args ...string) *exec.Cmd {
+	cmd := exec.Command(helperBin(), append([]string{"helper"}, args...)...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: cred}
+	cmd.Env = []string{"HOME=" + home, "PATH=/usr/local/bin:/usr/bin", "LANG=C.UTF-8"}
+	cmd.Dir = "/"
+	return cmd
+}
+
+func helperErr(err error, stderr *bytes.Buffer) error {
+	msg := strings.TrimSpace(stderr.String())
+	if msg == "" {
+		msg = err.Error()
+	}
+	return errors.New(msg)
+}
+
 // asOwner запускает помощника с правами владельца (его uid, gid и группы) и возвращает его вывод.
 func asOwner(cfg Config, stdin []byte, args ...string) ([]byte, error) {
-	cmd := exec.Command(helperBin(), append([]string{"helper"}, args...)...)
+	var out bytes.Buffer
+	var in io.Reader
+	if stdin != nil {
+		in = bytes.NewReader(stdin)
+	}
+	if err := ownerStream(cfg, in, &out, args...); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
+}
+
+// ownerStream — помощник владельца с потоками: большие данные не собираются в памяти.
+func ownerStream(cfg Config, stdin io.Reader, stdout io.Writer, args ...string) error {
+	cred, err := ownerCred(cfg)
+	if err != nil {
+		return err
+	}
+	cmd := helperCmd(cred, cfg.OwnerHome, args...)
+	var errb bytes.Buffer
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, &errb
+	if err := cmd.Run(); err != nil {
+		return helperErr(err, &errb)
+	}
+	return nil
+}
+
+// packFromOwner переносит папку владельца src в dst (каталог root) потоком tar. Возвращает false, если переносить было
+// нечего: тогда dst не остаётся.
+func packFromOwner(cfg Config, src, app, dst string) (bool, error) {
+	cred, err := ownerCred(cfg)
+	if err != nil {
+		return false, err
+	}
+	cmd := helperCmd(cred, cfg.OwnerHome, "pack", src, app)
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		return false, err
+	}
+	var errb bytes.Buffer
+	cmd.Stderr = &errb
+	if err := cmd.Start(); err != nil {
+		return false, err
+	}
+	xerr := vault.ExtractTar(out, dst)
+	_, _ = io.Copy(io.Discard, out)
+	if err := cmd.Wait(); err != nil {
+		return false, helperErr(err, &errb)
+	}
+	if xerr != nil {
+		return false, xerr
+	}
+	if entries, err := os.ReadDir(dst); err == nil && len(entries) == 0 {
+		_ = os.Remove(dst)
+		return false, nil
+	}
+	return true, nil
+}
+
+// unpackToOwner возвращает папку src (каталог root) владельцу в dst потоком tar; вывод помощника — сообщения для человека.
+func unpackToOwner(cfg Config, src string, exclude []string, dst string) ([]byte, error) {
 	cred, err := ownerCred(cfg)
 	if err != nil {
 		return nil, err
 	}
-	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: cred}
-	cmd.Env = []string{"HOME=" + cfg.OwnerHome, "PATH=/usr/local/bin:/usr/bin", "LANG=C.UTF-8"}
-	cmd.Dir = "/"
-	if stdin != nil {
-		cmd.Stdin = bytes.NewReader(stdin)
+	cmd := helperCmd(cred, cfg.OwnerHome, "unpack", dst)
+	in, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
 	}
 	var out, errb bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &errb
-	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(errb.String())
-		if msg == "" {
-			msg = err.Error()
-		}
-		return nil, errors.New(msg)
+	cmd.Stdout, cmd.Stderr = &out, &errb
+	if err := cmd.Start(); err != nil {
+		return nil, err
 	}
-	return out.Bytes(), nil
+	_, werr := vault.WriteTar(in, src, exclude)
+	_ = in.Close()
+	if err := cmd.Wait(); err != nil {
+		return nil, helperErr(err, &errb)
+	}
+	return out.Bytes(), werr
 }
 
 func ownerCred(cfg Config) (*syscall.Credential, error) {
@@ -176,4 +298,22 @@ func ownerCred(cfg Config) (*syscall.Credential, error) {
 		}
 	}
 	return cred, nil
+}
+
+func ownerGID(cfg Config) int {
+	if u, err := user.LookupId(strconv.Itoa(cfg.Owner)); err == nil {
+		if g, err := strconv.Atoi(u.Gid); err == nil {
+			return g
+		}
+	}
+	return cfg.Owner
+}
+
+// ownerList — имена в каталоге владельца (его помощником).
+func ownerList(cfg Config, dir string) []string {
+	b, err := asOwner(cfg, nil, "list", dir)
+	if err != nil || len(bytes.TrimSpace(b)) == 0 {
+		return nil
+	}
+	return strings.Split(strings.TrimRight(string(b), "\n"), "\n")
 }

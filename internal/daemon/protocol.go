@@ -16,7 +16,7 @@ type Request struct {
 
 var errBadRequest = errors.New("неверный запрос")
 
-// ParseRequest — единственные запросы к службе. Без имени: status, list, running, lock, reload (только root).
+// ParseRequest — единственные запросы к службе. Без имени: status, list, running, lock, check (отчёт JSON), reload (только root).
 // С именем приложения: run, close, unlock (пароль следующей строкой), open и webapp (ссылка следующей строкой, см. ipc.ValidURL).
 // Ни путей, ни аргументов: ответ — одно слово или список имён.
 func ParseRequest(line string) (Request, error) {
@@ -32,7 +32,7 @@ func ParseRequest(line string) (Request, error) {
 	switch {
 	case len(parts) == 1:
 		switch parts[0] {
-		case "status", "list", "running", "lock", "reload":
+		case "status", "list", "running", "lock", "reload", "check":
 			return Request{Cmd: parts[0]}, nil
 		}
 	case len(parts) == 2 && profiles.ValidName(parts[1]):

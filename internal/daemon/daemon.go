@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,7 +12,9 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -37,11 +40,13 @@ const (
 )
 
 type instance struct {
-	cmd  *exec.Cmd
-	sess session
-	acc  account
+	cmd    *exec.Cmd
+	sess   session
+	acc    account
+	bus    *busProxy
+	links  *net.UnixListener
+	shares []share
 }
-
 type Daemon struct {
 	cfg Config
 	log *log.Logger
@@ -180,7 +185,9 @@ func (d *Daemon) handle(c *net.UnixConn) {
 	var extra string
 	switch req.Cmd {
 	case "open", "webapp":
-		if extra, err = readLine(r, ipc.MaxURL); err != nil || ipc.ValidURL(extra) != nil {
+		// Ссылка: для веб-приложения только http(s), для open ещё и свои схемы приложения (проверяются в run).
+		extra, err = readLine(r, ipc.MaxURL)
+		if _, ok := linkScheme(extra); err != nil || !ok || (req.Cmd == "webapp" && ipc.ValidURL(extra) != nil) {
 			reply(c, ipc.Failed)
 			return
 		}
@@ -192,6 +199,14 @@ func (d *Daemon) handle(c *net.UnixConn) {
 		reply(c, d.list())
 	case "running":
 		reply(c, d.runningList())
+	case "check":
+		_ = c.SetDeadline(time.Now().Add(time.Minute))
+		b, err := json.Marshal(d.Check())
+		if err != nil {
+			reply(c, ipc.Failed)
+			return
+		}
+		reply(c, string(b))
 	case "lock":
 		d.lockRequested("команда lock")
 		reply(c, ipc.Ok)
@@ -270,10 +285,6 @@ func (d *Daemon) runningList() string {
 	return strings.Join(n, ",")
 }
 
-func appVault(a App) vault.Vault {
-	return vault.Vault{Dir: AppDir(a.Name), DataName: homeName, Exclude: a.HomeExclude()}
-}
-
 func (d *Daemon) unlock(name string, pw []byte) string {
 	a, ok := FindApp(name)
 	if !ok {
@@ -331,7 +342,7 @@ func (d *Daemon) unlock(name string, pw []byte) string {
 // служба окон не рисует. Приложение уже запущено — новый экземпляр в той же песочнице передаст ссылку работающему.
 func (d *Daemon) run(name, mode, link string, pid int) string {
 	a, ok := FindApp(name)
-	if !ok {
+	if !ok || (mode == "open" && !a.AcceptsLink(link)) {
 		return ipc.Failed
 	}
 	v := appVault(a)
@@ -387,10 +398,12 @@ func appArgs(a App, mode, link string, owner int, ownerHome string) ([]string, e
 	argv := append([]string{exe}, browserFlags(a, owner, ownerHome)...)
 	argv = append(argv, a.Args...)
 	switch {
-	case mode == "open" && a.Browser:
+	case mode == "open" && a.AcceptsLink(link):
 		argv = append(argv, link)
-	case mode == "webapp" && a.Browser:
+	case mode == "webapp" && a.Chromium:
 		argv = append(argv, "--app="+link)
+	case mode == "webapp" && a.Browser:
+		argv = append(argv, link)
 	}
 	return argv, nil
 }
@@ -450,7 +463,23 @@ func (d *Daemon) start(a App, v vault.Vault, dek []byte, mode, link string, pid,
 	if err := sess.grant(acc.uid); err != nil {
 		return err
 	}
-	cmd := d.sandboxCmd(a, acc, sess, argv)
+	inst := &instance{sess: sess, acc: acc}
+	if inst.bus, err = startBus(d.cfg, a, acc); err != nil {
+		d.log.Printf("%s: шина сеанса недоступна: %v", a.Name, err)
+	}
+	if inst.links, err = listenLinks(a, acc); err != nil {
+		d.log.Printf("%s: сокет ссылок: %v", a.Name, err)
+	} else {
+		go d.serveLinks(a, acc, inst.links, sess)
+	}
+	if inst.shares, err = mountShares(a, acc, d.cfg.Owner); err != nil {
+		d.log.Printf("%s: открытые папки: %v", a.Name, err)
+	}
+	cmd, err := d.sandboxCmd(a, inst, argv)
+	if err != nil {
+		d.cleanup(a, inst)
+		return err
+	}
 	logw := appLog(a.Name)
 	if logw != nil {
 		cmd.Stdout = logw
@@ -461,13 +490,15 @@ func (d *Daemon) start(a App, v vault.Vault, dek []byte, mode, link string, pid,
 			}
 		}()
 	}
-	if err := cmd.Start(); err != nil {
-		sess.revoke(acc.uid)
+	err = cmd.Start()
+	if err != nil {
+		d.cleanup(a, inst)
 		return err
 	}
+	inst.cmd = cmd
 	d.mu.Lock()
 	alarmed := d.alarmGen != gen
-	d.running[a.Name] = &instance{cmd: cmd, sess: sess, acc: acc}
+	d.running[a.Name] = inst
 	d.server = sess.server
 	d.mu.Unlock()
 	exited := make(chan error, 1)
@@ -475,13 +506,13 @@ func (d *Daemon) start(a App, v vault.Vault, dek []byte, mode, link string, pid,
 	if alarmed {
 		killUID(acc.uid)
 		<-exited
-		d.cleanup(a, acc, sess)
+		d.cleanup(a, inst)
 		return errors.New(i18n.T("тревога во время запуска"))
 	}
 	select {
 	case werr := <-exited:
 		killUID(acc.uid)
-		d.cleanup(a, acc, sess)
+		d.cleanup(a, inst)
 		return fmt.Errorf(i18n.T("приложение не запустилось: %v"), werr)
 	case <-time.After(launchGrace):
 	}
@@ -496,10 +527,15 @@ func (d *Daemon) start(a App, v vault.Vault, dek []byte, mode, link string, pid,
 		}
 		d.mu.Lock()
 		d.closing[a.Name] = true
+		alarmedNow := d.alarmGen != gen
 		d.mu.Unlock()
 		// Процессы, ушедшие из-под bwrap (их быть не должно: своё пространство PID), гасятся до шифрования.
 		killUID(acc.uid)
-		d.cleanup(a, acc, sess)
+		d.cleanup(a, inst)
+		// После тревоги в доме приложения не ищем ничего нового: ключи вот-вот сотрутся, нужна только запись.
+		if !alarmedNow {
+			d.afterClose(a)
+		}
 		if err := v.Encrypt(dek); err != nil {
 			d.log.Printf("%s: шифрование после закрытия: %v", a.Name, err)
 		} else {
@@ -511,23 +547,46 @@ func (d *Daemon) start(a App, v vault.Vault, dek []byte, mode, link string, pid,
 	return nil
 }
 
-func (d *Daemon) cleanup(a App, acc account, sess session) {
-	sess.revoke(acc.uid)
+// afterClose: новые папки данных добавленного приложения получают приманку, автозапуск из песочницы переносится
+// владельцу.
+func (d *Daemon) afterClose(a App) {
+	before := len(a.Dirs)
+	learnDirs(d.cfg, a, d.log)
+	if cur, ok := FindApp(a.Name); ok && len(cur.Dirs) != before {
+		d.reloadTraps()
+	}
+	syncAutostart(d.cfg, a)
+}
+
+func (d *Daemon) cleanup(a App, inst *instance) {
+	inst.sess.revoke(inst.acc.uid)
+	inst.bus.stop()
+	if inst.links != nil {
+		_ = inst.links.Close()
+	}
+	_ = os.RemoveAll(filepath.Join(RunDir, "bus", a.Name))
+	unmountShares(a.Name)
 	_ = os.RemoveAll(filepath.Join(AppDir(a.Name), "tmp"))
 }
 
-func (d *Daemon) sandboxCmd(a App, acc account, sess session, argv []string) *exec.Cmd {
-	cmd := exec.Command(bwrapPath, bwrapArgs(a, acc, sess, d.cfg.OwnerHome, argv)...)
-	cmd.Env = sandboxEnv(a, acc, sess, d.cfg.OwnerHome)
+func (d *Daemon) sandboxCmd(a App, inst *instance, argv []string) (*exec.Cmd, error) {
+	cmd := exec.Command(bwrapPath, d.sandboxArgs(a, inst, argv)...)
+	cmd.Env = d.sandboxEnv(a, inst)
 	cmd.Dir = "/"
+	groups := []uint32{}
+	if g, err := user.LookupGroup("video"); err == nil {
+		if id, err := strconv.Atoi(g.Gid); err == nil {
+			groups = append(groups, uint32(id)) // камера: /dev/video* открыты группе video
+		}
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Credential: &syscall.Credential{Uid: uint32(acc.uid), Gid: uint32(acc.gid), Groups: []uint32{}},
+		Credential: &syscall.Credential{Uid: uint32(inst.acc.uid), Gid: uint32(inst.acc.gid), Groups: groups},
 		Setsid:     true,
 		Pdeathsig:  syscall.SIGKILL,
 	}
 	// Вывод идёт через канал: процесс, переживший bwrap, не должен держать Wait бесконечно.
 	cmd.WaitDelay = 2 * time.Second
-	return cmd
+	return cmd, nil
 }
 
 // forward — второй экземпляр в песочнице того же приложения: он найдёт работающий по сокету в общем /tmp и передаст ему
@@ -540,13 +599,17 @@ func (d *Daemon) forward(a App, inst *instance, mode, link string) error {
 	if err := inst.sess.grant(inst.acc.uid); err != nil {
 		return err
 	}
-	cmd := d.sandboxCmd(a, inst.acc, inst.sess, argv)
+	cmd, err := d.sandboxCmd(a, inst, argv)
+	if err != nil {
+		return err
+	}
 	logw := openCapped(filepath.Join(AppDir(a.Name), "forward.log"))
 	if logw != nil {
 		cmd.Stdout = logw
 		cmd.Stderr = logw
 	}
-	if err := cmd.Start(); err != nil {
+	err = cmd.Start()
+	if err != nil {
 		return err
 	}
 	go func() {

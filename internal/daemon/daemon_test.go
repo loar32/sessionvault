@@ -12,7 +12,7 @@ import (
 )
 
 func TestParseRequest(t *testing.T) {
-	for _, ok := range []string{"status", "list", "running", "lock", "reload", "run telegram", "unlock chromium", "open brave", "webapp chromium", "close discord"} {
+	for _, ok := range []string{"status", "list", "running", "lock", "reload", "check", "run telegram", "unlock chromium", "open brave", "webapp chromium", "close discord"} {
 		if _, err := ParseRequest(ok); err != nil {
 			t.Errorf("%q отвергнут: %v", ok, err)
 		}
@@ -36,7 +36,7 @@ func TestBrowserFlagsKeepOnlySafe(t *testing.T) {
 	}
 	a, _ := FindApp("chromium")
 	got := browserFlags(a, os.Getuid(), home)
-	want := []string{"--ozone-platform=wayland", "--enable-features=A,B:c", "--load-extension=/usr/share/fonts", "--enable-wayland-ime"}
+	want := []string{"--ozone-platform=wayland", "--enable-features=A,B:c", "--load-extension=/usr/share/fonts", "--enable-wayland-ime", "--password-store=gnome-libsecret"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("флаги %q, ждали %q", got, want)
 	}
