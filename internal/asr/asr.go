@@ -1,3 +1,5 @@
+//go:build windows
+
 // Package asr включает правила Attack Surface Reduction в Defender (политика в реестре, режим блокировки).
 // Прежние значения запоминаются для отката.
 package asr

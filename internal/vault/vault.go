@@ -14,7 +14,6 @@ import (
 
 	"github.com/loar32/sessionvault/internal/crypto"
 	"github.com/loar32/sessionvault/internal/recovery"
-	"golang.org/x/sys/windows"
 )
 
 const (
@@ -538,19 +537,6 @@ func writeAtomic(path string, b []byte) error {
 		return err
 	}
 	return retry(func() error { return os.Rename(tmp, path) })
-}
-
-// Эксклюзивно открытый файл держит запущенный экземпляр; при падении процесса система снимает блокировку сама.
-func (v Vault) Lock() (release func(), err error) {
-	name, err := windows.UTF16PtrFromString(v.path("running.lock"))
-	if err != nil {
-		return nil, err
-	}
-	h, err := windows.CreateFile(name, windows.GENERIC_WRITE, 0, nil, windows.OPEN_ALWAYS, windows.FILE_ATTRIBUTE_NORMAL, 0)
-	if err != nil {
-		return nil, errors.New(i18n.T("уже запущено (или не завершено): running.lock занят"))
-	}
-	return func() { _ = windows.CloseHandle(h) }, nil
 }
 
 // RestoreBackup возвращает предыдущий архив и опускает номер записи до его номера: это осознанное действие владельца

@@ -1,3 +1,5 @@
+//go:build windows
+
 package profiles
 
 import (
@@ -7,7 +9,7 @@ import (
 	"github.com/loar32/sessionvault/internal/i18n"
 	"os"
 	"path/filepath"
-	"regexp"
+
 	"slices"
 	"strings"
 	"syscall"
@@ -170,10 +172,6 @@ func Template(name string) (Profile, bool) {
 func TemplateNames() []string {
 	return []string{"telegram", "chrome", "edge", "brave", "discord", "steam"}
 }
-
-var validName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
-
-func ValidName(name string) bool { return validName.MatchString(name) }
 
 func Load(dir, name string) (Profile, error) {
 	p, err := load(dir, name)

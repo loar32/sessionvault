@@ -9,11 +9,9 @@ import (
 	"github.com/loar32/sessionvault/internal/i18n"
 	"io"
 	"runtime"
-	"unsafe"
 
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/hkdf"
-	"golang.org/x/sys/windows"
 )
 
 const (
@@ -109,17 +107,3 @@ func OpenAAD(key, blob, aad []byte) ([]byte, error) {
 }
 
 func Wipe(b []byte) { clear(b) }
-
-// VirtualLock не даёт системе выгрузить ключ в файл подкачки.
-func Lock(b []byte) error {
-	if len(b) == 0 {
-		return nil
-	}
-	return windows.VirtualLock(uintptr(unsafe.Pointer(&b[0])), uintptr(len(b)))
-}
-
-func Unlock(b []byte) {
-	if len(b) > 0 {
-		_ = windows.VirtualUnlock(uintptr(unsafe.Pointer(&b[0])), uintptr(len(b)))
-	}
-}
