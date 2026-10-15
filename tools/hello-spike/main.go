@@ -1,3 +1,5 @@
+//go:build windows
+
 // Проба и тестовые команды Windows Hello (в релиз не входит).
 //
 //	hello-spike                          — поддерживается ли Hello; подпись fixed challenge дважды (ключ должен существовать)

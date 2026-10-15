@@ -1,3 +1,5 @@
+//go:build windows
+
 // Package checkwin показывает итог проверки защиты в системном окне: по пункту трея и один раз после установки.
 package checkwin
 
