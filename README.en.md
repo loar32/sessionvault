@@ -4,7 +4,7 @@ English · [Русский](README.md)
 
 A quiet background guardian of sessions for Windows and Linux (Omarchy): against infostealers that steal your Telegram and browser logins. It works completely offline; the program makes no network calls.
 
-Status: v1.2. On Windows: Telegram Desktop, Chrome, Edge, Brave, Discord and Steam; your own apps are added with `add`. On Linux (tested on Omarchy 4): Telegram, Chromium, Brave, Google Chrome and Discord, see [Linux and Omarchy](#linux-and-omarchy). It protects session files, not the window of a running app (see "Limits of protection" and the [threat model](docs/THREAT_MODEL.en.md)). The installer is not code-signed: SmartScreen may warn you, compare the SHA-256 from the release notes.
+Status: v1.2. On Windows: Telegram Desktop, Chrome, Edge, Brave, Discord and Steam; your own apps are added with `add`. On Linux (tested on Omarchy 4): Telegram, Chromium, Brave, Google Chrome, Discord and any app of your own, AppImage included, with notifications, tray, camera and screen sharing, see [Linux and Omarchy](#linux-and-omarchy). It protects session files, not the window of a running app (see "Limits of protection" and the [threat model](docs/THREAT_MODEL.en.md)). The installer is not code-signed: SmartScreen may warn you, compare the SHA-256 from the release notes.
 
 The idea: set it up once, live in the tray and forget about it until there is a threat. Apps start from the SessionVault tray icon; the service does everything else itself.
 
@@ -187,48 +187,100 @@ The service puts Windows auditing on the processes of protected apps and quietly
 
 ## Linux and Omarchy
 
-The Linux version is the same Go binary built for Linux (`sessionvault`, no dependencies besides the system `bubblewrap` and `acl`). It was built and tested on [Omarchy](https://omarchy.org) 4 (Arch, Hyprland, Wayland); another Arch-like distribution with systemd and a Wayland compositor should work too, but it was not tested there.
+The Linux version is the same Go binary built for Linux (`sessionvault`). From the system it needs `bubblewrap`, `acl` and `xdg-dbus-proxy` (Omarchy already has them). It is built and tested on [Omarchy](https://omarchy.org) 4 (Arch, Hyprland, Wayland). It should also work on another Arch-like distribution with systemd and a Wayland compositor, but it was not tested there.
 
-**Installation.** Download `sessionvault-linux-amd64.tar.gz` from the release, check its SHA-256, unpack it and run from your own account (not as root):
+**Installation.** Download `sessionvault-linux-amd64.tar.gz` from the release, compare the SHA-256, unpack it and run from your own account (not as root):
 
 ```
 sudo ./sessionvault install
 sudo sessionvault protect telegram      # or chromium, brave, chrome, discord
+sudo sessionvault add obsidian          # any app of your own, AppImage included
 ```
 
-`install` puts the binary into `/usr/local/bin`, the `sessionvault` systemd service (as root), a "SessionVault" launcher entry and a `~/SessionVault` link to the shared folder. You can build a package yourself: `packaging/arch/PKGBUILD` (`makepkg -si`, then `sudo sessionvault install`).
+`install` does three things:
+- puts the binary into `/usr/local/bin` and installs the systemd service `sessionvault` (runs as root);
+- adds a "SessionVault" entry to the launcher;
+- creates the `~/SessionVault` link to the exchange folder.
 
-**Usage.** Nothing new to remember: after `protect` the app starts as usual — from the launcher (Super+Space), from a link, as the default browser and from Omarchy web apps (WhatsApp, HEY, YouTube and others go through the protected Chromium too). When the vault is locked, a floating terminal window asks for the password; after that apps open without questions until the vault locks again. The "SessionVault" launcher entry (Omarchy menu) starts protected apps, locks the vault and shows the status. An alarm arrives as an Omarchy notification.
+You can build the package yourself: `packaging/arch/PKGBUILD` (`makepkg -si`, then `sudo sessionvault install`).
+
+**Usage.** Nothing new to learn: after `protect` or `add` the app starts as usual. That means the launcher (Super+Space), links, the default browser and Omarchy web apps (WhatsApp, HEY, YouTube and others go through the protected Chromium).
+- When the vault is locked, a floating terminal window asks for the password. Both the master password and the recovery key work. After that apps open without questions until the vault locks again.
+- The "SessionVault" menu in the launcher: start protected apps, "Add an app", "Check protection", "Recovery key", lock and status.
+- An alarm arrives as an Omarchy notification.
+
+**Your own apps: add.** The "SessionVault" menu → "Add an app" lists the launcher's programs. The one you pick is added in a terminal window: SessionVault shows what it will do, you confirm and set the master password. The same as a command: `sudo sessionvault add <launcher entry | program | file.AppImage>`.
+- **The description** (name, icon, link schemes such as `obsidian://`) comes from the launcher entry. A built-in app (Telegram and others) is recognised and protected as built-in.
+- **Data folders** are found automatically: by the app's name in `~/.config`, `~/.local/share`, `~/.local/state` and `~/.<name>`. They are shown and can be replaced (`-data folder`). If the app has not run yet, its data goes straight into the vault. SessionVault finds the folder with its name that the app creates after the first close and puts a decoy in its place on your side.
+- **A packaged program** (`/usr`, root's `/opt`) runs in place. A program from your home folder, an AppImage or a folder that someone other than root can change is copied to `/var/lib/sessionvault/apps/<name>/app` and owned by root. Otherwise a stealer could swap the file that later gets the decrypted data. An AppImage is unpacked with its own `--appimage-extract` in a sandbox without network. After the program updates: `sudo sessionvault refresh <name>`.
+- **Not protected:** console programs (they have no window for the service to start), Flatpak apps (they have their own sandbox) and Omarchy web apps (the protected browser opens them).
+
+**What works inside the sandbox.**
+
+- **Notifications, the Omarchy tray icon, media keys and the keyring.** The D-Bus session bus goes through `xdg-dbus-proxy` with a filter. Only the notification server, the tray (StatusNotifierItem), MPRIS, the keyring and, of the portals, screen sharing, appearance settings and sleep inhibition are visible. Other session services do not exist for the app.
+- **Website logins survive.** The browser gets Omarchy's password store (`--password-store=gnome-libsecret`) from `~/.config/chromium-flags.conf` and takes its key from your keyring. The key is useless without the data, and the data stays in the sandbox.
+- **Camera, microphone and screen sharing.** `/dev/video*` is passed into the sandbox, sound goes through PipeWire and Pulse. Screen sharing in calls works through the portal: Hyprland shows the screen picker.
+- **Links both ways.** A link in Telegram or Discord opens as a tab of the protected browser, `tg://` and `discord://` open in the protected Telegram and Discord. Inside the sandbox SessionVault stands in for `xdg-open`: the link goes to the service, and the service opens it on your side with the usual `xdg-open`. Accepted are http(s), mail and the schemes of protected apps. A file from the app's "Downloads" (`~/SessionVault`) opens in your default program.
+- **Files.** Instead of your home the app sees its own data, "Downloads" (the `~/SessionVault` exchange folder) and the folders you shared with it: `sudo sessionvault share <app> ~/Pictures` (`unshare` to close). Access is granted with ACLs under your own rights. The service mounts the folder by a descriptor opened without following links. The app shows its own file dialog inside the sandbox: the file chooser portal would show your real home, which does not exist in the sandbox.
+- **Autostart.** If "start at login" is turned on in the app itself, you get an autostart through SessionVault. Existing autostart entries that started the app directly are rewritten and restored when protection is removed.
+- **No limit on data size.** The vault is encrypted as a stream of 1 MiB blocks, gigabytes of data are not held in memory.
 
 **How it works.**
 
-- The `sessionvault daemon` service (root) holds the keys and listens on `/run/sessionvault/sock`; it accepts requests only from your account and root (checked with `SO_PEERCRED`), the protocol is a few words without paths or arguments.
-- Every app runs under its own system account `sv-<name>` in a [bubblewrap](https://github.com/containers/bubblewrap) sandbox: a read-only system, its own PID namespace, its own `/tmp`, the decrypted app home (`/var/lib/sessionvault/apps/<name>/home`, mode `0700` for its account) in place of your home folder, and the shared `~/SessionVault` folder as Downloads. The app does not see your real home, `.ssh`, other apps or foreign processes; a stealer in your account reads neither its files nor its memory.
-- The app window is drawn in your Wayland session: the app account gets a right (ACL) only to the Wayland socket and passage to PipeWire/Pulse, removed when it exits. The socket is checked: it must be served by a known compositor (Hyprland, sway and others) from `/usr`.
-- While the app is closed its data is encrypted (AES-256-GCM, key from the master password via Argon2id — the same vault as on Windows). When the app exits its home is encrypted and removed.
-- A decoy sits in the old data place (`~/.local/share/TelegramDesktop`, `~/.config/chromium` and so on). Its files are marked with fanotify by inode, so a read is seen through a hard link and after a folder rename too. The reading process waits for the service while it records who it is (path, uid, SHA-256); then the read is allowed (the decoy holds garbage), protected apps are closed, data is encrypted, the vault locks and a notification appears. The browser itself, started past SessionVault, may open its own decoy without an alarm.
-- The vault locks on the Omarchy screen lock (`omarchy-system-lock`: keys, menu, idle timer), sleep, logout and after 4 idle hours. Omarchy does not report the lock to logind, so the service listens to the kernel process connector: the event comes from the kernel, no polling.
-- Everything the service does in your home folder (moving data, the decoy, launcher entries) is done by a helper with your rights, not root: a planted link in the folder cannot lead root to system files.
-- App launcher entries (`~/.local/share/applications/<name>.desktop`) are overridden by SessionVault entries with the same name; `unprotect` and `uninstall` remove them.
+- **The service.** `sessionvault daemon` (root) holds the keys and listens on `/run/sessionvault/sock`. Requests are accepted only from your account and root (checked with `SO_PEERCRED`); the protocol is a few words without paths or arguments.
+- **Account and sandbox.** Each app runs under its own system account `sv-<name>` in a [bubblewrap](https://github.com/containers/bubblewrap) sandbox: a read-only system, its own PID namespace and its own `/tmp`. Instead of your home folder the app sees its decrypted home (`/var/lib/sessionvault/apps/<name>/home`, mode `0700`, owned by its account). It sees neither your real home, `.ssh`, other apps nor foreign processes. A stealer in your account reads neither its files nor its memory.
+- **The uid inside the sandbox** equals yours, so the session bus accepts the app. Outside, all its processes run as `sv-<name>`.
+- **The window** is drawn in your Wayland session. The app's account gets an ACL only on the Wayland socket and passage to PipeWire/Pulse; it is removed on exit. The socket is checked: a known compositor (Hyprland, sway and others) from `/usr` must be listening on it.
+- **The bus proxy socket** is checked the same way: the service moves it into its own folder and verifies that the proxy it started is listening.
+- **Encryption.** While the app is closed its data is encrypted: AES-256-GCM, key from the master password via Argon2id, the same vault as on Windows. When the app exits, its home is encrypted and deleted.
+- **The decoy.** The old data location (`~/.local/share/TelegramDesktop`, `~/.config/chromium`, your apps' folders) holds a decoy. Its files are marked with fanotify by inode, so reads are seen through a hard link and after the folder is renamed.
+  - The reading process waits for the service while it records who it is: path, uid, SHA-256. Then the read is allowed — the decoy holds garbage.
+  - Right after that the protected apps are closed, the data is encrypted, the vault locks and a notification appears.
+  - The app itself, started bypassing SessionVault, may open its own decoy without an alarm, as long as its program is owned by root.
+- **Locking.** The vault locks on the Omarchy screen lock (`omarchy-system-lock`: keys, menu, idle timer), sleep, logout and after 4 hours of inactivity. Omarchy does not report the lock to logind, so the service listens to the kernel process connector: the event comes from the kernel, nothing is polled.
+- **Your home.** Everything the service does in your home folder (moving data, the decoy, launcher entries, rights on shared folders) is done by a helper with your rights, not root. A swapped link in the folder will not lead root to system files. The program copy is unpacked by a helper with the app account's rights.
+- **Launcher entries.** App entries are overridden with SessionVault entries of the same name; your own entries and autostart are rewritten. `unprotect` and `uninstall` restore everything.
 
-**Browsers.** The profile moves into the vault whole (bookmarks, extensions, history). The sandboxed browser stores passwords and cookies without the session keyring (`--password-store=basic`: on disk the profile is encrypted by SessionVault anyway), so earlier saved website logins may ask you to sign in again. Only safe flags are taken from `~/.config/chromium-flags.conf` (Wayland, `--enable-features`, Omarchy extensions from `/usr/share`); flags such as `--remote-debugging-port`, which would hand over control of the browser, are dropped.
+**Recovery key and moving.** The same commands and the same key format as the Windows version:
+- `sudo sessionvault recovery create` prints 24 words. They open every vault instead of the password, including in the password window.
+- `recovery verify|reset|revoke|status` — check, new master password, revoke for one app, coverage.
+- `sudo sessionvault export <app> <file>` writes the encrypted vault to a file you own.
+- `sudo sessionvault import [-exe program] <file>` moves it to another PC. For your own app the description from the file is shown and confirmed, and the program is looked up on the new PC. An export file of the Windows version is not accepted on Linux: apps keep different data there.
+
+**System check.** `sessionvault check` (no sudo, the service builds the report) or "Check protection" in the menu. It checks:
+- disk encryption (LUKS) and swap;
+- Secure Boot, the firewall, how recent updates are;
+- passwordless sudo, `ptrace_scope`, idle lock, automatic login without disk encryption;
+- SessionVault itself: decoys, the recovery key, forgotten unprotected data copies, unprotected Telegram and browser sessions, `xdg-dbus-proxy` being present.
 
 **Linux commands.**
 
 ```
 sudo sessionvault install
-sudo sessionvault protect [-yes] [-password-stdin] <telegram|chromium|brave|chrome|discord>
+sudo sessionvault protect [-yes] [-password-stdin] [-share folder]... <telegram|chromium|brave|chrome|discord>
+sudo sessionvault add [-yes] [-password-stdin] [-name name] [-data folder]... [-share folder]... [-arg argument]... <launcher|program|AppImage>
+sudo sessionvault refresh <app>
+sudo sessionvault share|unshare <app> <folder>
 sudo sessionvault unprotect [-password-stdin] <app>
+sudo sessionvault recovery create [-file file]|verify|reset|revoke <app>|status [-password-stdin]
+sudo sessionvault export <app> <file>
+sudo sessionvault import [-exe program] [-yes] [-password-stdin] <file>
 sudo sessionvault uninstall
-sessionvault run <app> [link]      (sessionvault-<app> launchers do the same)
+sessionvault run <app> [link]      (the sessionvault-<app> launchers do the same)
 sessionvault lock
 sessionvault close <app>
 sessionvault status
+sessionvault check
 sessionvault menu
 sessionvault alerts
 ```
 
-**Limits on Linux.** There is no D-Bus session bus in the sandbox: Telegram and Discord notifications, their tray icons and portals (portal file picker, screen sharing in calls) do not work; pass files through `~/SessionVault`. The webcam is not passed into the sandbox. A process of your account sees the app window and can take screenshots (Wayland does not forbid it) — session files are protected, not the window. root bypasses the protection. The password is typed in a terminal of your session. There is no Hello or FIDO2 on Linux; export/import and `check` are Windows-only for now.
+**Limits on Linux.** Session files are protected, not the window:
+- A process in your account sees the app's window and can take screenshots (Wayland does not forbid it).
+- root bypasses the protection. `sessionvault check` warns if sudo works without a password.
+- The password is typed in a terminal window of your session.
+- The sandbox shares the network with the system.
+- There is no Windows Hello or FIDO2 sign-in on Linux: those are Windows sign-in methods.
 
 ## Commands
 
@@ -282,7 +334,7 @@ Decoy limits:
 
 ## What next
 
-v1.0 is released, v1.1 adds Steam, v1.2 adds Linux (Omarchy). Next, on demand: behavioural detection, service self-protection, wallets, the recovery key and export on Linux, macOS. Not verified on hardware or on a network: a FIDO2 key (YubiKey), fingerprint and face in Windows Hello, sleep and RDP, real network blocking, signing in to a real Discord and Steam account, Steam and Discord client updates, Windows 10 and Home. Anything that needs constant action or makes noise is not part of the product.
+v1.0 is released, v1.1 adds Steam, v1.2 adds Linux (Omarchy). Next, on demand: behavioural detection, service self-protection, wallets, macOS. Not verified on hardware or on a network: a FIDO2 key (YubiKey), fingerprint and face in Windows Hello, sleep and RDP, real network blocking, signing in to a real Discord and Steam account, Steam and Discord client updates, Windows 10 and Home; on Linux — signing in to real accounts, calls with a real camera and microphone, other distributions and compositors. Anything that needs constant action or makes noise is not part of the product.
 
 ## Project security and contributing
 

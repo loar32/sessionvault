@@ -54,8 +54,14 @@ The same vault and the same model: your account is the untrusted environment, th
 | A decoy with fanotify marks by inode and permission events | a stealer reading the old paths, including via a hard link or after a rename |
 | Locking on a screen locker or systemd-sleep start (kernel process connector), on compositor exit and on a timer | the key staying in memory after the user leaves |
 | Only safe flags are taken from the browser flags file | `--remote-debugging-port` and the like from a file the stealer can write |
+| The session bus goes through `xdg-dbus-proxy` with a filter: notifications, tray, MPRIS, the keyring and, of the portals, screen sharing, settings and sleep inhibition; no file chooser portal and no other services. The service moves the proxy socket into its own folder and verifies that the proxy it started is listening | a compromised app reaching session services (systemd, file managers, launching portals); a fake "bus server" from an owner process |
+| Inside the sandbox the uid equals the owner's, outside it is `sv-<name>` | the bus accepts the app, while file and process rights stay with the app account |
+| Links from the sandbox go through the app's socket at the service (`SO_PEERCRED`, rate limit): only http(s), mail and protected apps' schemes; files only from the exchange folder and folders shared with the app, never programs or launcher entries | a compromised app starting owner programs via `file://`, `smb://`, `steam://` and the like |
+| An app of your own (add) from a place someone other than root can change is copied into a root folder; the owner's helper writes the archive, the app account's helper unpacks it, an AppImage is unpacked with its own command in a sandbox without network | a stealer swapping the program file; root writing through links in the archive |
+| Folders shared with an app: the owner's helper sets the ACL, the service mounts the folder by a descriptor opened without following links into a `0700` folder of the app account | rights on foreign files and access to a foreign folder via a planted link |
+| The vault is a stream of AES-GCM blocks (STREAM: block number and a last-block flag in the AAD) | truncating, reordering or swapping `data.enc` blocks; data larger than memory |
 
-Limits: a process of your account sees windows and the screen (Wayland does not stop screenshots); the password is typed in a terminal of your session; the shared `~/SessionVault` folder is available to all protected apps; the sandbox shares the network (abstract Unix sockets are reachable for both you and the app); root bypasses the protection.
+Limits: a process of your account sees windows and the screen (Wayland does not stop screenshots); the password is typed in a terminal of your session; the shared `~/SessionVault` folder is available to all protected apps, a shared folder to the app it was shared with; the sandbox shares the network (abstract Unix sockets are reachable for both you and the app); the browser key in your keyring is visible to your processes but useless without the data in the sandbox; root bypasses the protection.
 
 ## Known limits
 
