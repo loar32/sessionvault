@@ -104,7 +104,7 @@ func Install(out io.Writer) error {
 	if _, err := asOwner(cfg, nil, "link", filepath.Join(cfg.OwnerHome, "SessionVault"), ExchangeDir()); err != nil {
 		_, _ = fmt.Fprintln(out, "~/SessionVault:", err)
 	}
-	_, _ = fmt.Fprintf(out, i18n.T("SessionVault установлен для %s. Защитите приложение: sudo sessionvault protect <%s>\n"), u.Username, AppNames())
+	_, _ = fmt.Fprintf(out, i18n.T("SessionVault установлен для %s. Защитите приложение: sudo sessionvault protect <%s>, своё — sudo sessionvault add <программа>\n"), u.Username, AppNames())
 	return nil
 }
 

@@ -1,6 +1,6 @@
 post_install() {
   echo 'Чтобы включить защиту, выполните из своей учётки: sudo sessionvault install'
-  echo 'Затем: sudo sessionvault protect <telegram|chromium|brave|chrome|discord>'
+  echo 'Затем: sudo sessionvault protect <telegram|chromium|brave|chrome|discord> или sudo sessionvault add <приложение>'
 }
 
 post_upgrade() {

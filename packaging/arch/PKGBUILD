@@ -4,11 +4,11 @@
 pkgname=sessionvault
 pkgver=1.2.0
 pkgrel=1
-pkgdesc='Офлайн-защита сессий приложений (Telegram, браузеры, Discord) от инфостилеров'
+pkgdesc='Офлайн-защита сессий приложений (Telegram, браузеры, Discord, свои программы) от инфостилеров'
 arch=('x86_64')
 url='https://github.com/loar32/sessionvault'
 license=('unknown')
-depends=('bubblewrap' 'acl' 'systemd' 'shadow')
+depends=('bubblewrap' 'acl' 'systemd' 'shadow' 'xdg-dbus-proxy' 'xdg-utils')
 makedepends=('go')
 install=sessionvault.install
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
