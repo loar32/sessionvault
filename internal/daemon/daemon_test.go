@@ -24,10 +24,24 @@ func TestParseRequest(t *testing.T) {
 	}
 }
 
+// Расширение пропускается только из каталога под /usr/share, целиком принадлежащего root; какой такой есть, зависит от системы.
+func rootOwnedShareDir(t *testing.T) string {
+	entries, _ := os.ReadDir("/usr/share")
+	for _, e := range entries {
+		p := "/usr/share/" + e.Name()
+		if e.IsDir() && extPath.MatchString(p) && rootOwned(p) == nil {
+			return p
+		}
+	}
+	t.Skip("в /usr/share нет каталога, целиком принадлежащего root")
+	return ""
+}
+
 func TestBrowserFlagsKeepOnlySafe(t *testing.T) {
+	ext := rootOwnedShareDir(t)
 	home := t.TempDir()
 	flags := "# комментарий\n--ozone-platform=wayland\n--remote-debugging-port=9222\n--enable-features=A,B:c\n" +
-		"--load-extension=/usr/share/fonts,/home/x/evil,/usr/share/../etc\n--user-data-dir=/tmp/x --enable-wayland-ime\n--password-store=gnome-libsecret\n"
+		"--load-extension=" + ext + ",/home/x/evil,/usr/share/../etc\n--user-data-dir=/tmp/x --enable-wayland-ime\n--password-store=gnome-libsecret\n"
 	if err := os.MkdirAll(filepath.Join(home, ".config"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +50,7 @@ func TestBrowserFlagsKeepOnlySafe(t *testing.T) {
 	}
 	a, _ := FindApp("chromium")
 	got := browserFlags(a, os.Getuid(), home)
-	want := []string{"--ozone-platform=wayland", "--enable-features=A,B:c", "--load-extension=/usr/share/fonts", "--enable-wayland-ime", "--password-store=gnome-libsecret"}
+	want := []string{"--ozone-platform=wayland", "--enable-features=A,B:c", "--load-extension=" + ext, "--enable-wayland-ime", "--password-store=gnome-libsecret"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("флаги %q, ждали %q", got, want)
 	}

@@ -3,6 +3,7 @@
 package isolation
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -36,6 +37,14 @@ func TestAccountName(t *testing.T) {
 	}
 }
 
+// accounts.json получает владельца Administrators и DACL только для SYSTEM и администраторов; так его пишет служба.
+// Без полного токена администратора (обычный запуск, раннер CI) это отклоняется, и проверять тут нечего.
+func skipWithoutServiceRights(t *testing.T, err error) {
+	if errors.Is(err, os.ErrPermission) {
+		t.Skipf("нужны права службы: %v", err)
+	}
+}
+
 func TestAccountsStore(t *testing.T) {
 	old := ProgramData
 	ProgramData = t.TempDir()
@@ -48,6 +57,7 @@ func TestAccountsStore(t *testing.T) {
 		seed[fmt.Sprintf("sv-nouser-%d", i)] = "pw"
 	}
 	if err := saveAccounts(seed); err != nil {
+		skipWithoutServiceRights(t, err)
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(accountsFile() + ".tmp"); !os.IsNotExist(err) {
@@ -104,6 +114,7 @@ func TestUnreadablePasswordIsTreatedAsMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := saveAccounts(map[string]string{"sv-good": "pw"}); err != nil {
+		skipWithoutServiceRights(t, err)
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(accountsFile())
