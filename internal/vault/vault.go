@@ -98,6 +98,12 @@ func (m meta) aad() []byte {
 }
 
 func (v Vault) readMeta() (meta, error) {
+	metaMu.Lock()
+	defer metaMu.Unlock()
+	return v.readMetaLocked()
+}
+
+func (v Vault) readMetaLocked() (meta, error) {
 	var m meta
 	b, err := os.ReadFile(v.path(metaFile))
 	if err != nil {
@@ -118,24 +124,31 @@ func (v Vault) readMeta() (meta, error) {
 }
 
 // metaMu не даёт двум изменениям vault.json в одном процессе затереть друг друга: Encrypt при закрытии приложения,
-// включение Hello или FIDO и смена пароля читают файл, правят свою часть и пишут его целиком.
+// включение Hello или FIDO и смена пароля читают файл, правят свою часть и пишут его целиком. Чтение тоже под ней:
+// Windows не даёт открыть файл в момент, когда его заменяет rename.
 var metaMu sync.Mutex
 
 // updateMeta читает vault.json, применяет изменение и записывает; всё под одной блокировкой.
 func (v Vault) updateMeta(change func(m *meta) error) error {
 	metaMu.Lock()
 	defer metaMu.Unlock()
-	m, err := v.readMeta()
+	m, err := v.readMetaLocked()
 	if err != nil {
 		return err
 	}
 	if err := change(&m); err != nil {
 		return err
 	}
-	return v.writeMeta(m)
+	return v.writeMetaLocked(m)
 }
 
 func (v Vault) writeMeta(m meta) error {
+	metaMu.Lock()
+	defer metaMu.Unlock()
+	return v.writeMetaLocked(m)
+}
+
+func (v Vault) writeMetaLocked(m meta) error {
 	b, err := json.Marshal(m)
 	if err != nil {
 		return err
@@ -243,7 +256,11 @@ func (v Vault) RemoveRecovery() error {
 }
 
 // MetaBytes — vault.json как есть: точка отката для операций, которые меняют несколько хранилищ.
-func (v Vault) MetaBytes() ([]byte, error) { return os.ReadFile(v.path(metaFile)) }
+func (v Vault) MetaBytes() ([]byte, error) {
+	metaMu.Lock()
+	defer metaMu.Unlock()
+	return os.ReadFile(v.path(metaFile))
+}
 
 // RestoreMeta возвращает vault.json, снятый MetaBytes.
 func (v Vault) RestoreMeta(b []byte) error {
