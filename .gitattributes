@@ -4,3 +4,6 @@ go.mod text eol=lf
 go.sum text eol=lf
 *.yml text eol=lf
 *.md text eol=lf
+*.sh text eol=lf
+PKGBUILD text eol=lf
+*.install text eol=lf
