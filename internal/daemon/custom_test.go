@@ -133,7 +133,7 @@ func TestLinks(t *testing.T) {
 
 func TestProxyRules(t *testing.T) {
 	pid := trayPID(999)
-	r := proxyRules(pid)
+	r := proxyRules(pid, []string{"org.telegram.desktop.desktop", "chromium.desktop"})
 	if !slices.Contains(r, "--filter") || !slices.Contains(r, "--own=org.kde.StatusNotifierItem-"+strconv.Itoa(pid)+"-1") {
 		t.Fatalf("нет фильтра или имени значка: %q", r)
 	}
@@ -141,6 +141,9 @@ func TestProxyRules(t *testing.T) {
 		if strings.Contains(x, "FileChooser") || strings.Contains(x, "Properties") || x == "--talk=org.freedesktop.portal.Desktop" {
 			t.Errorf("лишнее правило %q", x)
 		}
+	}
+	if !slices.Contains(r, "--own=org.telegram.desktop.*") || slices.Contains(r, "--own=chromium.*") {
+		t.Errorf("имя приложения по ярлыку: %q", r)
 	}
 	if trayPID(999) == trayPID(998) {
 		t.Error("у соседних учёток одинаковый pid значка")
