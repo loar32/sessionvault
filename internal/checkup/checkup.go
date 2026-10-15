@@ -14,29 +14,6 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
-type Level string
-
-const (
-	OK   Level = "ok"
-	Warn Level = "warn"
-	Bad  Level = "bad"
-	Info Level = "info" // справка, на итог не влияет
-)
-
-type Item struct {
-	ID     string `json:"id"`
-	Title  string `json:"title"`
-	Level  Level  `json:"level"`
-	Detail string `json:"detail"`
-	Hint   string `json:"hint,omitempty"`
-}
-
-type Report struct {
-	Time    time.Time `json:"time"`
-	Overall Level     `json:"overall"`
-	Items   []Item    `json:"items"`
-}
-
 // ClickFixText — справка про приём, против которого защита файлов бессильна: пользователь запускает вредонос сам.
 func ClickFixText() string {
 	return i18n.T("ClickFix: не вставляйте в «Выполнить», PowerShell или Терминал команды с сайтов и из «проверок, что вы не робот». Так вы сами запускаете вредонос с вашими правами, и защита файлов этого не остановит.")
@@ -124,13 +101,7 @@ func run(sys system, in Input, now time.Time) Report {
 			Hint:   i18n.T("Настройки → Конфиденциальность → Код-пароль: без него украденные файлы tdata открываются сразу")},
 		{ID: "clickfix", Title: "ClickFix", Level: Info, Detail: i18n.T("не запускайте чужие команды"), Hint: ClickFixText()},
 	}
-	overall := OK
-	for _, it := range items {
-		if it.Level == Bad || (it.Level == Warn && overall == OK) {
-			overall = it.Level
-		}
-	}
-	return Report{Time: now, Overall: overall, Items: items}
+	return Summarize(items, now)
 }
 
 func userItem(in Input) Item {
