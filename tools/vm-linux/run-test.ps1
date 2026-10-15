@@ -27,5 +27,14 @@ foreach ($i in 1..20) {
 }
 scp -q "$root\dist\sessionvault-linux-amd64" sv-omarchy:/tmp/sessionvault
 scp -q "$PSScriptRoot\test-guest.sh" sv-omarchy:/tmp/test-guest.sh
+scp -q "$PSScriptRoot\svtest.py" sv-omarchy:/tmp/svtest.py
+# appimagetool и runtime для тестового AppImage (в ВМ нет сети): скачиваются на хосте один раз.
+$dl = 'C:\VM\appimage-dl'
+if (-not (Test-Path "$dl\runtime-x86_64")) {
+    New-Item -ItemType Directory -Force $dl | Out-Null
+    curl.exe -sSL -o "$dl\appimagetool-x86_64.AppImage" https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+    curl.exe -sSL -o "$dl\runtime-x86_64" https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64
+}
+scp -q "$dl\appimagetool-x86_64.AppImage" "$dl\runtime-x86_64" sv-omarchy:/tmp/
 ssh sv-omarchy 'chmod +x /tmp/sessionvault; bash /tmp/test-guest.sh'
 exit $LASTEXITCODE
