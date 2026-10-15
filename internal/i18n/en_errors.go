@@ -8,9 +8,10 @@ func init() {
 
 // Ошибки и сообщения команд. Ошибки, объявленные на уровне пакета, переводятся при выводе по полному тексту (T(err.Error())).
 var errorsEN = map[string]string{
-	"включение политики ASR: %w":                  "turning on the ASR policy: %w",
-	"правило %s: %w":                              "rule %s: %w",
-	"недопустимое прежнее значение %q":            "invalid previous value %q",
+	"зашифрованный поток повреждён или подменён": "the encrypted stream is damaged or tampered with",
+	"включение политики ASR: %w":                 "turning on the ASR policy: %w",
+	"правило %s: %w": "rule %s: %w",
+	"недопустимое прежнее значение %q": "invalid previous value %q",
 	"пустой SACL":                                 "empty SACL",
 	"в событии нет ObjectName":                    "the event has no ObjectName",
 	"нужен путь с буквой диска":                   "a path with a drive letter is required",

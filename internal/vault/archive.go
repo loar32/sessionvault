@@ -13,7 +13,7 @@ import (
 	"strings"
 )
 
-// Размер архива ограничен: он собирается в памяти целиком.
+// Архив прежних форматов data.enc (до версии 3) собирался в памяти целиком, поэтому был ограничен.
 var maxArchive = 1 << 30
 
 var ErrTooLarge = errors.New("данные приложения больше 1 ГиБ: шифрование отменено")
@@ -39,79 +39,118 @@ func PackDir(root string, exclude []string) ([]byte, int, error) { return packDi
 // UnpackDir распаковывает архив PackDir в root.
 func UnpackDir(data []byte, root string) error { return unpackDir(data, root) }
 
-// exclude — пути относительно root (кэши): в архив не попадают, вместе с открытой папкой удаляются.
+// WriteTar пишет архив папки в w потоком (только файлы и каталоги, без ссылок) и возвращает число файлов.
+func WriteTar(w io.Writer, root string, exclude []string) (int, error) {
+	return writeTar(w, root, exclude)
+}
+
+// ExtractTar распаковывает поток WriteTar в root.
+func ExtractTar(r io.Reader, root string) error { return extractTar(r, root) }
+
+type limitBuffer struct {
+	bytes.Buffer
+	tooBig bool
+}
+
+func (b *limitBuffer) Write(p []byte) (int, error) {
+	if b.Len()+len(p) > maxArchive {
+		b.tooBig = true
+		return 0, ErrTooLarge
+	}
+	return b.Buffer.Write(p)
+}
+
 func packDir(root string, exclude []string) ([]byte, int, error) {
-	var buf bytes.Buffer
-	var tw *tar.Writer
+	var buf limitBuffer
 	var files int
-	var tooBig bool
 	err := retry(func() error {
 		buf.Reset()
-		files = 0
-		tooBig = false
-		tw = tar.NewWriter(&buf)
-		return filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			rel, err := filepath.Rel(root, p)
-			if err != nil || rel == "." {
-				return err
-			}
-			if excluded(rel, exclude) {
-				if d.IsDir() {
-					return fs.SkipDir
-				}
-				return nil
-			}
-			if buf.Len() > maxArchive {
-				tooBig = true
-				return fs.SkipAll
-			}
-			info, err := d.Info()
-			if err != nil {
-				return err
-			}
-			// Ссылка или junction в данных (приложение под vault могло оставить): в архив не берём. Ошибка здесь
-			// оставляла бы данные расшифрованными после каждого выхода приложения.
-			if !info.Mode().IsRegular() && !info.IsDir() {
-				return nil
-			}
-			h, err := tar.FileInfoHeader(info, "")
-			if err != nil {
-				return err
-			}
-			h.Name = filepath.ToSlash(rel)
-			if err := tw.WriteHeader(h); err != nil || info.IsDir() {
-				return err
-			}
-			files++
-			f, err := os.Open(p)
-			if err != nil {
-				return err
-			}
-			defer func() { _ = f.Close() }()
-			_, err = io.Copy(tw, f)
-			return err
-		})
+		buf.tooBig = false
+		var err error
+		files, err = writeTar(&buf, root, exclude)
+		if buf.tooBig {
+			return nil
+		}
+		return err
 	})
-	if err != nil {
-		return nil, 0, err
-	}
-	if tooBig {
+	if buf.tooBig {
 		return nil, 0, ErrTooLarge
 	}
-	if err := tw.Close(); err != nil {
+	if err != nil {
 		return nil, 0, err
 	}
 	return buf.Bytes(), files, nil
 }
 
-func unpackDir(data []byte, root string) error {
+// exclude — пути относительно root (кэши): в архив не попадают, вместе с открытой папкой удаляются.
+func writeTar(w io.Writer, root string, exclude []string) (int, error) {
+	tw := tar.NewWriter(w)
+	files := 0
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, p)
+		if err != nil || rel == "." {
+			return err
+		}
+		if excluded(rel, exclude) {
+			if d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		// Ссылка или junction в данных (приложение под vault могло оставить): в архив не берём. Ошибка здесь
+		// оставляла бы данные расшифрованными после каждого выхода приложения.
+		if !info.Mode().IsRegular() && !info.IsDir() {
+			return nil
+		}
+		h, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			return err
+		}
+		h.Name = filepath.ToSlash(rel)
+		h.Uname, h.Gname = "", ""
+		if err := tw.WriteHeader(h); err != nil || info.IsDir() {
+			return err
+		}
+		files++
+		f, err := os.Open(p)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = f.Close() }()
+		// Файл мог измениться после stat: в архив идёт ровно заявленный размер, иначе tar отвергнет запись.
+		n, err := io.Copy(tw, io.LimitReader(f, info.Size()))
+		if err == nil && n < info.Size() {
+			_, err = io.CopyN(tw, zeros{}, info.Size()-n)
+		}
+		return err
+	})
+	if err != nil {
+		return 0, err
+	}
+	return files, tw.Close()
+}
+
+type zeros struct{}
+
+func (zeros) Read(p []byte) (int, error) {
+	clear(p)
+	return len(p), nil
+}
+
+func unpackDir(data []byte, root string) error { return extractTar(bytes.NewReader(data), root) }
+
+func extractTar(r io.Reader, root string) error {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return err
 	}
-	tr := tar.NewReader(bytes.NewReader(data))
+	tr := tar.NewReader(r)
 	for {
 		h, err := tr.Next()
 		if errors.Is(err, io.EOF) {

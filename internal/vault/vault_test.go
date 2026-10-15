@@ -3,6 +3,7 @@ package vault
 import (
 	"archive/tar"
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"os"
@@ -319,8 +320,8 @@ func TestMigrationFromV1(t *testing.T) {
 	if err := v.Encrypt(got); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(read(t, v.path(dataFile)), dataMagic) {
-		t.Fatal("после записи архив должен быть версии 2")
+	if !strings.HasPrefix(read(t, v.path(dataFile)), streamMagic) {
+		t.Fatal("после записи архив должен быть версии 3")
 	}
 	// Старый архив после первой записи v2 подсунуть нельзя.
 	write(t, v.path(dataFile), string(blob))
@@ -355,19 +356,109 @@ func TestExcludeSkipsCaches(t *testing.T) {
 	}
 }
 
+// Прежние форматы собирались в памяти и ограничены; формат 3 пишется потоком и лимита не имеет.
 func TestArchiveSizeLimit(t *testing.T) {
 	old := maxArchive
 	maxArchive = 10
 	defer func() { maxArchive = old }()
 	v := newVault(t)
 	write(t, filepath.Join(v.dataDir(), "big"), strings.Repeat("x", 100))
-	write(t, filepath.Join(v.dataDir(), "z-big"), strings.Repeat("x", 100))
-	dek, _ := v.Create([]byte("pw"))
-	if err := v.Encrypt(dek); !errors.Is(err, ErrTooLarge) {
+	if _, _, err := packDir(v.dataDir(), nil); !errors.Is(err, ErrTooLarge) {
 		t.Fatalf("ждали ErrTooLarge, получили %v", err)
 	}
-	if _, err := os.Stat(v.dataDir()); err != nil {
-		t.Fatal("при отказе открытая папка должна остаться")
+	dek, _ := v.Create([]byte("pw"))
+	if err := v.Encrypt(dek); err != nil {
+		t.Fatalf("поток не должен упираться в лимит архива в памяти: %v", err)
+	}
+}
+
+// Данные на несколько блоков потока, в том числе ровно кратные блоку, возвращаются без потерь.
+func TestStreamManyChunks(t *testing.T) {
+	for _, size := range []int{3*crypto.ChunkSize + 777, 4 * crypto.ChunkSize} {
+		v := Vault{Dir: t.TempDir(), DataName: "data"}
+		big := bytes.Repeat([]byte("0123456789abcdef"), size/16)
+		if err := os.MkdirAll(v.dataDir(), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(v.dataDir(), "big.bin"), big, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		dek, _ := v.Create([]byte("pw"))
+		if err := v.Encrypt(dek); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(read(t, v.path(dataFile)), streamMagic) {
+			t.Fatal("архив записан не потоком")
+		}
+		if err := v.Decrypt(dek); err != nil {
+			t.Fatal(err)
+		}
+		got, err := os.ReadFile(filepath.Join(v.dataDir(), "big.bin"))
+		if err != nil || !bytes.Equal(got, big) {
+			t.Fatalf("размер %d: данные не совпали", size)
+		}
+	}
+}
+
+// Обрезанный, дописанный или изменённый поток не открывается, а начатая распаковка удаляется.
+func TestStreamTamperRejected(t *testing.T) {
+	v := Vault{Dir: t.TempDir(), DataName: "data"}
+	write(t, filepath.Join(v.dataDir(), "a.bin"), strings.Repeat("секрет", crypto.ChunkSize/4))
+	dek, _ := v.Create([]byte("pw"))
+	if err := v.Encrypt(dek); err != nil {
+		t.Fatal(err)
+	}
+	good := read(t, v.path(dataFile))
+	frame := 12 + crypto.ChunkSize + 16
+	cases := map[string]string{
+		"обрезан по границе блока": good[:headerSize+frame],
+		"обрезан хвост":            good[:len(good)-5],
+		"дописан мусор":            good + "x",
+		"изменён байт":             good[:headerSize+100] + string(good[headerSize+100]^1) + good[headerSize+101:],
+		"блоки переставлены":       good[:headerSize] + good[headerSize+frame:headerSize+2*frame] + good[headerSize:headerSize+frame] + good[headerSize+2*frame:],
+	}
+	for name, blob := range cases {
+		write(t, v.path(dataFile), blob)
+		if err := v.Decrypt(dek); err == nil {
+			t.Errorf("%s: поток принят", name)
+		}
+		if _, err := os.Stat(v.dataDir()); err == nil {
+			t.Errorf("%s: частично распакованные данные остались", name)
+		}
+		if v.NeedsRecovery() {
+			t.Errorf("%s: маркер открытых данных поставлен", name)
+		}
+	}
+}
+
+// Хранилище с архивом версии 2 (один блок) открывается, следующая запись идёт потоком.
+func TestReadsVersion2(t *testing.T) {
+	v := newVault(t)
+	dek, _ := v.Create([]byte("pw"))
+	tarData, _, err := packDir(v.dataDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hdr := binary.BigEndian.AppendUint64([]byte(dataMagic), 1)
+	sealed, _ := crypto.SealAAD(dek, tarData, hdr)
+	write(t, v.path(dataFile), string(append(hdr, sealed...)))
+	if err := removeAll(v.dataDir()); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Decrypt(dek); err != nil {
+		t.Fatalf("архив версии 2 не открылся: %v", err)
+	}
+	if read(t, filepath.Join(v.dataDir(), "key_datas")) != "секрет" {
+		t.Fatal("данные версии 2 не совпали")
+	}
+	if err := v.Encrypt(dek); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(read(t, v.path(dataFile)), streamMagic) {
+		t.Fatal("после записи архив должен быть версии 3")
+	}
+	if m, _ := v.readMeta(); m.Counter != 2 {
+		t.Fatalf("номер записи %d, ждали 2", m.Counter)
 	}
 }
 
