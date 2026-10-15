@@ -46,3 +46,27 @@ jobs:
       - name: build
         shell: pwsh
         run: ./tools/build.ps1
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: vet
+        run: go vet ./...
+      - name: lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: latest
+      - name: test
+        run: go test ./...
+      - name: zero network
+        run: |
+          deps="$(go list -deps ./cmd/sessionvault)"
+          if echo "$deps" | grep -E '^(net/http|crypto/tls|net/rpc|net/smtp)$'; then
+            echo "найдена сетевая зависимость"; exit 1
+          fi
+      - name: build
+        run: CGO_ENABLED=0 go build -trimpath -o dist/sessionvault ./cmd/sessionvault
