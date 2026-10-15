@@ -1,0 +1,27 @@
+# Сборка пакета SessionVault для Arch и Omarchy из исходников тега:
+#   makepkg -si
+#   sudo sessionvault install
+pkgname=sessionvault
+pkgver=1.2.0
+pkgrel=1
+pkgdesc='Офлайн-защита сессий приложений (Telegram, браузеры, Discord) от инфостилеров'
+arch=('x86_64')
+url='https://github.com/loar32/sessionvault'
+license=('unknown')
+depends=('bubblewrap' 'acl' 'systemd' 'shadow')
+makedepends=('go')
+install=sessionvault.install
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cd "$pkgname-$pkgver"
+  export CGO_ENABLED=0 GOFLAGS='-trimpath -mod=readonly'
+  go build -ldflags '-s -w' -o sessionvault ./cmd/sessionvault
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  install -Dm755 sessionvault "$pkgdir/usr/bin/sessionvault"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+}
