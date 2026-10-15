@@ -96,12 +96,20 @@ waitfor 10 is_locked
 section "5. Блокировка экрана и выход приложения"
 check "unlock + запуск" bash -c "echo '$PW' | $S $SV unlock telegram"
 check "Telegram запущен" waitfor 15 pgrep -u sv-telegram -f "^/usr/bin/telegram-desktop"
+# Повторная разблокировка заменяет ключ в службе; запущенный Telegram шифрует при выходе своей копией, а не стёртой.
+check "повторный unlock при запущенном Telegram" bash -c "echo '$PW' | $S $SV unlock telegram"
 $S omarchy-system-lock >/dev/null 2>&1
-sleep 2
-check "при запущенном приложении ключ ждёт выхода" is_unlocked
+check "блокировка экрана запирает и при запущенном приложении" waitfor 5 is_locked
+check "Telegram работает дальше" pgrep -u sv-telegram -f "^/usr/bin/telegram-desktop"
 $SV close telegram
-check "после выхода приложения заперто" waitfor 20 is_locked
-check "данные зашифрованы после выхода" waitfor 10 bash -c "! sudo test -e $VAULT/apps/telegram/home"
+check "данные зашифрованы после выхода" waitfor 20 bash -c "! sudo test -e $VAULT/apps/telegram/home"
+# Повторный unlock выше тоже был запуском (передачей работающему): следующий раньше чем через секунду служба отклонит как busy.
+sleep 2
+check "unlock + запуск после блокировки" bash -c "echo '$PW' | $S $SV unlock telegram"
+check "данные целы: зашифрованы не стёртым ключом" waitfor 15 sudo grep -q SECRET-TG-FILE $VAULT/apps/telegram/home/.local/share/TelegramDesktop/sv-secret.txt
+$SV close telegram
+check "после выхода снова зашифровано" waitfor 20 bash -c "! sudo test -e $VAULT/apps/telegram/home"
+$SV lock
 check "unlock без запуска приложения" bash -c "echo '$PW' | $S $SV unlock telegram"
 $SV close telegram
 waitfor 20 bash -c "! pgrep -u sv-telegram >/dev/null"
@@ -132,8 +140,21 @@ sed -i '/remote-debugging/d' ~/.config/chromium-flags.conf
 $S /usr/bin/chromium --headless --disable-gpu --dump-dom about:blank >/dev/null 2>&1
 sleep 2
 checknot "сам Chromium, открывший свою приманку, не тревога" is_alarm
+# Ключ Telegram в службе есть, Telegram не запущен; после блокировки экрана он не должен открыться без пароля.
+check "unlock telegram при запущенном Chromium" bash -c "echo '$PW' | $S $SV unlock telegram"
+$SV close telegram
+waitfor 20 bash -c "! sudo test -e $VAULT/apps/telegram/home"
+sleep 1
+$S omarchy-system-lock >/dev/null 2>&1
+check "блокировка экрана при запущенном Chromium запирает" waitfor 5 is_locked
+check "Chromium работает дальше" pgrep -u sv-chromium -f /usr/lib/chromium/chromium
+check "Telegram после блокировки — только по паролю" bash -c "printf 'run telegram\n' | timeout 5 socat - UNIX-CONNECT:/run/sessionvault/sock | grep -qx locked"
 $SV close chromium
 check "Chromium закрыт и зашифрован" waitfor 30 bash -c "! sudo test -e $VAULT/apps/chromium/home"
+# В разделе 9 ссылку из песочницы открывает Chromium без пароля: его ключ снова нужен в службе.
+check "unlock chromium после блокировки" bash -c "echo '$PW' | $S $SV unlock chromium"
+$SV close chromium
+waitfor 30 bash -c "! sudo test -e $VAULT/apps/chromium/home"
 
 
 section "6b. Brave, Google Chrome, Discord"

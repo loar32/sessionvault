@@ -305,8 +305,8 @@ func (d *Daemon) alarmedLocked() bool {
 	return !d.alarmAt.IsZero() && time.Since(d.alarmAt) < alarmLatch
 }
 
-// alarm: сначала гасим приложения — это единственное, что нельзя откладывать; ключи стираются после шифрования, оно идёт
-// на тех же ключах. Потом журнал и уведомление.
+// alarm: сначала гасим приложения — это единственное, что нельзя откладывать — и стираем ключи: данные при выходе
+// шифруются своей копией ключа у каждого запуска. Потом журнал и уведомление.
 func (d *Daemon) alarm(a Alert) {
 	d.mu.Lock()
 	repeat := !d.alarmAt.IsZero() && time.Since(d.alarmAt) < alarmDedup
@@ -318,16 +318,9 @@ func (d *Daemon) alarm(a Alert) {
 		return
 	}
 	d.killAll()
-	go func() {
-		d.wg.Wait()
-		d.mu.Lock()
-		if len(d.running) == 0 && len(d.starting) == 0 {
-			d.lock()
-		} else {
-			d.lockPending = true
-		}
-		d.mu.Unlock()
-	}()
+	d.mu.Lock()
+	d.lock()
+	d.mu.Unlock()
 	a.Time = time.Now()
 	a.SHA256 = fileHash(a.Process)
 	d.log.Printf("ТРЕВОГА: приманку %s прочитал %q (PID %d, uid %d, SHA-256 %s)", a.App, a.Process, a.PID, a.UID, a.SHA256)

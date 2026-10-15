@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -54,20 +55,19 @@ type Daemon struct {
 
 	unlockMu sync.Mutex // разблокировка по одной: Argon2 берёт 128 МиБ, параллельные запросы выбили бы память
 
-	mu          sync.Mutex
-	keys        map[string][]byte // DEK приложений, пока хранилище разблокировано
-	running     map[string]*instance
-	closing     map[string]bool // приложение вышло, данные ещё шифруются: новый экземпляр запускать нельзя
-	starting    map[string]bool
-	fails       map[string]int
-	failAt      map[string]time.Time
-	lastRun     map[string]time.Time
-	idle        *time.Timer
-	lockPending bool // блокировку попросили, но приложение ещё работает: ключ нужен для шифрования при выходе
-	alarmGen    int  // растёт с каждой тревогой: запуск, начавшийся до неё, не должен её пережить
-	alarmAt     time.Time
-	server      int // pid композитора последнего сеанса: его выход — выход из системы
-	wg          sync.WaitGroup
+	mu       sync.Mutex
+	keys     map[string][]byte // DEK приложений, пока хранилище разблокировано
+	running  map[string]*instance
+	closing  map[string]bool // приложение вышло, данные ещё шифруются: новый экземпляр запускать нельзя
+	starting map[string]bool
+	fails    map[string]int
+	failAt   map[string]time.Time
+	lastRun  map[string]time.Time
+	idle     *time.Timer
+	alarmGen int // растёт с каждой тревогой: запуск, начавшийся до неё, не должен её пережить
+	alarmAt  time.Time
+	server   int // pid композитора последнего сеанса: его выход — выход из системы
+	wg       sync.WaitGroup
 
 	fan    *fanWatch
 	trapMu sync.Mutex // перестановка меток приманок по одной
@@ -328,8 +328,7 @@ func (d *Daemon) unlock(name string, pw []byte) string {
 	}
 	d.mu.Lock()
 	if old := d.keys[name]; old != nil {
-		crypto.Wipe(old)
-		crypto.Unlock(old)
+		wipeKey(old)
 	}
 	d.keys[name] = dek
 	d.fails[name] = 0
@@ -361,8 +360,7 @@ func (d *Daemon) run(name, mode, link string, pid int) string {
 	}
 	d.lastRun[name] = time.Now()
 	inst := d.running[name]
-	dek := d.keys[name]
-	if inst == nil && dek == nil {
+	if inst == nil && d.keys[name] == nil {
 		d.mu.Unlock()
 		return ipc.Locked
 	}
@@ -374,16 +372,23 @@ func (d *Daemon) run(name, mode, link string, pid int) string {
 		}
 		return ipc.Ok
 	}
+	// Своя копия ключа: блокировка и повторная разблокировка стирают ключ в d.keys сразу, а запуску он нужен до
+	// шифрования при выходе приложения. Общий срез стёрся бы под ним, и данные зашифровались бы нулевым ключом.
+	dek := bytes.Clone(d.keys[name])
 	d.starting[name] = true
 	d.stopIdle()
 	gen := d.alarmGen
 	d.mu.Unlock()
+	if err := crypto.Lock(dek); err != nil {
+		d.log.Printf("%s: mlock: %v", name, err)
+	}
 
 	err := d.start(a, v, dek, mode, link, pid, gen)
 	d.mu.Lock()
 	delete(d.starting, name)
 	d.mu.Unlock()
 	if err != nil {
+		wipeKey(dek)
 		d.log.Printf("%s: запуск: %v", name, err)
 		d.finish(name)
 		return ipc.Failed
@@ -542,6 +547,7 @@ func (d *Daemon) start(a App, v vault.Vault, dek []byte, mode, link string, pid,
 		} else {
 			d.log.Printf("%s: закрыто, данные зашифрованы", a.Name)
 		}
+		wipeKey(dek)
 		unlock()
 		d.finish(a.Name)
 	}()
@@ -627,11 +633,6 @@ func (d *Daemon) finish(name string) {
 	defer d.mu.Unlock()
 	delete(d.running, name)
 	delete(d.closing, name)
-	if d.lockPending && len(d.running) == 0 {
-		d.lock()
-		d.log.Println("хранилище заблокировано после выхода приложений")
-		return
-	}
 	d.resetIdle()
 }
 
@@ -646,17 +647,12 @@ func (d *Daemon) closeApp(name string) string {
 	return ipc.Ok
 }
 
-// lockRequested — блокировка экрана, сон, выход из сеанса или команда: ключи стираются сразу, а если приложение запущено,
-// то после его выхода (ключ нужен для шифрования).
+// lockRequested — блокировка экрана, сон, выход из сеанса или команда: ключи стираются сразу. Запущенные приложения
+// зашифруют данные при выходе своей копией ключа, а новые запустятся только по паролю.
 func (d *Daemon) lockRequested(why string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if len(d.keys) == 0 {
-		return
-	}
-	if len(d.running) > 0 || len(d.starting) > 0 {
-		d.lockPending = true
-		d.log.Printf("блокировка (%s) после выхода приложений", why)
 		return
 	}
 	d.lock()
@@ -689,13 +685,16 @@ func (d *Daemon) stopIdle() {
 
 // Вызывается под mu.
 func (d *Daemon) lock() {
-	d.lockPending = false
 	d.stopIdle()
 	for name, k := range d.keys {
-		crypto.Wipe(k)
-		crypto.Unlock(k)
+		wipeKey(k)
 		delete(d.keys, name)
 	}
+}
+
+func wipeKey(k []byte) {
+	crypto.Wipe(k)
+	crypto.Unlock(k)
 }
 
 // Stop: приложения гасятся, данные шифруются ещё не стёртыми ключами, потом ключи стираются.

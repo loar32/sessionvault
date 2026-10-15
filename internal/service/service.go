@@ -282,6 +282,10 @@ func (s *Service) run(c *ipc.Conn, name, link string) string {
 	s.running[name] = true
 	s.stopIdle()
 	dek := s.keys[name]
+	if s.lockPending {
+		// Сеанс уже заблокирован, ключи ждут только выхода запущенных приложений: новое запускается по паролю.
+		dek = nil
+	}
 	gen := s.alarmGen
 	s.mu.Unlock()
 
