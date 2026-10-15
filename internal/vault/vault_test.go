@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -130,7 +131,11 @@ func TestDecryptWipesStale(t *testing.T) {
 }
 
 func TestUnpackRejectsEscape(t *testing.T) {
-	for _, name := range []string{"../evil", "/abs", `C:\abs`, "a/../../evil"} {
+	names := []string{"../evil", "/abs", "a/../../evil"}
+	if runtime.GOOS == "windows" {
+		names = append(names, `C:\abs`) // в Linux это обычное имя файла
+	}
+	for _, name := range names {
 		var buf bytes.Buffer
 		tw := tar.NewWriter(&buf)
 		_ = tw.WriteHeader(&tar.Header{Name: name, Mode: 0o600, Size: 1, Typeflag: tar.TypeReg})
@@ -326,7 +331,7 @@ func TestMigrationFromV1(t *testing.T) {
 
 func TestExcludeSkipsCaches(t *testing.T) {
 	v := newVault(t)
-	v.Exclude = []string{`cache`, `emoji\skip.bin`}
+	v.Exclude = []string{`cache`, filepath.FromSlash(`emoji/skip.bin`)}
 	write(t, filepath.Join(v.dataDir(), "cache", "blob"), "кэш")
 	write(t, filepath.Join(v.dataDir(), "emoji", "skip.bin"), "пропуск")
 	dek, _ := v.Create([]byte("pw"))
@@ -367,12 +372,12 @@ func TestArchiveSizeLimit(t *testing.T) {
 }
 
 func TestExcludePatterns(t *testing.T) {
-	ex := []string{`*\Cache`, `*\Service Worker\CacheStorage`, `Crashpad`}
+	ex := []string{filepath.FromSlash(`*/Cache`), filepath.FromSlash(`*/Service Worker/CacheStorage`), `Crashpad`}
 	for rel, want := range map[string]bool{
-		`Default\Cache`: true, `Profile 1\cache`: true, `Default\Service Worker\CacheStorage`: true, `Crashpad`: true,
-		`Default\Cookies`: false, `Cache`: false, `Default\Cache\x`: false, `Default\Network\Cookies`: false,
+		`Default/Cache`: true, `Profile 1/cache`: true, `Default/Service Worker/CacheStorage`: true, `Crashpad`: true,
+		`Default/Cookies`: false, `Cache`: false, `Default/Cache/x`: false, `Default/Network/Cookies`: false,
 	} {
-		if got := excluded(rel, ex); got != want {
+		if got := excluded(filepath.FromSlash(rel), ex); got != want {
 			t.Errorf("%q: получили %v, ждали %v", rel, got, want)
 		}
 	}
@@ -682,5 +687,31 @@ func TestRemoveRecoveryAndRestoreMeta(t *testing.T) {
 	}
 	if err := v.RemoveRecovery(); err != nil || v.HasRecovery() {
 		t.Fatalf("слот не удалён: %v", err)
+	}
+}
+
+func TestUnpackKeepsExec(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("биты исполнения есть только в Linux")
+	}
+	src := filepath.Join(t.TempDir(), "src")
+	write(t, filepath.Join(src, "bin", "client"), "#!/bin/sh\n")
+	write(t, filepath.Join(src, "data"), "x")
+	if err := os.Chmod(filepath.Join(src, "bin", "client"), 0o4775); err != nil {
+		t.Fatal(err)
+	}
+	data, _, err := packDir(src, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(t.TempDir(), "dst")
+	if err := unpackDir(data, dst); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Stat(filepath.Join(dst, "bin", "client")); err != nil || fi.Mode().Perm() != 0o755 || fi.Mode()&os.ModeSetuid != 0 {
+		t.Fatalf("исполняемый файл: %v %v, ждали 0755 без setuid", fi.Mode(), err)
+	}
+	if fi, err := os.Stat(filepath.Join(dst, "data")); err != nil || fi.Mode().Perm() != 0o644 {
+		t.Fatalf("обычный файл: %v %v, ждали 0644", fi.Mode(), err)
 	}
 }

@@ -33,6 +33,12 @@ func excluded(rel string, exclude []string) bool {
 // Excluded — путь относительно папки данных попадает под шаблоны исключений.
 func Excluded(rel string, exclude []string) bool { return excluded(rel, exclude) }
 
+// PackDir — архив папки в памяти (только файлы и каталоги, без ссылок) и число файлов в нём.
+func PackDir(root string, exclude []string) ([]byte, int, error) { return packDir(root, exclude) }
+
+// UnpackDir распаковывает архив PackDir в root.
+func UnpackDir(data []byte, root string) error { return unpackDir(data, root) }
+
 // exclude — пути относительно root (кэши): в архив не попадают, вместе с открытой папкой удаляются.
 func packDir(root string, exclude []string) ([]byte, int, error) {
 	var buf bytes.Buffer
@@ -122,7 +128,7 @@ func unpackDir(data []byte, root string) error {
 		case tar.TypeDir:
 			err = os.MkdirAll(dst, 0o755)
 		case tar.TypeReg:
-			err = writeFile(dst, tr)
+			err = writeFile(dst, tr, os.FileMode(h.Mode)&0o111)
 		default:
 			err = fmt.Errorf(i18n.T("недопустимый тип в архиве: %q"), h.Name)
 		}
@@ -132,11 +138,13 @@ func unpackDir(data []byte, root string) error {
 	}
 }
 
-func writeFile(dst string, r io.Reader) error {
+// exec — биты исполнения из архива: в данных Linux-приложения бывают свои программы (клиент Discord лежит в его папке).
+// Прочие биты (setuid, запись для всех) не переносятся.
+func writeFile(dst string, r io.Reader, exec os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
-	f, err := os.Create(dst)
+	f, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644|exec)
 	if err != nil {
 		return err
 	}
