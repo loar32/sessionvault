@@ -349,7 +349,9 @@ func menu() error {
 			rows = append(rows, "\U000F0341\t"+a.Title+"\t"+a.Name)
 		}
 	}
-	rows = append(rows, "\U000F033E\t"+i18n.T("Заблокировать хранилище")+"\t:lock", "\U000F02FC\t"+i18n.T("Состояние")+"\t:status")
+	// У приложений под названием — имя (его меню и возвращает), у действий подписи нет: они узнаются по тексту.
+	lockText, statusText := i18n.T("Заблокировать хранилище"), i18n.T("Состояние")
+	rows = append(rows, "\U000F033E\t"+lockText, "\U000F02FC\t"+statusText)
 	if _, err := exec.LookPath("omarchy-menu-select"); err != nil {
 		return status()
 	}
@@ -357,20 +359,20 @@ func menu() error {
 	if err != nil {
 		return nil // меню закрыто без выбора
 	}
-	_, key, _ := strings.Cut(strings.TrimSpace(string(out)), "\t")
-	switch key {
-	case "":
+	label, key, _ := strings.Cut(strings.TrimSpace(string(out)), "\t")
+	switch {
+	case label == "":
 		return nil
-	case ":lock":
+	case label == lockText:
 		if _, err := daemon.Call("lock", nil, 5*time.Second); err != nil {
 			return err
 		}
 		notify("SessionVault", i18n.T("Хранилище заблокировано (запущенные приложения — после их закрытия)."))
-	case ":status":
+	case label == statusText:
 		st, _ := daemon.Call("status", nil, 5*time.Second)
 		running, _ := daemon.Call("running", nil, 5*time.Second)
 		notify("SessionVault", fmt.Sprintf(i18n.T("Хранилище: %s\nЗащищены: %s\nЗапущены: %s\n"), stateText(st), orDash(list), orDash(running)))
-	default:
+	case key != "":
 		os.Exit(launch(key, nil))
 	}
 	return nil
