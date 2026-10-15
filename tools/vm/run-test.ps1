@@ -257,7 +257,7 @@ $r = Vm {
 } @($MasterPassword)
 Check ($r.files -eq 'data.enc,vault.json') "в хранилище только шифр (есть: $($r.files))"
 $r = Vm { $m = Get-Content "$v\vault.json" -Raw | ConvertFrom-Json; $h = [IO.File]::ReadAllBytes("$v\data.enc")[0..3]; @{ ver = $m.Version; cnt = $m.Counter; magic = [Text.Encoding]::ASCII.GetString($h) } }
-Check ($r.ver -eq 2 -and $r.cnt -eq 1 -and $r.magic -eq 'SVD2') "хранилище версии 2: счётчик записей $($r.cnt), заголовок $($r.magic)"
+Check ($r.ver -eq 2 -and $r.cnt -eq 1 -and $r.magic -eq 'SVD3') "хранилище версии 2, поток: версия $($r.ver), счётчик записей $($r.cnt), заголовок $($r.magic)"
 
 if ($env:SV_HELLO_ONLY -eq '1') {
     HelloBlock
@@ -501,8 +501,10 @@ if ($w -ne [IntPtr]::Zero) { [void][W]::PostMessage($w, 0x10, [IntPtr]0, [IntPtr
     Set-Content C:\sv\chk.ps1 $ps1.Replace('@@TITLE@@', $b64).Replace('@@WIZ@@', $b64w) -Encoding UTF8
     Remove-Item C:\sv\chk.state -ErrorAction SilentlyContinue
     AsTester 'chkw' 'powershell -NoProfile -ExecutionPolicy Bypass -File C:\sv\chk.ps1'
-    $got = WaitFor { Test-Path C:\sv\chk.state } 120
-    @{ flagged = $flagged; state = $(if ($got) { (Get-Content C:\sv\chk.state -Raw).Trim() } else { '' }) }
+    # Файл пишет процесс tester: появиться он может раньше, чем закроется, поэтому читается с повтором.
+    $script:chk = ''
+    $got = WaitFor { try { $script:chk = (Get-Content C:\sv\chk.state -Raw -ErrorAction Stop).Trim(); $true } catch { $false } } 120
+    @{ flagged = $flagged; state = $(if ($got) { $script:chk } else { '' }) }
 } @([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('SessionVault: проверка защиты')), [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('SessionVault: первая настройка')))
 Start-Sleep 2
 & "$PSScriptRoot\screenshot.ps1" -VmName $VmName -Path "$env:TEMP\sv-check-window.png" | Out-Null
