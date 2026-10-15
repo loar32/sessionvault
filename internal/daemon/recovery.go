@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+	"unicode"
 
 	"github.com/loar32/sessionvault/internal/crypto"
 	"github.com/loar32/sessionvault/internal/i18n"
@@ -431,7 +432,12 @@ func importedApp(cfg Config, c App, o ImportOptions) (App, error) {
 		return App{}, fmt.Errorf(i18n.T("%s на этом ПК — встроенное приложение %s"), target, plan.Builtin)
 	}
 	a := plan.App
-	a.Title, a.Schemes, a.Browser, a.Chromium = c.Title, c.Schemes, c.Browser, c.Chromium
+	// Заголовок файла не подписан, а название и схемы попадают в ярлык владельца: перевод строки добавил бы туда свой Exec.
+	if c.Title != "" && !strings.ContainsFunc(c.Title, unicode.IsControl) {
+		a.Title = c.Title
+	}
+	a.Schemes = slices.DeleteFunc(slices.Clone(c.Schemes), func(s string) bool { return !validScheme(s) })
+	a.Browser, a.Chromium = c.Browser, c.Chromium
 	for _, m := range c.Match {
 		if !slices.Contains(a.Match, m) {
 			a.Match = append(a.Match, m)

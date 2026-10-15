@@ -65,9 +65,12 @@ func unmountShares(name string) {
 	dir := sharesDir(name)
 	entries, _ := os.ReadDir(dir)
 	for _, e := range entries {
-		_ = unix.Unmount(filepath.Join(dir, e.Name()), unix.MNT_DETACH)
+		p := filepath.Join(dir, e.Name())
+		_ = unix.Unmount(p, unix.MNT_DETACH)
+		// rmdir, а не RemoveAll: если папка осталась смонтированной, RemoveAll удалил бы файлы владельца.
+		_ = os.Remove(p)
 	}
-	_ = os.RemoveAll(dir)
+	_ = os.Remove(dir)
 }
 
 // openShare открывает папку владельца без перехода по ссылкам и проверяет, что она его.

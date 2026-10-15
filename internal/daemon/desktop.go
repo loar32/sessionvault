@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"unicode"
 )
 
 // Ярлык приложения в ~/.local/share/applications с тем же именем, что у системного, перекрывает его: лаунчер Omarchy,
@@ -44,7 +45,8 @@ func ParseDesktop(id string, b []byte) DesktopEntry {
 			continue
 		}
 		k, v, ok := strings.Cut(line, "=")
-		if !in || !ok {
+		// Управляющие символы (\r, ESC) из чужого ярлыка попали бы в ярлык, который SessionVault пишет владельцу, и в меню.
+		if !in || !ok || strings.ContainsFunc(v, unicode.IsControl) {
 			continue
 		}
 		switch strings.TrimSpace(k) {
